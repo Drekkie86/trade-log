@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+
+trade_log.db
+*.db
+
+.env
+.streamlit/secrets.toml
