@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from src.database.repository import (
@@ -8,12 +9,6 @@ from src.database.repository import (
 
 
 def utc_now_iso() -> str:
-    """
-    Return the current UTC timestamp in the format used by the database.
-
-    Example:
-        2026-08-26T10:15:32Z
-    """
     return (
         datetime.now(timezone.utc)
         .replace(microsecond=0)
@@ -22,10 +17,12 @@ def utc_now_iso() -> str:
     )
 
 
-def date_to_iso(value: date | str) -> str:
-    """
-    Convert a date into YYYY-MM-DD.
-    """
+def date_to_iso(
+    value: date | str | None,
+) -> str | None:
+    if value is None:
+        return None
+
     if isinstance(value, date):
         return value.isoformat()
 
@@ -35,12 +32,6 @@ def date_to_iso(value: date | str) -> str:
 def probability_to_decimal(
     percentage: float | int,
 ) -> float:
-    """
-    Convert a human percentage into database probability form.
-
-    Example:
-        65 -> 0.65
-    """
     value = float(percentage)
 
     if value < 0 or value > 100:
@@ -55,9 +46,6 @@ def validate_text(
     value: str,
     field_name: str,
 ) -> str:
-    """
-    Require meaningful non-empty text.
-    """
     cleaned = value.strip()
 
     if not cleaned:
@@ -66,6 +54,169 @@ def validate_text(
         )
 
     return cleaned
+
+
+def validate_leg(
+    leg: dict[str, Any],
+) -> None:
+    if leg["right"] not in {
+        "C",
+        "P",
+    }:
+        raise ValueError(
+            "Option right must be C or P."
+        )
+
+    if leg["direction"] not in {
+        "BUY",
+        "SELL",
+    }:
+        raise ValueError(
+            "Direction must be BUY or SELL."
+        )
+
+    if float(leg["strike"]) <= 0:
+        raise ValueError(
+            "Strike must be positive."
+        )
+
+    if int(leg["contracts"]) <= 0:
+        raise ValueError(
+            "Contracts must be positive."
+        )
+
+    multiplier = int(
+        leg.get(
+            "multiplier",
+            100,
+        )
+    )
+
+    if multiplier <= 0:
+        raise ValueError(
+            "Multiplier must be positive."
+        )
+
+    bid = float(
+        leg["entry_bid"]
+    )
+
+    ask = float(
+        leg["entry_ask"]
+    )
+
+    fill = float(
+        leg["entry_fill"]
+    )
+
+    if bid < 0:
+        raise ValueError(
+            "Option bid cannot be negative."
+        )
+
+    if ask < 0:
+        raise ValueError(
+            "Option ask cannot be negative."
+        )
+
+    if fill < 0:
+        raise ValueError(
+            "Option fill cannot be negative."
+        )
+
+    if ask < bid:
+        raise ValueError(
+            "Option ask cannot be below bid."
+        )
+
+    entry_iv = leg.get(
+        "entry_iv"
+    )
+
+    if (
+        entry_iv is not None
+        and float(entry_iv) < 0
+    ):
+        raise ValueError(
+            "Entry IV cannot be negative."
+        )
+
+    entry_delta = leg.get(
+        "entry_delta"
+    )
+
+    if (
+        entry_delta is not None
+        and not (
+            -1.0
+            <= float(entry_delta)
+            <= 1.0
+        )
+    ):
+        raise ValueError(
+            "Entry delta must be between -1 and 1."
+        )
+
+
+def calculate_entry_cash(
+    legs: list[dict[str, Any]],
+) -> float:
+    """
+    Calculate gross trade cash flow from all option legs.
+
+    BUY  -> negative cash flow
+    SELL -> positive cash flow
+
+    Decimal is used internally to avoid accumulating
+    binary floating-point errors across multiple legs.
+    """
+    if not legs:
+        raise ValueError(
+            "At least one trade leg is required."
+        )
+
+    total = Decimal("0")
+
+    for leg in legs:
+        validate_leg(leg)
+
+        fill = Decimal(
+            str(
+                leg["entry_fill"]
+            )
+        )
+
+        contracts = Decimal(
+            str(
+                int(
+                    leg["contracts"]
+                )
+            )
+        )
+
+        multiplier = Decimal(
+            str(
+                int(
+                    leg.get(
+                        "multiplier",
+                        100,
+                    )
+                )
+            )
+        )
+
+        amount = (
+            fill
+            * contracts
+            * multiplier
+        )
+
+        if leg["direction"] == "BUY":
+            total -= amount
+        else:
+            total += amount
+
+    return float(total)
 
 
 def record_trade(
@@ -78,8 +229,11 @@ def record_trade(
     thesis: str,
     prediction: str,
     horizon_date: date | str,
+
+    p_thesis_initial_percent: float,
     p_thesis_percent: float,
     p_profit_percent: float,
+
     invalidation: str,
 
     entry_at: str,
@@ -87,7 +241,9 @@ def record_trade(
     entry_fx_rate: float,
 
     entry_fees_major: float,
-    entry_cash_major: float,
+
+    entry_iv_rank: float | None,
+    next_earnings_date: date | str | None,
 
     max_loss_major: float,
     profit_target: str,
@@ -99,13 +255,12 @@ def record_trade(
     db_path=None,
 ) -> int:
     """
-    Record a taken trade.
+    Convert human-facing values into database values
+    and record the trade.
 
-    The UI works in human-friendly values:
-    - probabilities as percentages
-    - money in major currency units
-
-    This service converts those values into the database representation.
+    Important:
+    entry_cash is derived from the option legs.
+    The UI does not supply it.
     """
 
     underlying_clean = validate_text(
@@ -158,15 +313,39 @@ def record_trade(
             "Entry FX rate must be positive."
         )
 
+    if entry_fees_major < 0:
+        raise ValueError(
+            "Entry fees cannot be negative."
+        )
+
     if max_loss_major < 0:
         raise ValueError(
             "Maximum loss cannot be negative."
+        )
+
+    if (
+        entry_iv_rank is not None
+        and not (
+            0
+            <= float(entry_iv_rank)
+            <= 100
+        )
+    ):
+        raise ValueError(
+            "IV rank must be between 0 and 100."
         )
 
     if not legs:
         raise ValueError(
             "A taken trade must contain at least one leg."
         )
+
+    for leg in legs:
+        validate_leg(leg)
+
+    entry_cash_major = calculate_entry_cash(
+        legs
+    )
 
     trade = {
         "created_at":
@@ -209,6 +388,18 @@ def record_trade(
                 entry_cash_major
             ),
 
+        "entry_iv_rank":
+            (
+                None
+                if entry_iv_rank is None
+                else float(entry_iv_rank)
+            ),
+
+        "next_earnings_date":
+            date_to_iso(
+                next_earnings_date
+            ),
+
         "thesis":
             thesis_clean,
 
@@ -218,6 +409,11 @@ def record_trade(
         "horizon_date":
             date_to_iso(
                 horizon_date
+            ),
+
+        "p_thesis_initial":
+            probability_to_decimal(
+                p_thesis_initial_percent
             ),
 
         "p_thesis":

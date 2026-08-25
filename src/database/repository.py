@@ -8,19 +8,16 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
 
-EXPECTED_SCHEMA_VERSION = 2
+EXPECTED_SCHEMA_VERSION = 3
 
 
 def to_minor(amount) -> int:
     """
-    Convert a currency amount into integer minor units.
+    Convert a major currency amount into integer minor units.
 
     Examples:
         22.00 -> 2200
         2.20  -> 220
-
-    Decimal(str(...)) is deliberate because it avoids
-    inheriting binary floating-point errors.
     """
     value = (
         amount
@@ -53,14 +50,7 @@ def transaction(db_path=None, conn=None):
     """
     Reuse an existing connection if supplied.
 
-    Otherwise:
-    - open our own connection
-    - begin/commit the transaction
-    - roll back on failure
-    - always close the connection
-
-    This lets future multi-step operations such as rolls
-    happen atomically.
+    Otherwise own the connection and transaction.
     """
     if conn is not None:
         yield conn
@@ -76,7 +66,10 @@ def transaction(db_path=None, conn=None):
 
 
 def get_schema_version(db_path=None) -> int:
-    with closing(get_connection(db_path)) as connection:
+    with closing(
+        get_connection(db_path)
+    ) as connection:
+
         row = connection.execute(
             """
             SELECT version
@@ -95,7 +88,9 @@ def get_schema_version(db_path=None) -> int:
 
 
 def assert_schema_version(db_path=None) -> None:
-    actual_version = get_schema_version(db_path)
+    actual_version = get_schema_version(
+        db_path
+    )
 
     if actual_version != EXPECTED_SCHEMA_VERSION:
         raise RuntimeError(
@@ -106,7 +101,10 @@ def assert_schema_version(db_path=None) -> None:
 
 
 def get_table_names(db_path=None) -> list[str]:
-    with closing(get_connection(db_path)) as connection:
+    with closing(
+        get_connection(db_path)
+    ) as connection:
+
         rows = connection.execute(
             """
             SELECT name
@@ -129,10 +127,7 @@ def create_trade(
     conn=None,
 ) -> int:
     """
-    Create a trade and all its legs atomically.
-
-    is_paper defaults to 1 deliberately.
-    Paper trading is the safe default.
+    Create one trade decision and all its option legs atomically.
     """
     legs = legs or []
 
@@ -144,6 +139,7 @@ def create_trade(
         "thesis",
         "prediction",
         "horizon_date",
+        "p_thesis_initial",
         "p_thesis",
         "p_profit",
         "invalidation",
@@ -166,55 +162,103 @@ def create_trade(
         )
 
     trade_data = {
-        "created_at": trade["created_at"],
-        "underlying": trade["underlying"],
-        "currency": trade["currency"],
+        "created_at":
+            trade["created_at"],
 
-        # Safe default: paper trade.
-        "is_paper": trade.get(
-            "is_paper",
-            1,
-        ),
+        "underlying":
+            trade["underlying"],
 
-        "status": trade["status"],
-        "parent_trade_id": trade.get(
-            "parent_trade_id"
-        ),
-        "strategy": trade.get(
-            "strategy"
-        ),
+        "currency":
+            trade["currency"],
 
-        "entry_at": trade.get(
-            "entry_at"
-        ),
-        "entry_underlying": trade.get(
-            "entry_underlying"
-        ),
-        "entry_fx_rate": trade.get(
-            "entry_fx_rate"
-        ),
-        "entry_fees": trade.get(
-            "entry_fees"
-        ),
-        "entry_cash": trade.get(
-            "entry_cash"
-        ),
+        "is_paper":
+            trade.get(
+                "is_paper",
+                1,
+            ),
 
-        "thesis": trade["thesis"],
-        "prediction": trade["prediction"],
-        "horizon_date": trade["horizon_date"],
+        "status":
+            trade["status"],
 
-        "p_thesis": trade["p_thesis"],
-        "p_profit": trade["p_profit"],
+        "parent_trade_id":
+            trade.get(
+                "parent_trade_id"
+            ),
 
-        "invalidation": trade["invalidation"],
-        "max_loss": trade["max_loss"],
-        "profit_target": trade["profit_target"],
-        "stop_condition": trade["stop_condition"],
+        "strategy":
+            trade.get(
+                "strategy"
+            ),
 
-        "rejection_reason": trade.get(
-            "rejection_reason"
-        ),
+        "entry_at":
+            trade.get(
+                "entry_at"
+            ),
+
+        "entry_underlying":
+            trade.get(
+                "entry_underlying"
+            ),
+
+        "entry_fx_rate":
+            trade.get(
+                "entry_fx_rate"
+            ),
+
+        "entry_fees":
+            trade.get(
+                "entry_fees"
+            ),
+
+        "entry_cash":
+            trade.get(
+                "entry_cash"
+            ),
+
+        "entry_iv_rank":
+            trade.get(
+                "entry_iv_rank"
+            ),
+
+        "next_earnings_date":
+            trade.get(
+                "next_earnings_date"
+            ),
+
+        "thesis":
+            trade["thesis"],
+
+        "prediction":
+            trade["prediction"],
+
+        "horizon_date":
+            trade["horizon_date"],
+
+        "p_thesis_initial":
+            trade["p_thesis_initial"],
+
+        "p_thesis":
+            trade["p_thesis"],
+
+        "p_profit":
+            trade["p_profit"],
+
+        "invalidation":
+            trade["invalidation"],
+
+        "max_loss":
+            trade["max_loss"],
+
+        "profit_target":
+            trade["profit_target"],
+
+        "stop_condition":
+            trade["stop_condition"],
+
+        "rejection_reason":
+            trade.get(
+                "rejection_reason"
+            ),
     }
 
     with transaction(
@@ -239,9 +283,13 @@ def create_trade(
                 entry_fees,
                 entry_cash,
 
+                entry_iv_rank,
+                next_earnings_date,
+
                 thesis,
                 prediction,
                 horizon_date,
+                p_thesis_initial,
                 p_thesis,
                 p_profit,
                 invalidation,
@@ -267,9 +315,13 @@ def create_trade(
                 :entry_fees,
                 :entry_cash,
 
+                :entry_iv_rank,
+                :next_earnings_date,
+
                 :thesis,
                 :prediction,
                 :horizon_date,
+                :p_thesis_initial,
                 :p_thesis,
                 :p_profit,
                 :invalidation,
@@ -288,20 +340,56 @@ def create_trade(
 
         for leg in legs:
             leg_data = {
-                "trade_id": trade_id,
-                "leg_no": leg["leg_no"],
-                "right": leg["right"],
-                "direction": leg["direction"],
-                "strike": leg["strike"],
-                "expiration": leg["expiration"],
-                "contracts": leg["contracts"],
-                "multiplier": leg.get(
-                    "multiplier",
-                    100,
-                ),
-                "entry_bid": leg["entry_bid"],
-                "entry_ask": leg["entry_ask"],
-                "entry_fill": leg["entry_fill"],
+                "trade_id":
+                    trade_id,
+
+                "leg_no":
+                    leg["leg_no"],
+
+                "right":
+                    leg["right"],
+
+                "direction":
+                    leg["direction"],
+
+                "strike":
+                    leg["strike"],
+
+                "expiration":
+                    leg["expiration"],
+
+                "contracts":
+                    leg["contracts"],
+
+                "multiplier":
+                    leg.get(
+                        "multiplier",
+                        100,
+                    ),
+
+                "entry_quote_at":
+                    leg.get(
+                        "entry_quote_at"
+                    ),
+
+                "entry_iv":
+                    leg.get(
+                        "entry_iv"
+                    ),
+
+                "entry_delta":
+                    leg.get(
+                        "entry_delta"
+                    ),
+
+                "entry_bid":
+                    leg["entry_bid"],
+
+                "entry_ask":
+                    leg["entry_ask"],
+
+                "entry_fill":
+                    leg["entry_fill"],
             }
 
             connection.execute(
@@ -315,6 +403,11 @@ def create_trade(
                     expiration,
                     contracts,
                     multiplier,
+
+                    entry_quote_at,
+                    entry_iv,
+                    entry_delta,
+
                     entry_bid,
                     entry_ask,
                     entry_fill
@@ -328,6 +421,11 @@ def create_trade(
                     :expiration,
                     :contracts,
                     :multiplier,
+
+                    :entry_quote_at,
+                    :entry_iv,
+                    :entry_delta,
+
                     :entry_bid,
                     :entry_ask,
                     :entry_fill
@@ -375,11 +473,14 @@ def get_trade(
         ).fetchall()
 
         return {
-            "trade": dict(trade_row),
-            "legs": [
-                dict(row)
-                for row in leg_rows
-            ],
+            "trade":
+                dict(trade_row),
+
+            "legs":
+                [
+                    dict(row)
+                    for row in leg_rows
+                ],
         }
 
     finally:
@@ -401,12 +502,6 @@ def close_trade(
     db_path=None,
     conn=None,
 ) -> None:
-    """
-    Close a trade.
-
-    Only exit/state columns are updated.
-    Entry evidence and predictions are never included.
-    """
     allowed_statuses = {
         "CLOSED",
         "EXPIRED",
@@ -501,14 +596,6 @@ def resolve_trade(
     db_path=None,
     conn=None,
 ) -> None:
-    """
-    Resolve the two calibration questions.
-
-    Resolution is only allowed once the trade is
-    terminal or the decision was rejected.
-
-    Resolution is write-once.
-    """
     allowed_statuses = {
         "CLOSED",
         "EXPIRED",

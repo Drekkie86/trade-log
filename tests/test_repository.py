@@ -18,9 +18,12 @@ from src.database.repository import (
 def test_schema_version_is_expected(
     db_path,
 ):
-    assert get_schema_version(
-        db_path
-    ) == 2
+    assert (
+        get_schema_version(
+            db_path
+        )
+        == 3
+    )
 
     assert_schema_version(
         db_path
@@ -55,9 +58,20 @@ def test_create_and_read_trade(
         == "LONG_CALL"
     )
 
-    assert len(
-        result["legs"]
-    ) == 1
+    assert (
+        result["trade"]["entry_iv_rank"]
+        == 42.0
+    )
+
+    assert (
+        result["trade"]["p_thesis_initial"]
+        == 0.65
+    )
+
+    assert (
+        len(result["legs"])
+        == 1
+    )
 
     assert (
         result["legs"][0]["strike"]
@@ -67,6 +81,16 @@ def test_create_and_read_trade(
     assert (
         result["legs"][0]["direction"]
         == "BUY"
+    )
+
+    assert (
+        result["legs"][0]["entry_iv"]
+        == 0.31
+    )
+
+    assert (
+        result["legs"][0]["entry_delta"]
+        == 0.38
     )
 
 
@@ -102,13 +126,48 @@ def test_created_at_and_fill_time_are_distinct(
     )
 
 
+def test_quote_and_fill_times_are_distinct(
+    db_path,
+    base_trade,
+    base_leg,
+):
+    trade_id = create_trade(
+        base_trade,
+        [base_leg],
+        db_path=db_path,
+    )
+
+    result = get_trade(
+        trade_id,
+        db_path=db_path,
+    )
+
+    assert (
+        result["legs"][0]["entry_quote_at"]
+        == "2026-08-25T19:56:50Z"
+    )
+
+    assert (
+        result["trade"]["entry_at"]
+        == "2026-08-25T19:57:13Z"
+    )
+
+    assert (
+        result["legs"][0]["entry_quote_at"]
+        != result["trade"]["entry_at"]
+    )
+
+
 def test_probabilities_land_in_separate_columns(
     db_path,
     base_trade,
     base_leg,
 ):
-    trade = dict(base_trade)
+    trade = dict(
+        base_trade
+    )
 
+    trade["p_thesis_initial"] = 0.80
     trade["p_thesis"] = 0.73
     trade["p_profit"] = 0.41
 
@@ -124,6 +183,11 @@ def test_probabilities_land_in_separate_columns(
     )
 
     assert (
+        result["trade"]["p_thesis_initial"]
+        == 0.80
+    )
+
+    assert (
         result["trade"]["p_thesis"]
         == 0.73
     )
@@ -134,12 +198,35 @@ def test_probabilities_land_in_separate_columns(
     )
 
 
+def test_missing_p_thesis_initial_is_rejected(
+    db_path,
+    base_trade,
+    base_leg,
+):
+    trade = dict(
+        base_trade
+    )
+
+    del trade["p_thesis_initial"]
+
+    with pytest.raises(
+        ValueError
+    ):
+        create_trade(
+            trade,
+            [base_leg],
+            db_path=db_path,
+        )
+
+
 def test_missing_p_thesis_is_rejected(
     db_path,
     base_trade,
     base_leg,
 ):
-    trade = dict(base_trade)
+    trade = dict(
+        base_trade
+    )
 
     del trade["p_thesis"]
 
@@ -158,7 +245,9 @@ def test_missing_p_profit_is_rejected(
     base_trade,
     base_leg,
 ):
-    trade = dict(base_trade)
+    trade = dict(
+        base_trade
+    )
 
     del trade["p_profit"]
 
@@ -210,7 +299,6 @@ def test_trade_and_legs_are_atomic(
 
     bad_leg["leg_no"] = 2
 
-    # Invalid because ask < bid.
     bad_leg["entry_bid"] = 10.0
     bad_leg["entry_ask"] = 9.0
 
@@ -279,6 +367,37 @@ def test_prediction_is_immutable(
             )
 
 
+def test_initial_thesis_probability_is_immutable(
+    db_path,
+    base_trade,
+    base_leg,
+):
+    trade_id = create_trade(
+        base_trade,
+        [base_leg],
+        db_path=db_path,
+    )
+
+    with get_connection(
+        db_path
+    ) as connection:
+
+        with pytest.raises(
+            sqlite3.IntegrityError
+        ):
+            connection.execute(
+                """
+                UPDATE trades
+                SET p_thesis_initial = ?
+                WHERE id = ?;
+                """,
+                (
+                    0.10,
+                    trade_id,
+                ),
+            )
+
+
 def test_entry_data_is_immutable(
     db_path,
     base_trade,
@@ -305,6 +424,70 @@ def test_entry_data_is_immutable(
                 """,
                 (
                     999.0,
+                    trade_id,
+                ),
+            )
+
+
+def test_leg_iv_is_immutable(
+    db_path,
+    base_trade,
+    base_leg,
+):
+    trade_id = create_trade(
+        base_trade,
+        [base_leg],
+        db_path=db_path,
+    )
+
+    with get_connection(
+        db_path
+    ) as connection:
+
+        with pytest.raises(
+            sqlite3.IntegrityError
+        ):
+            connection.execute(
+                """
+                UPDATE trade_legs
+                SET entry_iv = ?
+                WHERE trade_id = ?
+                  AND leg_no = 1;
+                """,
+                (
+                    0.99,
+                    trade_id,
+                ),
+            )
+
+
+def test_leg_delta_is_immutable(
+    db_path,
+    base_trade,
+    base_leg,
+):
+    trade_id = create_trade(
+        base_trade,
+        [base_leg],
+        db_path=db_path,
+    )
+
+    with get_connection(
+        db_path
+    ) as connection:
+
+        with pytest.raises(
+            sqlite3.IntegrityError
+        ):
+            connection.execute(
+                """
+                UPDATE trade_legs
+                SET entry_delta = ?
+                WHERE trade_id = ?
+                  AND leg_no = 1;
+                """,
+                (
+                    0.99,
                     trade_id,
                 ),
             )
@@ -422,7 +605,7 @@ def test_is_paper_is_immutable(
             )
 
 
-def test_close_trade_does_not_modify_prediction(
+def test_close_trade_does_not_modify_immutable_fields(
     db_path,
     base_trade,
     base_leg,
@@ -464,10 +647,11 @@ def test_close_trade_does_not_modify_prediction(
         db_path=db_path,
     )
 
-    immutable_fields = [
+    immutable_trade_fields = [
         "thesis",
         "prediction",
         "horizon_date",
+        "p_thesis_initial",
         "p_thesis",
         "p_profit",
         "invalidation",
@@ -479,13 +663,30 @@ def test_close_trade_does_not_modify_prediction(
         "entry_fx_rate",
         "entry_fees",
         "entry_cash",
+        "entry_iv_rank",
+        "next_earnings_date",
         "is_paper",
     ]
 
-    for field in immutable_fields:
+    for field in immutable_trade_fields:
         assert (
             before["trade"][field]
             == after["trade"][field]
+        )
+
+    immutable_leg_fields = [
+        "entry_quote_at",
+        "entry_iv",
+        "entry_delta",
+        "entry_bid",
+        "entry_ask",
+        "entry_fill",
+    ]
+
+    for field in immutable_leg_fields:
+        assert (
+            before["legs"][0][field]
+            == after["legs"][0][field]
         )
 
 
@@ -520,7 +721,6 @@ def test_debit_trade_pnl_sign(
         db_path=db_path,
     )
 
-    # -220000 + 250000 - 100 - 100
     assert (
         get_realized_pnl_minor(
             trade_id,
@@ -544,7 +744,6 @@ def test_credit_trade_pnl_sign(
     )
 
     trade["strategy"] = "SHORT_CALL"
-
     trade["entry_cash"] = 100000
     trade["entry_fees"] = 100
 
@@ -645,6 +844,9 @@ def test_rejected_decision_cannot_have_legs(
     trade["entry_fees"] = None
     trade["entry_cash"] = None
 
+    trade["entry_iv_rank"] = None
+    trade["next_earnings_date"] = None
+
     trade["rejection_reason"] = (
         "Spread was too wide."
     )
@@ -668,9 +870,6 @@ def test_entry_slippage_buy_is_positive_cost(
         base_leg
     )
 
-    # Mid = 2.50.
-    # Buy fill = 2.55.
-    # Positive 0.05 = execution cost.
     leg["entry_bid"] = 2.40
     leg["entry_ask"] = 2.60
     leg["entry_fill"] = 2.55
@@ -712,9 +911,6 @@ def test_entry_slippage_sell_is_positive_cost(
 
     leg["direction"] = "SELL"
 
-    # Mid = 2.50.
-    # Sell fill = 2.45.
-    # Positive 0.05 = execution cost.
     leg["entry_bid"] = 2.40
     leg["entry_ask"] = 2.60
     leg["entry_fill"] = 2.45
@@ -745,13 +941,9 @@ def test_entry_slippage_sell_is_positive_cost(
     )
 
 
-def test_immutable_trigger_contains_is_paper(
+def test_entry_trigger_contains_paper_provenance(
     db_path,
 ):
-    """
-    Guards against a future schema change accidentally
-    making paper/live provenance editable.
-    """
     with get_connection(
         db_path
     ) as connection:
@@ -768,6 +960,79 @@ def test_immutable_trigger_contains_is_paper(
 
     assert row is not None
 
-    trigger_sql = row["sql"].lower()
+    trigger_sql = (
+        row["sql"].lower()
+    )
 
-    assert "is_paper" in trigger_sql
+    assert (
+        "is_paper"
+        in trigger_sql
+    )
+
+
+def test_prediction_trigger_contains_initial_probability(
+    db_path,
+):
+    with get_connection(
+        db_path
+    ) as connection:
+
+        row = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'trigger'
+              AND name =
+                  'trg_trades_prediction_immutable';
+            """
+        ).fetchone()
+
+    assert row is not None
+
+    trigger_sql = (
+        row["sql"].lower()
+    )
+
+    assert (
+        "p_thesis_initial"
+        in trigger_sql
+    )
+
+
+def test_leg_trigger_contains_new_market_evidence(
+    db_path,
+):
+    with get_connection(
+        db_path
+    ) as connection:
+
+        row = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'trigger'
+              AND name =
+                  'trg_legs_entry_immutable';
+            """
+        ).fetchone()
+
+    assert row is not None
+
+    trigger_sql = (
+        row["sql"].lower()
+    )
+
+    assert (
+        "entry_quote_at"
+        in trigger_sql
+    )
+
+    assert (
+        "entry_iv"
+        in trigger_sql
+    )
+
+    assert (
+        "entry_delta"
+        in trigger_sql
+    )

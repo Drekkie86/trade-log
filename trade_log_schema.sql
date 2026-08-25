@@ -1,95 +1,104 @@
 -- =====================================================================
--- Trade Log — schema v2
+-- Trade Log — schema v3
 --
--- Design rules this schema enforces at the database level:
---   1. Prediction fields are write-once. Triggers reject any UPDATE.
---   2. Entry market data is evidence, not editable state. Same treatment.
---   3. Annotations are append-only. No UPDATE, no DELETE.
---   4. Rejected trades are first-class rows, so the log is not a
---      survivorship-biased record of only the trades that were taken.
+-- Design rules:
+--   1. Original prediction evidence is immutable.
+--   2. Entry market evidence is immutable.
+--   3. Paper/live provenance is immutable.
+--   4. Annotations are append-only.
+--   5. Rejected decisions are recorded.
+--   6. Bad records are preserved by voiding rather than deleting.
 --
 -- Conventions:
---   * All timestamps are ISO-8601 UTC strings ('2026-08-24T14:33:07Z').
---   * Per-share prices (strikes, bids, asks, fills, underlying) are REAL.
---   * Realized cash amounts (fees, debits, proceeds) are INTEGER minor
---     units of `currency` — i.e. US cents for USD. Avoids float drift on
---     anything that has to reconcile against a broker statement.
---   * Probabilities are REAL in [0, 1], not percentages.
+--   * Timestamps: ISO-8601 UTC strings.
+--   * Prices/Greeks/IV: REAL.
+--   * Cash/fees/max loss: INTEGER minor currency units.
+--   * Probabilities: REAL in [0,1].
 -- =====================================================================
 
 PRAGMA foreign_keys = ON;
 
--- ---------------------------------------------------------------------
--- schema_version — so future migrations have something to check against
--- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- SCHEMA VERSION
+-- =====================================================================
+
 CREATE TABLE schema_version (
     version     INTEGER NOT NULL,
     applied_at  TEXT    NOT NULL
 );
 
-INSERT INTO schema_version (version, applied_at)
-VALUES (2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO schema_version (
+    version,
+    applied_at
+)
+VALUES (
+    3,
+    strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+);
 
 
--- ---------------------------------------------------------------------
--- trades
---
--- One row per decision — including decisions NOT to trade (status
--- 'REJECTED'), which carry a full thesis and probabilities but no legs.
--- ---------------------------------------------------------------------
+-- =====================================================================
+-- TRADES
+-- =====================================================================
+
 CREATE TABLE trades (
-    id                    INTEGER PRIMARY KEY,
+    id                      INTEGER PRIMARY KEY,
 
-    -- Provenance -----------------------------------------------------
-    created_at            TEXT    NOT NULL,   -- when the row was written
-    underlying            TEXT    NOT NULL,   -- ticker, e.g. 'META'
-    currency              TEXT    NOT NULL DEFAULT 'USD',
-    is_paper              INTEGER NOT NULL DEFAULT 1, -- 1 = paper, 0 = live
+    -- Provenance
+    created_at              TEXT    NOT NULL,
+    underlying              TEXT    NOT NULL,
+    currency                TEXT    NOT NULL DEFAULT 'USD',
+    is_paper                INTEGER NOT NULL DEFAULT 1,
 
-    status                TEXT    NOT NULL DEFAULT 'OPEN',
-    parent_trade_id       INTEGER REFERENCES trades(id), -- set on a roll
-    strategy              TEXT,              -- 'LONG_CALL', 'DEBIT_SPREAD', ...
+    status                  TEXT    NOT NULL DEFAULT 'OPEN',
+    parent_trade_id         INTEGER REFERENCES trades(id),
+    strategy                TEXT,
 
-    -- Entry: market state at the moment of fill ----------------------
-    -- NULL for REJECTED rows. Immutable once written.
-    entry_at              TEXT,              -- fill time, not record time
-    entry_underlying      REAL,
-    entry_fx_rate         REAL,              -- currency -> EUR at fill
-    entry_fees            INTEGER,           -- minor units, >= 0
-    entry_cash            INTEGER,           -- net cash flow, minor units
-                                             -- negative = debit paid
+    -- Entry evidence
+    entry_at                TEXT,
+    entry_underlying        REAL,
+    entry_fx_rate           REAL,
+    entry_fees              INTEGER,
+    entry_cash              INTEGER,
 
-    -- Prediction: written once, never revised ------------------------
-    thesis                TEXT    NOT NULL,  -- why this trade
-    prediction            TEXT    NOT NULL,  -- what specifically happens
-    horizon_date          TEXT    NOT NULL,  -- by when
-    p_thesis              REAL    NOT NULL,  -- P(prediction comes true)
-    p_profit              REAL    NOT NULL,  -- P(trade closes profitable)
-    invalidation          TEXT    NOT NULL,  -- what proves me wrong
+    -- Volatility / event evidence
+    entry_iv_rank           REAL,
+    next_earnings_date      TEXT,
 
-    -- Risk plan: written once ----------------------------------------
-    max_loss              INTEGER NOT NULL,  -- minor units, >= 0
-    profit_target         TEXT    NOT NULL,
-    stop_condition        TEXT    NOT NULL,
+    -- Prediction
+    thesis                  TEXT    NOT NULL,
+    prediction              TEXT    NOT NULL,
+    horizon_date            TEXT    NOT NULL,
 
-    -- Rejection / voiding --------------------------------------------
-    rejection_reason      TEXT,              -- required iff REJECTED
-    voided_at             TEXT,              -- set when preserving a bad row
-    void_reason           TEXT,              -- required iff VOIDED
+    p_thesis_initial        REAL    NOT NULL,
+    p_thesis                REAL    NOT NULL,
+    p_profit                REAL    NOT NULL,
 
-    -- Exit: mutable, written at close --------------------------------
-    exit_at               TEXT,
-    exit_underlying       REAL,
-    exit_fx_rate          REAL,
-    exit_fees             INTEGER,
-    exit_cash             INTEGER,           -- positive = proceeds
-    exit_reason           TEXT,              -- 'TARGET','STOP','INVALIDATED',
-                                             -- 'EXPIRY','ROLL','DISCRETIONARY'
+    invalidation            TEXT    NOT NULL,
 
-    -- Resolution: the two questions, scored separately ---------------
-    thesis_correct        INTEGER,           -- 0/1, set at resolution
-    was_profitable        INTEGER,           -- 0/1, NULL for REJECTED
-    resolved_at           TEXT,
+    -- Risk plan
+    max_loss                INTEGER NOT NULL,
+    profit_target           TEXT    NOT NULL,
+    stop_condition          TEXT    NOT NULL,
+
+    -- Rejection / voiding
+    rejection_reason        TEXT,
+    voided_at               TEXT,
+    void_reason             TEXT,
+
+    -- Exit
+    exit_at                 TEXT,
+    exit_underlying         REAL,
+    exit_fx_rate            REAL,
+    exit_fees               INTEGER,
+    exit_cash               INTEGER,
+    exit_reason             TEXT,
+
+    -- Resolution
+    thesis_correct          INTEGER,
+    was_profitable          INTEGER,
+    resolved_at             TEXT,
 
     CHECK (
         status IN (
@@ -103,57 +112,133 @@ CREATE TABLE trades (
         )
     ),
 
-    CHECK (is_paper IN (0,1)),
-    CHECK (p_thesis >= 0.0 AND p_thesis <= 1.0),
-    CHECK (p_profit >= 0.0 AND p_profit <= 1.0),
-    CHECK (max_loss >= 0),
-    CHECK (entry_fees IS NULL OR entry_fees >= 0),
-    CHECK (exit_fees IS NULL OR exit_fees >= 0),
-    CHECK (thesis_correct IS NULL OR thesis_correct IN (0,1)),
-    CHECK (was_profitable IS NULL OR was_profitable IN (0,1)),
-    CHECK (length(trim(thesis)) > 0),
-    CHECK (length(trim(prediction)) > 0),
-    CHECK (length(trim(invalidation)) > 0),
+    CHECK (
+        is_paper IN (0,1)
+    ),
 
-    -- Decision-state integrity.
+    CHECK (
+        p_thesis_initial >= 0.0
+        AND p_thesis_initial <= 1.0
+    ),
+
+    CHECK (
+        p_thesis >= 0.0
+        AND p_thesis <= 1.0
+    ),
+
+    CHECK (
+        p_profit >= 0.0
+        AND p_profit <= 1.0
+    ),
+
+    CHECK (
+        entry_iv_rank IS NULL
+        OR (
+            entry_iv_rank >= 0.0
+            AND entry_iv_rank <= 100.0
+        )
+    ),
+
+    CHECK (
+        max_loss >= 0
+    ),
+
+    CHECK (
+        entry_fees IS NULL
+        OR entry_fees >= 0
+    ),
+
+    CHECK (
+        exit_fees IS NULL
+        OR exit_fees >= 0
+    ),
+
+    CHECK (
+        thesis_correct IS NULL
+        OR thesis_correct IN (0,1)
+    ),
+
+    CHECK (
+        was_profitable IS NULL
+        OR was_profitable IN (0,1)
+    ),
+
+    CHECK (
+        length(trim(thesis)) > 0
+    ),
+
+    CHECK (
+        length(trim(prediction)) > 0
+    ),
+
+    CHECK (
+        length(trim(invalidation)) > 0
+    ),
+
+    -- -------------------------------------------------------------
+    -- Decision-state integrity
+    -- -------------------------------------------------------------
+
     CHECK (
         (
             status = 'REJECTED'
+
             AND entry_at IS NULL
+            AND entry_underlying IS NULL
+            AND entry_fx_rate IS NULL
+            AND entry_fees IS NULL
+            AND entry_cash IS NULL
+
             AND rejection_reason IS NOT NULL
             AND length(trim(rejection_reason)) > 0
+
             AND voided_at IS NULL
             AND void_reason IS NULL
         )
+
         OR
+
         (
             status = 'VOIDED'
+
             AND voided_at IS NOT NULL
+
             AND void_reason IS NOT NULL
             AND length(trim(void_reason)) > 0
         )
+
         OR
+
         (
-            status NOT IN ('REJECTED','VOIDED')
+            status NOT IN (
+                'REJECTED',
+                'VOIDED'
+            )
+
             AND entry_at IS NOT NULL
             AND entry_underlying IS NOT NULL
+
             AND entry_fx_rate IS NOT NULL
             AND entry_fx_rate > 0
+
             AND entry_fees IS NOT NULL
             AND entry_cash IS NOT NULL
+
             AND rejection_reason IS NULL
+
             AND voided_at IS NULL
             AND void_reason IS NULL
         )
     ),
 
-    -- Exit-state integrity.
-    -- Closed outcomes must have complete trade-level exit evidence.
-    -- OPEN/REJECTED rows must have none.
-    -- VOIDED rows preserve whatever evidence existed before they were voided.
+    -- -------------------------------------------------------------
+    -- Exit-state integrity
+    -- -------------------------------------------------------------
+
     CHECK (
         (
             status = 'OPEN'
+
             AND exit_at IS NULL
             AND exit_underlying IS NULL
             AND exit_fx_rate IS NULL
@@ -161,21 +246,35 @@ CREATE TABLE trades (
             AND exit_cash IS NULL
             AND exit_reason IS NULL
         )
+
         OR
+
         (
-            status IN ('CLOSED','EXPIRED','ASSIGNED','ROLLED')
+            status IN (
+                'CLOSED',
+                'EXPIRED',
+                'ASSIGNED',
+                'ROLLED'
+            )
+
             AND exit_at IS NOT NULL
             AND exit_underlying IS NOT NULL
+
             AND exit_fx_rate IS NOT NULL
             AND exit_fx_rate > 0
+
             AND exit_fees IS NOT NULL
             AND exit_cash IS NOT NULL
+
             AND exit_reason IS NOT NULL
             AND length(trim(exit_reason)) > 0
         )
+
         OR
+
         (
             status = 'REJECTED'
+
             AND exit_at IS NULL
             AND exit_underlying IS NULL
             AND exit_fx_rate IS NULL
@@ -183,32 +282,39 @@ CREATE TABLE trades (
             AND exit_cash IS NULL
             AND exit_reason IS NULL
         )
+
         OR
+
         (
             status = 'VOIDED'
         )
     ),
 
-    -- Resolution-state integrity.
-    -- Resolution is all-or-nothing.
-    -- Rejected decisions resolve the thesis only;
-    -- traded decisions resolve both.
+    -- -------------------------------------------------------------
+    -- Resolution-state integrity
+    -- -------------------------------------------------------------
+
     CHECK (
         (
             resolved_at IS NULL
             AND thesis_correct IS NULL
             AND was_profitable IS NULL
         )
+
         OR
+
         (
             resolved_at IS NOT NULL
             AND thesis_correct IS NOT NULL
+
             AND (
                 (
                     status = 'REJECTED'
                     AND was_profitable IS NULL
                 )
+
                 OR
+
                 (
                     status IN (
                         'CLOSED',
@@ -216,12 +322,14 @@ CREATE TABLE trades (
                         'ASSIGNED',
                         'ROLLED'
                     )
+
                     AND was_profitable IS NOT NULL
                 )
             )
         )
     )
 );
+
 
 CREATE INDEX idx_trades_status
 ON trades(status);
@@ -235,45 +343,105 @@ ON trades(entry_at);
 CREATE INDEX idx_trades_parent
 ON trades(parent_trade_id);
 
+CREATE INDEX idx_trades_paper
+ON trades(is_paper);
 
--- ---------------------------------------------------------------------
--- trade_legs
---
--- One row per contract leg. Single-leg trades have exactly one row.
--- Bid and ask are stored at entry AND exit so slippage against mid is
--- computable on both sides — the exit fill is usually the worse one.
--- ---------------------------------------------------------------------
+
+-- =====================================================================
+-- TRADE LEGS
+-- =====================================================================
+
 CREATE TABLE trade_legs (
-    id              INTEGER PRIMARY KEY,
+    id                  INTEGER PRIMARY KEY,
 
-    trade_id        INTEGER NOT NULL
-                    REFERENCES trades(id)
-                    ON DELETE CASCADE,
+    trade_id            INTEGER NOT NULL
+                        REFERENCES trades(id)
+                        ON DELETE CASCADE,
 
-    leg_no          INTEGER NOT NULL,
+    leg_no              INTEGER NOT NULL,
 
-    right           TEXT    NOT NULL, -- 'C' or 'P'
-    direction       TEXT    NOT NULL, -- 'BUY' or 'SELL'
-    strike          REAL    NOT NULL,
-    expiration      TEXT    NOT NULL, -- 'YYYY-MM-DD'
-    contracts       INTEGER NOT NULL,
-    multiplier      INTEGER NOT NULL DEFAULT 100,
+    right               TEXT    NOT NULL,
+    direction           TEXT    NOT NULL,
 
-    entry_bid       REAL    NOT NULL,
-    entry_ask       REAL    NOT NULL,
-    entry_fill      REAL    NOT NULL, -- what you actually got
+    strike              REAL    NOT NULL,
+    expiration          TEXT    NOT NULL,
 
-    exit_bid        REAL,
-    exit_ask        REAL,
-    exit_fill       REAL,
+    contracts           INTEGER NOT NULL,
+    multiplier          INTEGER NOT NULL DEFAULT 100,
 
-    UNIQUE (trade_id, leg_no),
+    -- Market evidence at entry
+    entry_quote_at      TEXT,
+    entry_iv            REAL,
+    entry_delta         REAL,
 
-    CHECK (right IN ('C','P')),
-    CHECK (direction IN ('BUY','SELL')),
-    CHECK (contracts > 0),
-    CHECK (strike > 0),
-    CHECK (entry_ask >= entry_bid),
+    entry_bid           REAL    NOT NULL,
+    entry_ask           REAL    NOT NULL,
+    entry_fill          REAL    NOT NULL,
+
+    -- Exit evidence
+    exit_bid            REAL,
+    exit_ask            REAL,
+    exit_fill           REAL,
+
+    UNIQUE (
+        trade_id,
+        leg_no
+    ),
+
+    CHECK (
+        right IN (
+            'C',
+            'P'
+        )
+    ),
+
+    CHECK (
+        direction IN (
+            'BUY',
+            'SELL'
+        )
+    ),
+
+    CHECK (
+        contracts > 0
+    ),
+
+    CHECK (
+        multiplier > 0
+    ),
+
+    CHECK (
+        strike > 0
+    ),
+
+    CHECK (
+        entry_bid >= 0
+    ),
+
+    CHECK (
+        entry_ask >= 0
+    ),
+
+    CHECK (
+        entry_fill >= 0
+    ),
+
+    CHECK (
+        entry_ask >= entry_bid
+    ),
+
+    CHECK (
+        entry_iv IS NULL
+        OR entry_iv >= 0.0
+    ),
+
+    CHECK (
+        entry_delta IS NULL
+        OR (
+            entry_delta >= -1.0
+            AND entry_delta <= 1.0
+        )
+    ),
 
     CHECK (
         exit_ask IS NULL
@@ -282,15 +450,15 @@ CREATE TABLE trade_legs (
     )
 );
 
+
 CREATE INDEX idx_legs_trade
 ON trade_legs(trade_id);
 
 
--- ---------------------------------------------------------------------
--- annotations
---
--- Append-only. Later thinking lives here, never in prediction fields.
--- ---------------------------------------------------------------------
+-- =====================================================================
+-- ANNOTATIONS
+-- =====================================================================
+
 CREATE TABLE annotations (
     id          INTEGER PRIMARY KEY,
 
@@ -301,8 +469,11 @@ CREATE TABLE annotations (
     created_at  TEXT    NOT NULL,
     body        TEXT    NOT NULL,
 
-    CHECK (length(trim(body)) > 0)
+    CHECK (
+        length(trim(body)) > 0
+    )
 );
+
 
 CREATE INDEX idx_annotations_trade
 ON annotations(trade_id);
@@ -310,24 +481,19 @@ ON annotations(trade_id);
 
 -- =====================================================================
 -- IMMUTABILITY TRIGGERS
---
--- SQLite has no column-level permissions, so this is what actually
--- stops hindsight from rewriting the record.
---
--- A trigger fires on UPDATE OF the listed columns whether or not the
--- value changed, so the app must never include these columns in a
--- blanket UPDATE statement.
 -- =====================================================================
 
 
 -- ---------------------------------------------------------------------
--- Prediction and risk plan: fixed at entry.
+-- Prediction + risk fields
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_trades_prediction_immutable
 BEFORE UPDATE OF
     thesis,
     prediction,
     horizon_date,
+    p_thesis_initial,
     p_thesis,
     p_profit,
     invalidation,
@@ -344,11 +510,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Entry market data and provenance: evidence, not editable state.
---
--- is_paper belongs here deliberately: a paper trade may never later
--- be relabelled as a real trade (or vice versa).
+-- Entry/provenance evidence
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_trades_entry_immutable
 BEFORE UPDATE OF
     created_at,
@@ -357,6 +521,8 @@ BEFORE UPDATE OF
     entry_fx_rate,
     entry_fees,
     entry_cash,
+    entry_iv_rank,
+    next_earnings_date,
     underlying,
     currency,
     is_paper,
@@ -373,8 +539,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Resolution can be set once, then locked.
+-- Resolution write-once
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_trades_resolution_write_once
 BEFORE UPDATE OF
     thesis_correct,
@@ -391,8 +558,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Leg entry data: same evidence rule as trade entry data.
+-- Leg entry evidence
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_legs_entry_immutable
 BEFORE UPDATE OF
     trade_id,
@@ -403,6 +571,9 @@ BEFORE UPDATE OF
     expiration,
     contracts,
     multiplier,
+    entry_quote_at,
+    entry_iv,
+    entry_delta,
     entry_bid,
     entry_ask,
     entry_fill
@@ -416,8 +587,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Annotations are append-only.
+-- Append-only annotations
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_annotations_no_update
 BEFORE UPDATE
 ON annotations
@@ -441,8 +613,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Trades and legs are audit evidence: never physically delete them.
+-- Audit records cannot be physically deleted
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_trades_no_delete
 BEFORE DELETE
 ON trades
@@ -466,8 +639,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Once a trade has left OPEN, its lifecycle state cannot be rewritten.
+-- Terminal lifecycle states cannot be rewritten
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_status_terminal
 BEFORE UPDATE OF status
 ON trades
@@ -483,8 +657,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Voiding is one-way audit action and must carry timestamp + reason.
+-- Voiding is one-way
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_void_write_once
 BEFORE UPDATE OF
     voided_at,
@@ -500,8 +675,9 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Rejected / voided decisions cannot acquire new legs.
+-- Rejected/voided decisions cannot acquire legs
 -- ---------------------------------------------------------------------
+
 CREATE TRIGGER trg_no_legs_on_rejected
 BEFORE INSERT
 ON trade_legs
@@ -509,7 +685,10 @@ WHEN (
     SELECT status
     FROM trades
     WHERE id = NEW.trade_id
-) IN ('REJECTED','VOIDED')
+) IN (
+    'REJECTED',
+    'VOIDED'
+)
 BEGIN
     SELECT RAISE(
         ABORT,
@@ -524,25 +703,32 @@ END;
 
 
 -- ---------------------------------------------------------------------
--- Open positions with leg count and days to nearest expiry.
+-- Open positions
 -- ---------------------------------------------------------------------
+
 CREATE VIEW v_open_positions AS
 SELECT
     t.id,
     t.underlying,
     t.strategy,
+    t.is_paper,
     t.entry_at,
     t.horizon_date,
     t.p_thesis,
     t.p_profit,
+    t.entry_iv_rank,
     t.max_loss,
 
     COUNT(l.id) AS legs,
 
-    MIN(l.expiration) AS nearest_expiry,
+    MIN(
+        l.expiration
+    ) AS nearest_expiry,
 
     CAST(
-        julianday(MIN(l.expiration))
+        julianday(
+            MIN(l.expiration)
+        )
         - julianday('now')
         AS INTEGER
     ) AS dte
@@ -558,22 +744,39 @@ GROUP BY t.id;
 
 
 -- ---------------------------------------------------------------------
--- Realized P&L, net of fees, in minor units.
+-- Realized P&L
 -- ---------------------------------------------------------------------
+
 CREATE VIEW v_realized_pnl AS
 SELECT
     t.id,
     t.underlying,
     t.currency,
+    t.is_paper,
     t.entry_at,
     t.exit_at,
     t.exit_reason,
 
     (
-        COALESCE(t.entry_cash, 0)
-        + COALESCE(t.exit_cash, 0)
-        - COALESCE(t.entry_fees, 0)
-        - COALESCE(t.exit_fees, 0)
+        COALESCE(
+            t.entry_cash,
+            0
+        )
+        +
+        COALESCE(
+            t.exit_cash,
+            0
+        )
+        -
+        COALESCE(
+            t.entry_fees,
+            0
+        )
+        -
+        COALESCE(
+            t.exit_fees,
+            0
+        )
     ) AS pnl_minor,
 
     t.thesis_correct,
@@ -590,17 +793,16 @@ WHERE t.status IN (
 
 
 -- ---------------------------------------------------------------------
--- Slippage against mid, per leg, both sides.
---
--- Positive = execution cost.
--- Buys cost you when fill > mid.
--- Sells cost you when fill < mid.
+-- Slippage
 -- ---------------------------------------------------------------------
+
 CREATE VIEW v_slippage AS
 SELECT
     l.trade_id,
     l.leg_no,
     l.direction,
+
+    l.entry_quote_at,
 
     (
         l.entry_bid
@@ -611,7 +813,8 @@ SELECT
         WHEN l.direction = 'BUY'
         THEN
             l.entry_fill
-            - (
+            -
+            (
                 l.entry_bid
                 + l.entry_ask
             ) / 2.0
@@ -638,7 +841,8 @@ SELECT
 
         ELSE
             l.exit_fill
-            - (
+            -
+            (
                 l.exit_bid
                 + l.exit_ask
             ) / 2.0
@@ -661,18 +865,19 @@ FROM trade_legs l;
 
 
 -- ---------------------------------------------------------------------
--- Calibration input.
+-- Calibration
 --
--- One row per resolved decision, per question.
--- THESIS rows include rejected decisions.
--- PROFIT rows cannot.
+-- Paper/live is exposed explicitly so calibration can be separated.
 -- ---------------------------------------------------------------------
+
 CREATE VIEW v_calibration AS
 
 SELECT
     id,
     resolved_at,
     status,
+    is_paper,
+
     'THESIS' AS question,
 
     p_thesis AS p,
@@ -700,6 +905,8 @@ SELECT
     id,
     resolved_at,
     status,
+    is_paper,
+
     'PROFIT' AS question,
 
     p_profit AS p,
@@ -721,20 +928,19 @@ WHERE was_profitable IS NOT NULL;
 
 
 -- ---------------------------------------------------------------------
--- Calibration by decile bucket.
---
--- With single-digit n this is noise.
--- The view exists so the shape is ready once the sample becomes useful.
---
--- MIN(..., 9) ensures a prediction of exactly 1.0 lands in bucket 9,
--- rather than accidentally creating bucket 10.
+-- Calibration buckets
 -- ---------------------------------------------------------------------
+
 CREATE VIEW v_calibration_buckets AS
 SELECT
     question,
+    is_paper,
 
     MIN(
-        CAST(p * 10 AS INTEGER),
+        CAST(
+            p * 10
+            AS INTEGER
+        ),
         9
     ) AS bucket,
 
@@ -759,4 +965,5 @@ FROM v_calibration
 
 GROUP BY
     question,
+    is_paper,
     bucket;

@@ -41,10 +41,10 @@ def apply_pending_migrations(
     connection: sqlite3.Connection,
 ) -> None:
     """
-    Upgrade a freshly-created test DB to the newest
-    available migration.
+    Apply any migrations newer than the fresh-install schema.
 
-    This means our tests exercise the migration path too.
+    If trade_log_schema.sql is already v3,
+    migrations 002 and 003 are skipped.
     """
     current_version = get_db_version(
         connection
@@ -69,7 +69,9 @@ def apply_pending_migrations(
             encoding="utf-8"
         )
 
-        connection.executescript(sql)
+        connection.executescript(
+            sql
+        )
 
         current_version = get_db_version(
             connection
@@ -92,7 +94,9 @@ def db_path(tmp_path):
         encoding="utf-8"
     )
 
-    connection = get_connection(path)
+    connection = get_connection(
+        path
+    )
 
     try:
         connection.executescript(
@@ -123,7 +127,6 @@ def base_trade():
         "currency":
             "USD",
 
-        # Safe default used for development/tests.
         "is_paper":
             1,
 
@@ -136,7 +139,6 @@ def base_trade():
         "strategy":
             "LONG_CALL",
 
-        # Intentionally different from created_at.
         "entry_at":
             "2026-08-25T19:57:13Z",
 
@@ -152,6 +154,12 @@ def base_trade():
         "entry_cash":
             -220000,
 
+        "entry_iv_rank":
+            42.0,
+
+        "next_earnings_date":
+            "2026-10-20",
+
         "thesis":
             "The underlying is likely to rise.",
 
@@ -160,6 +168,9 @@ def base_trade():
 
         "horizon_date":
             "2026-09-30",
+
+        "p_thesis_initial":
+            0.65,
 
         "p_thesis":
             0.65,
@@ -207,6 +218,15 @@ def base_leg():
 
         "multiplier":
             100,
+
+        "entry_quote_at":
+            "2026-08-25T19:56:50Z",
+
+        "entry_iv":
+            0.31,
+
+        "entry_delta":
+            0.38,
 
         "entry_bid":
             21.90,
