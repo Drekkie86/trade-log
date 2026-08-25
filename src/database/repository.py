@@ -1,5 +1,5 @@
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
@@ -7,7 +7,8 @@ from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
-EXPECTED_SCHEMA_VERSION = 1
+
+EXPECTED_SCHEMA_VERSION = 2
 
 
 def to_minor(amount) -> int:
@@ -18,10 +19,14 @@ def to_minor(amount) -> int:
         22.00 -> 2200
         2.20  -> 220
 
-    Decimal(str(...)) is intentional. It avoids inheriting
-    floating-point representation errors.
+    Decimal(str(...)) is deliberate because it avoids
+    inheriting binary floating-point errors.
     """
-    value = amount if isinstance(amount, Decimal) else Decimal(str(amount))
+    value = (
+        amount
+        if isinstance(amount, Decimal)
+        else Decimal(str(amount))
+    )
 
     return int(
         (value * 100).quantize(
@@ -37,7 +42,7 @@ def get_connection(db_path=None) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
 
-    # SQLite foreign-key enforcement is per connection.
+    # Foreign-key enforcement is per SQLite connection.
     connection.execute("PRAGMA foreign_keys = ON;")
 
     return connection
@@ -46,13 +51,16 @@ def get_connection(db_path=None) -> sqlite3.Connection:
 @contextmanager
 def transaction(db_path=None, conn=None):
     """
-    Reuse a caller-supplied connection when one is provided.
+    Reuse an existing connection if supplied.
 
-    Otherwise create a connection, own the transaction,
-    commit on success, roll back on failure, and close it.
+    Otherwise:
+    - open our own connection
+    - begin/commit the transaction
+    - roll back on failure
+    - always close the connection
 
-    This allows future multi-step operations, such as rolls,
-    to share one atomic transaction.
+    This lets future multi-step operations such as rolls
+    happen atomically.
     """
     if conn is not None:
         yield conn
@@ -68,7 +76,7 @@ def transaction(db_path=None, conn=None):
 
 
 def get_schema_version(db_path=None) -> int:
-    with get_connection(db_path) as connection:
+    with closing(get_connection(db_path)) as connection:
         row = connection.execute(
             """
             SELECT version
@@ -79,7 +87,9 @@ def get_schema_version(db_path=None) -> int:
         ).fetchone()
 
     if row is None:
-        raise RuntimeError("Database has no schema version.")
+        raise RuntimeError(
+            "Database has no schema version."
+        )
 
     return row["version"]
 
@@ -89,13 +99,14 @@ def assert_schema_version(db_path=None) -> None:
 
     if actual_version != EXPECTED_SCHEMA_VERSION:
         raise RuntimeError(
-            f"Database schema version {actual_version} does not match "
-            f"expected version {EXPECTED_SCHEMA_VERSION}."
+            f"Database schema version {actual_version} "
+            f"does not match expected version "
+            f"{EXPECTED_SCHEMA_VERSION}."
         )
 
 
 def get_table_names(db_path=None) -> list[str]:
-    with get_connection(db_path) as connection:
+    with closing(get_connection(db_path)) as connection:
         rows = connection.execute(
             """
             SELECT name
@@ -105,7 +116,10 @@ def get_table_names(db_path=None) -> list[str]:
             """
         ).fetchall()
 
-    return [row["name"] for row in rows]
+    return [
+        row["name"]
+        for row in rows
+    ]
 
 
 def create_trade(
@@ -115,9 +129,10 @@ def create_trade(
     conn=None,
 ) -> int:
     """
-    Create a trade and all of its legs atomically.
+    Create a trade and all its legs atomically.
 
-    If any leg fails, the trade itself is rolled back too.
+    is_paper defaults to 1 deliberately.
+    Paper trading is the safe default.
     """
     legs = legs or []
 
@@ -140,7 +155,8 @@ def create_trade(
     missing = [
         field
         for field in required_fields
-        if field not in trade or trade[field] is None
+        if field not in trade
+        or trade[field] is None
     ]
 
     if missing:
@@ -149,83 +165,119 @@ def create_trade(
             + ", ".join(missing)
         )
 
-    if "p_thesis" not in trade:
-        raise ValueError("p_thesis is required.")
-
-    if "p_profit" not in trade:
-        raise ValueError("p_profit is required.")
-
     trade_data = {
         "created_at": trade["created_at"],
         "underlying": trade["underlying"],
         "currency": trade["currency"],
+
+        # Safe default: paper trade.
+        "is_paper": trade.get(
+            "is_paper",
+            1,
+        ),
+
         "status": trade["status"],
-        "parent_trade_id": trade.get("parent_trade_id"),
-        "strategy": trade.get("strategy"),
-        "entry_at": trade.get("entry_at"),
-        "entry_underlying": trade.get("entry_underlying"),
-        "entry_fx_rate": trade.get("entry_fx_rate"),
-        "entry_fees": trade.get("entry_fees"),
-        "entry_cash": trade.get("entry_cash"),
+        "parent_trade_id": trade.get(
+            "parent_trade_id"
+        ),
+        "strategy": trade.get(
+            "strategy"
+        ),
+
+        "entry_at": trade.get(
+            "entry_at"
+        ),
+        "entry_underlying": trade.get(
+            "entry_underlying"
+        ),
+        "entry_fx_rate": trade.get(
+            "entry_fx_rate"
+        ),
+        "entry_fees": trade.get(
+            "entry_fees"
+        ),
+        "entry_cash": trade.get(
+            "entry_cash"
+        ),
+
         "thesis": trade["thesis"],
         "prediction": trade["prediction"],
         "horizon_date": trade["horizon_date"],
+
         "p_thesis": trade["p_thesis"],
         "p_profit": trade["p_profit"],
+
         "invalidation": trade["invalidation"],
         "max_loss": trade["max_loss"],
         "profit_target": trade["profit_target"],
         "stop_condition": trade["stop_condition"],
-        "rejection_reason": trade.get("rejection_reason"),
+
+        "rejection_reason": trade.get(
+            "rejection_reason"
+        ),
     }
 
-    with transaction(db_path=db_path, conn=conn) as connection:
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+
         cursor = connection.execute(
             """
             INSERT INTO trades (
                 created_at,
                 underlying,
                 currency,
+                is_paper,
                 status,
                 parent_trade_id,
                 strategy,
+
                 entry_at,
                 entry_underlying,
                 entry_fx_rate,
                 entry_fees,
                 entry_cash,
+
                 thesis,
                 prediction,
                 horizon_date,
                 p_thesis,
                 p_profit,
                 invalidation,
+
                 max_loss,
                 profit_target,
                 stop_condition,
+
                 rejection_reason
             )
             VALUES (
                 :created_at,
                 :underlying,
                 :currency,
+                :is_paper,
                 :status,
                 :parent_trade_id,
                 :strategy,
+
                 :entry_at,
                 :entry_underlying,
                 :entry_fx_rate,
                 :entry_fees,
                 :entry_cash,
+
                 :thesis,
                 :prediction,
                 :horizon_date,
                 :p_thesis,
                 :p_profit,
                 :invalidation,
+
                 :max_loss,
                 :profit_target,
                 :stop_condition,
+
                 :rejection_reason
             );
             """,
@@ -243,7 +295,10 @@ def create_trade(
                 "strike": leg["strike"],
                 "expiration": leg["expiration"],
                 "contracts": leg["contracts"],
-                "multiplier": leg.get("multiplier", 100),
+                "multiplier": leg.get(
+                    "multiplier",
+                    100,
+                ),
                 "entry_bid": leg["entry_bid"],
                 "entry_ask": leg["entry_ask"],
                 "entry_fill": leg["entry_fill"],
@@ -290,7 +345,11 @@ def get_trade(
     conn=None,
 ) -> dict[str, Any] | None:
     own_connection = conn is None
-    connection = conn or get_connection(db_path)
+
+    connection = (
+        conn
+        or get_connection(db_path)
+    )
 
     try:
         trade_row = connection.execute(
@@ -317,7 +376,10 @@ def get_trade(
 
         return {
             "trade": dict(trade_row),
-            "legs": [dict(row) for row in leg_rows],
+            "legs": [
+                dict(row)
+                for row in leg_rows
+            ],
         }
 
     finally:
@@ -342,8 +404,8 @@ def close_trade(
     """
     Close a trade.
 
-    Only exit/state columns are updated. Immutable prediction
-    and entry fields are deliberately absent from this UPDATE.
+    Only exit/state columns are updated.
+    Entry evidence and predictions are never included.
     """
     allowed_statuses = {
         "CLOSED",
@@ -359,7 +421,11 @@ def close_trade(
 
     leg_exits = leg_exits or []
 
-    with transaction(db_path=db_path, conn=conn) as connection:
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+
         row = connection.execute(
             """
             SELECT id, status
@@ -411,9 +477,15 @@ def close_trade(
                   AND leg_no = ?;
                 """,
                 (
-                    leg_exit.get("exit_bid"),
-                    leg_exit.get("exit_ask"),
-                    leg_exit.get("exit_fill"),
+                    leg_exit.get(
+                        "exit_bid"
+                    ),
+                    leg_exit.get(
+                        "exit_ask"
+                    ),
+                    leg_exit.get(
+                        "exit_fill"
+                    ),
                     trade_id,
                     leg_exit["leg_no"],
                 ),
@@ -432,8 +504,8 @@ def resolve_trade(
     """
     Resolve the two calibration questions.
 
-    A trade can only be resolved after it has reached a terminal
-    state, or if the decision itself was REJECTED.
+    Resolution is only allowed once the trade is
+    terminal or the decision was rejected.
 
     Resolution is write-once.
     """
@@ -445,7 +517,11 @@ def resolve_trade(
         "REJECTED",
     }
 
-    with transaction(db_path=db_path, conn=conn) as connection:
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+
         row = connection.execute(
             """
             SELECT status, resolved_at
@@ -467,8 +543,9 @@ def resolve_trade(
 
         if row["status"] not in allowed_statuses:
             raise ValueError(
-                f"Cannot resolve a {row['status']} trade. "
-                "Close or reject it first."
+                f"Cannot resolve a "
+                f"{row['status']} trade. "
+                f"Close or reject it first."
             )
 
         if (
@@ -476,7 +553,8 @@ def resolve_trade(
             and was_profitable is not None
         ):
             raise ValueError(
-                "Rejected decisions cannot be scored for profitability."
+                "Rejected decisions cannot be "
+                "scored for profitability."
             )
 
         if (
@@ -484,7 +562,8 @@ def resolve_trade(
             and was_profitable is None
         ):
             raise ValueError(
-                "Completed trades require a profitability outcome."
+                "Completed trades require a "
+                "profitability outcome."
             )
 
         connection.execute(
@@ -498,9 +577,11 @@ def resolve_trade(
             """,
             (
                 int(thesis_correct),
-                None
-                if was_profitable is None
-                else int(was_profitable),
+                (
+                    None
+                    if was_profitable is None
+                    else int(was_profitable)
+                ),
                 resolved_at,
                 trade_id,
             ),
@@ -520,7 +601,11 @@ def add_annotation(
             "Annotation body cannot be blank."
         )
 
-    with transaction(db_path=db_path, conn=conn) as connection:
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+
         cursor = connection.execute(
             """
             INSERT INTO annotations (
@@ -544,7 +629,10 @@ def get_realized_pnl_minor(
     trade_id: int,
     db_path=None,
 ) -> int | None:
-    with get_connection(db_path) as connection:
+    with closing(
+        get_connection(db_path)
+    ) as connection:
+
         row = connection.execute(
             """
             SELECT pnl_minor
