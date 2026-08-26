@@ -22,7 +22,7 @@ def test_schema_version_is_expected(
         get_schema_version(
             db_path
         )
-        == 3
+        == 4
     )
 
     assert_schema_version(

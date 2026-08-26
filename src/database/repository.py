@@ -8,7 +8,24 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
 
-EXPECTED_SCHEMA_VERSION = 3
+EXPECTED_SCHEMA_VERSION = 4
+
+
+PROVENANCE_VALUES = {
+    "MANUAL",
+    "FETCHED",
+    "DERIVED",
+    "UNKNOWN",
+}
+
+CANDIDATE_STATUSES = {
+    "TRACKING",
+    "WATCH",
+    "PAPER",
+    "LIVE",
+    "REJECTED",
+    "RESOLVED",
+}
 
 
 def to_minor(amount) -> int:
@@ -38,8 +55,6 @@ def get_connection(db_path=None) -> sqlite3.Connection:
 
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
-
-    # Foreign-key enforcement is per SQLite connection.
     connection.execute("PRAGMA foreign_keys = ON;")
 
     return connection
@@ -118,6 +133,11 @@ def get_table_names(db_path=None) -> list[str]:
         row["name"]
         for row in rows
     ]
+
+
+# =====================================================================
+# EXISTING TRADE LAYER
+# =====================================================================
 
 
 def create_trade(
@@ -733,3 +753,984 @@ def get_realized_pnl_minor(
         return None
 
     return row["pnl_minor"]
+
+
+# =====================================================================
+# CHRISTIANIA RESEARCH LAYER
+# =====================================================================
+
+
+def _require_fields(
+    data: dict[str, Any],
+    required_fields: list[str],
+    object_name: str,
+) -> None:
+    missing = [
+        field
+        for field in required_fields
+        if field not in data
+        or data[field] is None
+    ]
+
+    if missing:
+        raise ValueError(
+            f"Missing required {object_name} fields: "
+            + ", ".join(missing)
+        )
+
+
+def _validate_source(
+    source: str,
+    field_name: str,
+) -> None:
+    if source not in PROVENANCE_VALUES:
+        raise ValueError(
+            f"Invalid provenance for {field_name}: "
+            f"{source}"
+        )
+
+
+def _validate_value_source_pair(
+    value,
+    source: str,
+    field_name: str,
+) -> None:
+    _validate_source(
+        source,
+        field_name,
+    )
+
+    if value is None and source != "UNKNOWN":
+        raise ValueError(
+            f"{field_name} is missing, so its source "
+            f"must be UNKNOWN."
+        )
+
+    if value is not None and source == "UNKNOWN":
+        raise ValueError(
+            f"{field_name} has a value, so its source "
+            f"cannot be UNKNOWN."
+        )
+
+
+def _validate_snapshot(
+    snapshot: dict[str, Any],
+) -> None:
+    _require_fields(
+        snapshot,
+        [
+            "captured_at",
+            "underlying",
+            "provider",
+            "underlying_source",
+            "fx_source",
+        ],
+        "snapshot",
+    )
+
+    if not str(
+        snapshot["underlying"]
+    ).strip():
+        raise ValueError(
+            "Snapshot underlying cannot be blank."
+        )
+
+    if not str(
+        snapshot["provider"]
+    ).strip():
+        raise ValueError(
+            "Snapshot provider cannot be blank."
+        )
+
+    _validate_value_source_pair(
+        snapshot.get(
+            "underlying_price"
+        ),
+        snapshot["underlying_source"],
+        "underlying_price",
+    )
+
+    _validate_value_source_pair(
+        snapshot.get(
+            "fx_to_eur"
+        ),
+        snapshot["fx_source"],
+        "fx_to_eur",
+    )
+
+
+def _validate_quote(
+    quote: dict[str, Any],
+) -> None:
+    _require_fields(
+        quote,
+        [
+            "right",
+            "strike",
+            "expiration",
+            "bid_source",
+            "ask_source",
+            "last_source",
+            "iv_source",
+            "delta_source",
+            "gamma_source",
+            "theta_source",
+            "vega_source",
+            "volume_source",
+            "open_interest_source",
+        ],
+        "quote",
+    )
+
+    if quote["right"] not in {
+        "C",
+        "P",
+    }:
+        raise ValueError(
+            "Quote right must be C or P."
+        )
+
+    if float(
+        quote["strike"]
+    ) <= 0:
+        raise ValueError(
+            "Quote strike must be positive."
+        )
+
+    source_pairs = [
+        (
+            "bid",
+            "bid_source",
+        ),
+        (
+            "ask",
+            "ask_source",
+        ),
+        (
+            "last",
+            "last_source",
+        ),
+        (
+            "implied_volatility",
+            "iv_source",
+        ),
+        (
+            "delta",
+            "delta_source",
+        ),
+        (
+            "gamma",
+            "gamma_source",
+        ),
+        (
+            "theta",
+            "theta_source",
+        ),
+        (
+            "vega",
+            "vega_source",
+        ),
+        (
+            "volume",
+            "volume_source",
+        ),
+        (
+            "open_interest",
+            "open_interest_source",
+        ),
+    ]
+
+    for value_field, source_field in source_pairs:
+        _validate_value_source_pair(
+            quote.get(
+                value_field
+            ),
+            quote[source_field],
+            value_field,
+        )
+
+
+def create_market_snapshot(
+    snapshot: dict[str, Any],
+    quotes: list[dict[str, Any]],
+    db_path=None,
+    conn=None,
+) -> int:
+    """
+    Store one normalized market snapshot and all its option quotes.
+
+    The operation is atomic:
+    either the snapshot and every quote are stored,
+    or nothing is stored.
+    """
+    _validate_snapshot(
+        snapshot
+    )
+
+    for quote in quotes:
+        _validate_quote(
+            quote
+        )
+
+    snapshot_data = {
+        "captured_at":
+            snapshot["captured_at"],
+
+        "underlying":
+            snapshot["underlying"],
+
+        "provider":
+            snapshot["provider"],
+
+        "provider_snapshot_id":
+            snapshot.get(
+                "provider_snapshot_id"
+            ),
+
+        "underlying_price":
+            snapshot.get(
+                "underlying_price"
+            ),
+
+        "underlying_source":
+            snapshot["underlying_source"],
+
+        "underlying_at":
+            snapshot.get(
+                "underlying_at"
+            ),
+
+        "fx_to_eur":
+            snapshot.get(
+                "fx_to_eur"
+            ),
+
+        "fx_source":
+            snapshot["fx_source"],
+
+        "fx_at":
+            snapshot.get(
+                "fx_at"
+            ),
+
+        "notes":
+            snapshot.get(
+                "notes"
+            ),
+    }
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+
+        cursor = connection.execute(
+            """
+            INSERT INTO market_snapshots (
+                captured_at,
+                underlying,
+                provider,
+                provider_snapshot_id,
+                underlying_price,
+                underlying_source,
+                underlying_at,
+                fx_to_eur,
+                fx_source,
+                fx_at,
+                notes
+            )
+            VALUES (
+                :captured_at,
+                :underlying,
+                :provider,
+                :provider_snapshot_id,
+                :underlying_price,
+                :underlying_source,
+                :underlying_at,
+                :fx_to_eur,
+                :fx_source,
+                :fx_at,
+                :notes
+            );
+            """,
+            snapshot_data,
+        )
+
+        snapshot_id = cursor.lastrowid
+
+        for quote in quotes:
+            quote_data = {
+                "snapshot_id":
+                    snapshot_id,
+
+                "provider_contract_id":
+                    quote.get(
+                        "provider_contract_id"
+                    ),
+
+                "option_symbol":
+                    quote.get(
+                        "option_symbol"
+                    ),
+
+                "right":
+                    quote["right"],
+
+                "strike":
+                    quote["strike"],
+
+                "expiration":
+                    quote["expiration"],
+
+                "quote_at":
+                    quote.get(
+                        "quote_at"
+                    ),
+
+                "bid":
+                    quote.get(
+                        "bid"
+                    ),
+
+                "bid_source":
+                    quote["bid_source"],
+
+                "bid_at":
+                    quote.get(
+                        "bid_at"
+                    ),
+
+                "ask":
+                    quote.get(
+                        "ask"
+                    ),
+
+                "ask_source":
+                    quote["ask_source"],
+
+                "ask_at":
+                    quote.get(
+                        "ask_at"
+                    ),
+
+                "last":
+                    quote.get(
+                        "last"
+                    ),
+
+                "last_source":
+                    quote["last_source"],
+
+                "last_at":
+                    quote.get(
+                        "last_at"
+                    ),
+
+                "implied_volatility":
+                    quote.get(
+                        "implied_volatility"
+                    ),
+
+                "iv_source":
+                    quote["iv_source"],
+
+                "iv_at":
+                    quote.get(
+                        "iv_at"
+                    ),
+
+                "delta":
+                    quote.get(
+                        "delta"
+                    ),
+
+                "delta_source":
+                    quote["delta_source"],
+
+                "delta_at":
+                    quote.get(
+                        "delta_at"
+                    ),
+
+                "gamma":
+                    quote.get(
+                        "gamma"
+                    ),
+
+                "gamma_source":
+                    quote["gamma_source"],
+
+                "gamma_at":
+                    quote.get(
+                        "gamma_at"
+                    ),
+
+                "theta":
+                    quote.get(
+                        "theta"
+                    ),
+
+                "theta_source":
+                    quote["theta_source"],
+
+                "theta_at":
+                    quote.get(
+                        "theta_at"
+                    ),
+
+                "vega":
+                    quote.get(
+                        "vega"
+                    ),
+
+                "vega_source":
+                    quote["vega_source"],
+
+                "vega_at":
+                    quote.get(
+                        "vega_at"
+                    ),
+
+                "volume":
+                    quote.get(
+                        "volume"
+                    ),
+
+                "volume_source":
+                    quote["volume_source"],
+
+                "volume_at":
+                    quote.get(
+                        "volume_at"
+                    ),
+
+                "open_interest":
+                    quote.get(
+                        "open_interest"
+                    ),
+
+                "open_interest_source":
+                    quote[
+                        "open_interest_source"
+                    ],
+
+                "open_interest_at":
+                    quote.get(
+                        "open_interest_at"
+                    ),
+            }
+
+            connection.execute(
+                """
+                INSERT INTO option_quotes (
+                    snapshot_id,
+                    provider_contract_id,
+                    option_symbol,
+                    right,
+                    strike,
+                    expiration,
+                    quote_at,
+
+                    bid,
+                    bid_source,
+                    bid_at,
+
+                    ask,
+                    ask_source,
+                    ask_at,
+
+                    last,
+                    last_source,
+                    last_at,
+
+                    implied_volatility,
+                    iv_source,
+                    iv_at,
+
+                    delta,
+                    delta_source,
+                    delta_at,
+
+                    gamma,
+                    gamma_source,
+                    gamma_at,
+
+                    theta,
+                    theta_source,
+                    theta_at,
+
+                    vega,
+                    vega_source,
+                    vega_at,
+
+                    volume,
+                    volume_source,
+                    volume_at,
+
+                    open_interest,
+                    open_interest_source,
+                    open_interest_at
+                )
+                VALUES (
+                    :snapshot_id,
+                    :provider_contract_id,
+                    :option_symbol,
+                    :right,
+                    :strike,
+                    :expiration,
+                    :quote_at,
+
+                    :bid,
+                    :bid_source,
+                    :bid_at,
+
+                    :ask,
+                    :ask_source,
+                    :ask_at,
+
+                    :last,
+                    :last_source,
+                    :last_at,
+
+                    :implied_volatility,
+                    :iv_source,
+                    :iv_at,
+
+                    :delta,
+                    :delta_source,
+                    :delta_at,
+
+                    :gamma,
+                    :gamma_source,
+                    :gamma_at,
+
+                    :theta,
+                    :theta_source,
+                    :theta_at,
+
+                    :vega,
+                    :vega_source,
+                    :vega_at,
+
+                    :volume,
+                    :volume_source,
+                    :volume_at,
+
+                    :open_interest,
+                    :open_interest_source,
+                    :open_interest_at
+                );
+                """,
+                quote_data,
+            )
+
+        return snapshot_id
+
+
+def get_market_snapshot(
+    snapshot_id: int,
+    db_path=None,
+    conn=None,
+) -> dict[str, Any] | None:
+    own_connection = conn is None
+
+    connection = (
+        conn
+        or get_connection(db_path)
+    )
+
+    try:
+        snapshot_row = connection.execute(
+            """
+            SELECT *
+            FROM market_snapshots
+            WHERE id = ?;
+            """,
+            (snapshot_id,),
+        ).fetchone()
+
+        if snapshot_row is None:
+            return None
+
+        quote_rows = connection.execute(
+            """
+            SELECT *
+            FROM option_quotes
+            WHERE snapshot_id = ?
+            ORDER BY
+                expiration,
+                strike,
+                right,
+                id;
+            """,
+            (snapshot_id,),
+        ).fetchall()
+
+        return {
+            "snapshot":
+                dict(snapshot_row),
+
+            "quotes":
+                [
+                    dict(row)
+                    for row in quote_rows
+                ],
+        }
+
+    finally:
+        if own_connection:
+            connection.close()
+
+
+def create_candidate(
+    candidate: dict[str, Any],
+    legs: list[dict[str, Any]],
+    controls: list[dict[str, Any]] | None = None,
+    db_path=None,
+    conn=None,
+) -> int:
+    """
+    Create one frozen candidate definition, its legs,
+    and its matched controls atomically.
+    """
+    controls = controls or []
+
+    _require_fields(
+        candidate,
+        [
+            "created_at",
+            "snapshot_id",
+            "underlying",
+            "candidate_source",
+            "candidate_class",
+            "scanner_version",
+            "rule_set_version",
+            "rule_id",
+            "outcome_definition_version",
+            "rationale",
+        ],
+        "candidate",
+    )
+
+    if not legs:
+        raise ValueError(
+            "A candidate requires at least one leg."
+        )
+
+    candidate_data = {
+        "created_at":
+            candidate["created_at"],
+
+        "snapshot_id":
+            candidate["snapshot_id"],
+
+        "underlying":
+            candidate["underlying"],
+
+        "candidate_source":
+            candidate["candidate_source"],
+
+        "candidate_class":
+            candidate["candidate_class"],
+
+        "scanner_version":
+            candidate["scanner_version"],
+
+        "rule_set_version":
+            candidate["rule_set_version"],
+
+        "rule_id":
+            candidate["rule_id"],
+
+        "outcome_definition_version":
+            candidate[
+                "outcome_definition_version"
+            ],
+
+        "rationale":
+            candidate["rationale"],
+
+        "model_probability_profit":
+            candidate.get(
+                "model_probability_profit"
+            ),
+
+        "model_expected_value_minor":
+            candidate.get(
+                "model_expected_value_minor"
+            ),
+
+        "model_max_loss_minor":
+            candidate.get(
+                "model_max_loss_minor"
+            ),
+
+        "model_confidence":
+            candidate.get(
+                "model_confidence"
+            ),
+
+        "status":
+            candidate.get(
+                "status",
+                "TRACKING",
+            ),
+    }
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+
+        cursor = connection.execute(
+            """
+            INSERT INTO candidates (
+                created_at,
+                snapshot_id,
+                underlying,
+                candidate_source,
+                candidate_class,
+                scanner_version,
+                rule_set_version,
+                rule_id,
+                outcome_definition_version,
+                rationale,
+                model_probability_profit,
+                model_expected_value_minor,
+                model_max_loss_minor,
+                model_confidence,
+                status
+            )
+            VALUES (
+                :created_at,
+                :snapshot_id,
+                :underlying,
+                :candidate_source,
+                :candidate_class,
+                :scanner_version,
+                :rule_set_version,
+                :rule_id,
+                :outcome_definition_version,
+                :rationale,
+                :model_probability_profit,
+                :model_expected_value_minor,
+                :model_max_loss_minor,
+                :model_confidence,
+                :status
+            );
+            """,
+            candidate_data,
+        )
+
+        candidate_id = cursor.lastrowid
+
+        for leg in legs:
+            _require_fields(
+                leg,
+                [
+                    "leg_no",
+                    "option_quote_id",
+                    "direction",
+                ],
+                "candidate leg",
+            )
+
+            connection.execute(
+                """
+                INSERT INTO candidate_legs (
+                    candidate_id,
+                    leg_no,
+                    option_quote_id,
+                    direction,
+                    contracts
+                )
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (
+                    candidate_id,
+                    leg["leg_no"],
+                    leg["option_quote_id"],
+                    leg["direction"],
+                    leg.get(
+                        "contracts",
+                        1,
+                    ),
+                ),
+            )
+
+        for control in controls:
+            _require_fields(
+                control,
+                [
+                    "control_quote_id",
+                    "matching_version",
+                    "match_rank",
+                    "created_at",
+                ],
+                "candidate control",
+            )
+
+            connection.execute(
+                """
+                INSERT INTO candidate_controls (
+                    candidate_id,
+                    control_quote_id,
+                    matching_version,
+                    match_rank,
+                    match_distance,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    candidate_id,
+                    control["control_quote_id"],
+                    control["matching_version"],
+                    control["match_rank"],
+                    control.get(
+                        "match_distance"
+                    ),
+                    control["created_at"],
+                ),
+            )
+
+        return candidate_id
+
+
+def get_candidate(
+    candidate_id: int,
+    db_path=None,
+    conn=None,
+) -> dict[str, Any] | None:
+    own_connection = conn is None
+
+    connection = (
+        conn
+        or get_connection(db_path)
+    )
+
+    try:
+        candidate_row = connection.execute(
+            """
+            SELECT *
+            FROM candidates
+            WHERE id = ?;
+            """,
+            (candidate_id,),
+        ).fetchone()
+
+        if candidate_row is None:
+            return None
+
+        leg_rows = connection.execute(
+            """
+            SELECT
+                cl.*,
+                oq.option_symbol,
+                oq.provider_contract_id,
+                oq.right,
+                oq.strike,
+                oq.expiration,
+                oq.bid,
+                oq.ask,
+                oq.implied_volatility,
+                oq.delta
+            FROM candidate_legs AS cl
+            JOIN option_quotes AS oq
+              ON oq.id = cl.option_quote_id
+            WHERE cl.candidate_id = ?
+            ORDER BY cl.leg_no;
+            """,
+            (candidate_id,),
+        ).fetchall()
+
+        control_rows = connection.execute(
+            """
+            SELECT
+                cc.*,
+                oq.option_symbol,
+                oq.provider_contract_id,
+                oq.right,
+                oq.strike,
+                oq.expiration,
+                oq.bid,
+                oq.ask,
+                oq.implied_volatility,
+                oq.delta
+            FROM candidate_controls AS cc
+            JOIN option_quotes AS oq
+              ON oq.id = cc.control_quote_id
+            WHERE cc.candidate_id = ?
+            ORDER BY cc.match_rank, cc.id;
+            """,
+            (candidate_id,),
+        ).fetchall()
+
+        return {
+            "candidate":
+                dict(candidate_row),
+
+            "legs":
+                [
+                    dict(row)
+                    for row in leg_rows
+                ],
+
+            "controls":
+                [
+                    dict(row)
+                    for row in control_rows
+                ],
+        }
+
+    finally:
+        if own_connection:
+            connection.close()
+
+
+def set_candidate_status(
+    candidate_id: int,
+    status: str,
+    db_path=None,
+    conn=None,
+) -> None:
+    """
+    Change only the candidate lifecycle status.
+
+    The candidate's original research definition remains immutable.
+    """
+    if status not in CANDIDATE_STATUSES:
+        raise ValueError(
+            f"Invalid candidate status: {status}"
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+
+        row = connection.execute(
+            """
+            SELECT id
+            FROM candidates
+            WHERE id = ?;
+            """,
+            (candidate_id,),
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(
+                f"Candidate {candidate_id} does not exist."
+            )
+
+        connection.execute(
+            """
+            UPDATE candidates
+            SET status = ?
+            WHERE id = ?;
+            """,
+            (
+                status,
+                candidate_id,
+            ),
+        )
