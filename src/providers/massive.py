@@ -1113,3 +1113,725 @@ def normalize_massive_option_chain(
         snapshot,
         quotes,
     )
+
+
+# =====================================================================
+# COHORT RESEARCH NORMALIZATION
+# =====================================================================
+
+
+@dataclass(frozen=True)
+class MassiveNormalizationDrop:
+    provider: str
+    underlying: str
+    provider_contract_id: str | None
+    option_symbol: str | None
+    raw_contract_type: str | None
+    raw_strike: str | None
+    raw_expiration: str | None
+    reason_code: str
+    reason_detail: str | None
+    raw_payload_json: str
+
+
+@dataclass(frozen=True)
+class MassiveProviderModelObservation:
+    provider_contract_id: str | None
+    option_symbol: str | None
+    provider: str
+    observed_at: str | None
+    provider_request_id: str | None
+    implied_volatility: float | None
+    delta: float | None
+    gamma: float | None
+    theta: float | None
+    vega: float | None
+    model_underlying_price: float | None
+    model_rate: float | None
+    model_dividend_yield: float | None
+    model_input_notes: str | None
+
+
+@dataclass(frozen=True)
+class MassiveResearchNormalization:
+    snapshot: dict[str, Any]
+    quotes: list[dict[str, Any]]
+    drops: list[MassiveNormalizationDrop]
+    model_observations: list[
+        MassiveProviderModelObservation
+    ]
+
+    @property
+    def raw_contract_count(self) -> int:
+        return (
+            len(self.quotes)
+            + len(self.drops)
+        )
+
+    @property
+    def normalized_contract_count(
+        self,
+    ) -> int:
+        return len(self.quotes)
+
+    @property
+    def drop_count(self) -> int:
+        return len(self.drops)
+
+    @property
+    def drop_reason_counts(
+        self,
+    ) -> dict[str, int]:
+        counts: dict[str, int] = {}
+
+        for drop in self.drops:
+            counts[drop.reason_code] = (
+                counts.get(
+                    drop.reason_code,
+                    0,
+                )
+                + 1
+            )
+
+        return counts
+
+
+def _safe_raw_json(
+    item: dict[str, Any],
+) -> str:
+    return json.dumps(
+        item,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _make_normalization_drop(
+    *,
+    symbol: str,
+    item: dict[str, Any],
+    reason_code: str,
+    reason_detail: str | None = None,
+) -> MassiveNormalizationDrop:
+    details = (
+        item.get("details")
+        or {}
+    )
+
+    provider_contract_id = (
+        details.get("ticker")
+    )
+
+    strike = details.get(
+        "strike_price"
+    )
+
+    expiration = details.get(
+        "expiration_date"
+    )
+
+    contract_type = details.get(
+        "contract_type"
+    )
+
+    return MassiveNormalizationDrop(
+        provider="MASSIVE",
+        underlying=symbol,
+        provider_contract_id=(
+            None
+            if provider_contract_id is None
+            else str(
+                provider_contract_id
+            )
+        ),
+        option_symbol=(
+            None
+            if provider_contract_id is None
+            else str(
+                provider_contract_id
+            )
+        ),
+        raw_contract_type=(
+            None
+            if contract_type is None
+            else str(contract_type)
+        ),
+        raw_strike=(
+            None
+            if strike is None
+            else str(strike)
+        ),
+        raw_expiration=(
+            None
+            if expiration is None
+            else str(expiration)
+        ),
+        reason_code=reason_code,
+        reason_detail=reason_detail,
+        raw_payload_json=(
+            _safe_raw_json(item)
+        ),
+    )
+
+
+def _validate_strike(
+    value: Any,
+) -> float:
+    try:
+        strike = float(value)
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError(
+            "Strike is not numeric."
+        ) from exc
+
+    if strike <= 0:
+        raise ValueError(
+            "Strike must be positive."
+        )
+
+    return strike
+
+
+def _validate_expiration(
+    value: Any,
+) -> str:
+    if value is None:
+        raise ValueError(
+            "Expiration is missing."
+        )
+
+    text = str(value).strip()
+
+    try:
+        date.fromisoformat(
+            text[:10]
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "Expiration is not a valid "
+            "ISO calendar date."
+        ) from exc
+
+    return text[:10]
+
+
+def normalize_massive_option_chain_for_research(
+    underlying: str,
+    payload: dict[str, Any],
+) -> MassiveResearchNormalization:
+    """
+    Cohort-safe Massive normalization.
+
+    Differences from the legacy normalizer:
+      * every raw contract is either normalized or
+        represented by an explicit drop record;
+      * provider IV/Greeks are removed from the
+        canonical option_quotes payload and emitted
+        separately as provider-model observations;
+      * volume receives an explicit trading date
+        when the chain payload provides its US
+        reference date;
+      * open-interest effective date remains NULL
+        unless Massive explicitly provides one.
+
+    This is the only Massive normalization path
+    intended for Cohort 001.
+    """
+
+    symbol = (
+        underlying
+        .strip()
+        .upper()
+    )
+
+    if not symbol:
+        raise ValueError(
+            "Underlying cannot be blank."
+        )
+
+    legacy_snapshot, _ = (
+        normalize_massive_option_chain(
+            symbol,
+            {
+                **payload,
+                "results": [],
+            },
+        )
+    )
+
+    # Reuse the legacy snapshot envelope but
+    # calculate underlying evidence from the real
+    # payload so provider behavior stays identical.
+    full_snapshot, _ = (
+        normalize_massive_option_chain(
+            symbol,
+            payload,
+        )
+    )
+
+    snapshot = {
+        **legacy_snapshot,
+        **full_snapshot,
+    }
+
+    results = (
+        payload.get("results")
+        or []
+    )
+
+    volume_trading_date = (
+        payload.get(
+            "reference_date"
+        )
+    )
+
+    request_id = payload.get(
+        "request_id"
+    )
+
+    quotes: list[
+        dict[str, Any]
+    ] = []
+
+    drops: list[
+        MassiveNormalizationDrop
+    ] = []
+
+    model_observations: list[
+        MassiveProviderModelObservation
+    ] = []
+
+    for item in results:
+        details = (
+            item.get("details")
+            or {}
+        )
+
+        contract_type = (
+            details.get(
+                "contract_type"
+            )
+        )
+
+        if contract_type == "call":
+            right = "C"
+        elif contract_type == "put":
+            right = "P"
+        else:
+            drops.append(
+                _make_normalization_drop(
+                    symbol=symbol,
+                    item=item,
+                    reason_code=(
+                        "UNSUPPORTED_CONTRACT_TYPE"
+                    ),
+                    reason_detail=(
+                        "Massive contract_type "
+                        f"was {contract_type!r}."
+                    ),
+                )
+            )
+            continue
+
+        raw_strike = details.get(
+            "strike_price"
+        )
+
+        if raw_strike is None:
+            drops.append(
+                _make_normalization_drop(
+                    symbol=symbol,
+                    item=item,
+                    reason_code=(
+                        "MISSING_STRIKE"
+                    ),
+                )
+            )
+            continue
+
+        try:
+            strike = _validate_strike(
+                raw_strike
+            )
+        except ValueError as exc:
+            drops.append(
+                _make_normalization_drop(
+                    symbol=symbol,
+                    item=item,
+                    reason_code=(
+                        "INVALID_STRIKE"
+                    ),
+                    reason_detail=str(exc),
+                )
+            )
+            continue
+
+        raw_expiration = (
+            details.get(
+                "expiration_date"
+            )
+        )
+
+        if raw_expiration is None:
+            drops.append(
+                _make_normalization_drop(
+                    symbol=symbol,
+                    item=item,
+                    reason_code=(
+                        "MISSING_EXPIRATION"
+                    ),
+                )
+            )
+            continue
+
+        try:
+            expiration = (
+                _validate_expiration(
+                    raw_expiration
+                )
+            )
+        except ValueError as exc:
+            drops.append(
+                _make_normalization_drop(
+                    symbol=symbol,
+                    item=item,
+                    reason_code=(
+                        "INVALID_EXPIRATION"
+                    ),
+                    reason_detail=str(exc),
+                )
+            )
+            continue
+
+        ticker = details.get(
+            "ticker"
+        )
+
+        if not ticker:
+            drops.append(
+                _make_normalization_drop(
+                    symbol=symbol,
+                    item=item,
+                    reason_code=(
+                        "MISSING_CONTRACT_IDENTIFIER"
+                    ),
+                )
+            )
+            continue
+
+        last_quote = (
+            item.get(
+                "last_quote"
+            )
+            or {}
+        )
+
+        last_trade = (
+            item.get(
+                "last_trade"
+            )
+            or {}
+        )
+
+        greeks = (
+            item.get(
+                "greeks"
+            )
+            or {}
+        )
+
+        day = (
+            item.get("day")
+            or {}
+        )
+
+        quote_at = (
+            _nanoseconds_to_iso(
+                last_quote.get(
+                    "last_updated"
+                )
+            )
+        )
+
+        trade_at = (
+            _nanoseconds_to_iso(
+                last_trade.get(
+                    "sip_timestamp"
+                )
+            )
+        )
+
+        bid, bid_source = (
+            _value_and_source(
+                last_quote.get(
+                    "bid"
+                )
+            )
+        )
+
+        ask, ask_source = (
+            _value_and_source(
+                last_quote.get(
+                    "ask"
+                )
+            )
+        )
+
+        last, last_source = (
+            _value_and_source(
+                last_trade.get(
+                    "price"
+                )
+            )
+        )
+
+        volume, volume_source = (
+            _value_and_source(
+                day.get(
+                    "volume"
+                )
+            )
+        )
+
+        (
+            open_interest,
+            open_interest_source,
+        ) = _value_and_source(
+            item.get(
+                "open_interest"
+            )
+        )
+
+        quote = {
+            "provider_contract_id":
+                str(ticker),
+
+            "option_symbol":
+                str(ticker),
+
+            "right":
+                right,
+
+            "strike":
+                strike,
+
+            "expiration":
+                expiration,
+
+            "shares_per_contract":
+                details.get(
+                    "shares_per_contract"
+                ),
+
+            "quote_at":
+                quote_at,
+
+            "bid":
+                bid,
+
+            "bid_source":
+                bid_source,
+
+            "bid_at":
+                quote_at,
+
+            "ask":
+                ask,
+
+            "ask_source":
+                ask_source,
+
+            "ask_at":
+                quote_at,
+
+            "last":
+                last,
+
+            "last_source":
+                last_source,
+
+            "last_at":
+                trade_at,
+
+            # Canonical direct-market quote table
+            # does not duplicate provider model
+            # outputs.
+            "implied_volatility":
+                None,
+
+            "iv_source":
+                PROVENANCE_UNKNOWN,
+
+            "iv_at":
+                None,
+
+            "delta":
+                None,
+
+            "delta_source":
+                PROVENANCE_UNKNOWN,
+
+            "delta_at":
+                None,
+
+            "gamma":
+                None,
+
+            "gamma_source":
+                PROVENANCE_UNKNOWN,
+
+            "gamma_at":
+                None,
+
+            "theta":
+                None,
+
+            "theta_source":
+                PROVENANCE_UNKNOWN,
+
+            "theta_at":
+                None,
+
+            "vega":
+                None,
+
+            "vega_source":
+                PROVENANCE_UNKNOWN,
+
+            "vega_at":
+                None,
+
+            "volume":
+                volume,
+
+            "volume_trading_date":
+                (
+                    None
+                    if volume_trading_date
+                    is None
+                    else str(
+                        volume_trading_date
+                    )[:10]
+                ),
+
+            "volume_source":
+                volume_source,
+
+            "volume_at":
+                None,
+
+            "open_interest":
+                open_interest,
+
+            # Massive Starter payload inspected by
+            # Christiania does not expose a
+            # reliable effective OI date.
+            "open_interest_as_of_date":
+                None,
+
+            "open_interest_source":
+                open_interest_source,
+
+            "open_interest_at":
+                None,
+        }
+
+        quotes.append(
+            quote
+        )
+
+        iv = item.get(
+            "implied_volatility"
+        )
+
+        delta = greeks.get(
+            "delta"
+        )
+
+        gamma = greeks.get(
+            "gamma"
+        )
+
+        theta = greeks.get(
+            "theta"
+        )
+
+        vega = greeks.get(
+            "vega"
+        )
+
+        if any(
+            value is not None
+            for value in (
+                iv,
+                delta,
+                gamma,
+                theta,
+                vega,
+            )
+        ):
+            model_observations.append(
+                MassiveProviderModelObservation(
+                    provider_contract_id=(
+                        str(ticker)
+                    ),
+                    option_symbol=(
+                        str(ticker)
+                    ),
+                    provider="MASSIVE",
+                    observed_at=None,
+                    provider_request_id=(
+                        None
+                        if request_id is None
+                        else str(request_id)
+                    ),
+                    implied_volatility=(
+                        None
+                        if iv is None
+                        else float(iv)
+                    ),
+                    delta=(
+                        None
+                        if delta is None
+                        else float(delta)
+                    ),
+                    gamma=(
+                        None
+                        if gamma is None
+                        else float(gamma)
+                    ),
+                    theta=(
+                        None
+                        if theta is None
+                        else float(theta)
+                    ),
+                    vega=(
+                        None
+                        if vega is None
+                        else float(vega)
+                    ),
+                    model_underlying_price=None,
+                    model_rate=None,
+                    model_dividend_yield=None,
+                    model_input_notes=(
+                        "Massive Starter payload "
+                        "does not expose the model "
+                        "underlying-price/rate inputs "
+                        "or a dedicated model "
+                        "observation timestamp."
+                    ),
+                )
+            )
+
+    return MassiveResearchNormalization(
+        snapshot=snapshot,
+        quotes=quotes,
+        drops=drops,
+        model_observations=(
+            model_observations
+        ),
+    )
