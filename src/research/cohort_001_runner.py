@@ -566,6 +566,7 @@ def run_cohort_001_collection(
     us_session_state: str,
     underlying: str = "AAPL",
     started_at: str | None = None,
+    run_notes: str | None = None,
     bridge_func: Callable[
         [Any, str, dict[str, Any]],
         Any,
@@ -619,8 +620,11 @@ def run_cohort_001_collection(
             us_session_state
         ),
         notes=(
-            "Cohort 001 data-quality "
-            "baseline collection."
+            run_notes
+            or (
+                "Cohort 001 data-quality "
+                "baseline collection."
+            )
         ),
     )
 
@@ -687,7 +691,12 @@ def run_cohort_001_collection(
             status="FAILED",
             ended_at=failed_at,
             notes=(
-                "Massive universe fetch failed."
+                (
+                    f"{run_notes} "
+                    if run_notes
+                    else ""
+                )
+                + "Massive universe fetch failed."
             ),
         )
 

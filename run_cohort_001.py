@@ -34,6 +34,37 @@ EXPECTED_PREREG_GIT_BLOB = (
 
 COHORT_ID = "COHORT_001_DATA_QUALITY_BASELINE"
 
+AMENDMENT_PATH = (
+    PROJECT_ROOT
+    / "research"
+    / "cohort_001_preregistration_v2_amendment_001.md"
+)
+
+EXPECTED_AMENDMENT_GIT_BLOB = (
+    "4c7598ba3521dab152e039744bf07d6ee779e762"
+)
+
+# Amendment 001 A1: every path here must be tracked and unmodified.
+# code_git_sha alone does not identify untracked files, so the launcher
+# must refuse to run if anything it depends on is outside Git.
+REQUIRED_TRACKED_PATHS = (
+    "run_cohort_001.py",
+    "research/cohort_001_preregistration_v2.md",
+    "research/cohort_001_preregistration_v2_amendment_001.md",
+    "src/research/cohort_001.py",
+    "src/research/cohort_001_persistence.py",
+    "src/research/cohort_001_runner.py",
+    "src/providers/massive.py",
+    "src/providers/saxo.py",
+    "src/providers/saxo_auth.py",
+    "src/providers/bridge.py",
+    "src/database/repository.py",
+    "src/database/provider_evidence.py",
+)
+
+# Amendment 001 A2.
+MAX_INVALID_ATTEMPTS = 3
+
 
 def run_git(*args: str) -> str:
     completed = subprocess.run(
@@ -152,6 +183,254 @@ def require_clean_tracked_tree() -> None:
             "Commit or revert tracked changes before "
             "Cohort 001."
         )
+
+
+def git_blob_at_head(
+    relative_path: str,
+) -> str:
+    return run_git(
+        "rev-parse",
+        f"HEAD:{relative_path}",
+    )
+
+
+def require_required_paths_tracked() -> dict[str, str]:
+    """
+    Amendment 001 A1.
+
+    Every path Christiania depends on for a Cohort 001 collection must be
+    tracked and unmodified, otherwise the recorded code_git_sha does not
+    identify the code that actually ran.
+
+    Returns a mapping of path -> committed blob SHA.
+    """
+
+    blobs: dict[str, str] = {}
+    problems: list[str] = []
+
+    for relative_path in REQUIRED_TRACKED_PATHS:
+        absolute = PROJECT_ROOT / relative_path
+
+        if not absolute.exists():
+            problems.append(
+                f"{relative_path}: missing from working tree"
+            )
+            continue
+
+        tracked = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--error-unmatch",
+                relative_path,
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        ).returncode
+
+        if tracked != 0:
+            problems.append(
+                f"{relative_path}: untracked"
+            )
+            continue
+
+        unstaged = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--quiet",
+                "--",
+                relative_path,
+            ],
+            cwd=PROJECT_ROOT,
+        ).returncode
+
+        staged = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--cached",
+                "--quiet",
+                "--",
+                relative_path,
+            ],
+            cwd=PROJECT_ROOT,
+        ).returncode
+
+        if unstaged != 0 or staged != 0:
+            problems.append(
+                f"{relative_path}: modified but not committed"
+            )
+            continue
+
+        blobs[relative_path] = git_blob_at_head(
+            relative_path
+        )
+
+    if problems:
+        raise RuntimeError(
+            "Cohort 001 requires every collection-critical file to be "
+            "tracked and committed.\n"
+            + "\n".join(f"  - {line}" for line in problems)
+        )
+
+    return blobs
+
+
+def require_database_writable(
+    db_path: Path,
+) -> None:
+    """
+    Amendment 001 A3.
+
+    The whole collection runs inside one SQLite write transaction. If the
+    Streamlit app or a database browser holds the file, the run fails
+    partway through. Detect that before creating any run row.
+    """
+
+    probe = sqlite3.connect(db_path, timeout=2.0)
+
+    try:
+        probe.execute("BEGIN IMMEDIATE;")
+        probe.execute("ROLLBACK;")
+
+    except sqlite3.OperationalError as exc:
+        raise RuntimeError(
+            "The database is locked by another process. Close Streamlit "
+            "and any SQLite browser before starting Cohort 001. "
+            f"SQLite reported: {exc}"
+        ) from exc
+
+    finally:
+        probe.close()
+
+
+def terminal_run_status_counts(
+    connection: sqlite3.Connection,
+) -> dict[str, int]:
+    rows = connection.execute(
+        """
+        SELECT
+            status,
+            COUNT(*) AS n
+        FROM research_runs
+        WHERE cohort_id = ?
+          AND status IN (
+              'COMPLETED',
+              'FAILED',
+              'INVALID'
+          )
+        GROUP BY status;
+        """,
+        (COHORT_ID,),
+    ).fetchall()
+
+    counts = {
+        "COMPLETED": 0,
+        "FAILED": 0,
+        "INVALID": 0,
+    }
+
+    for row in rows:
+        counts[str(row["status"])] = int(row["n"])
+
+    return counts
+
+
+def evaluate_previous_run_gate(
+    counts: dict[str, int],
+    *,
+    allow_retry_after_invalid: bool,
+    max_invalid_attempts: int = MAX_INVALID_ATTEMPTS,
+) -> tuple[bool, str]:
+    """
+    Amendment 001 A2, as a pure function so it can be tested without a
+    database, a network or a Git repository.
+
+    Returns (allowed, reason).
+    """
+
+    completed = int(counts.get("COMPLETED", 0))
+    failed = int(counts.get("FAILED", 0))
+    invalid = int(counts.get("INVALID", 0))
+
+    if completed > 0:
+        return (
+            False,
+            "A COMPLETED Cohort 001 run already exists. This launcher is "
+            "single-use for the first cohort.",
+        )
+
+    if failed > 0:
+        return (
+            False,
+            "A FAILED Cohort 001 run exists. FAILED means the Massive "
+            "universe fetch failed, which must be diagnosed by a human "
+            "rather than retried by this launcher.",
+        )
+
+    if invalid == 0:
+        return (True, "No prior terminal Cohort 001 run.")
+
+    if invalid >= max_invalid_attempts:
+        return (
+            False,
+            f"{invalid} INVALID Cohort 001 runs already exist, which has "
+            f"reached the preregistered maximum of {max_invalid_attempts}. "
+            "Stop and diagnose rather than launching another attempt.",
+        )
+
+    if not allow_retry_after_invalid:
+        return (
+            False,
+            f"{invalid} INVALID Cohort 001 run(s) exist. Amendment 001 A2 "
+            "permits superseding them, but only with "
+            "--allow-retry-after-invalid.",
+        )
+
+    return (
+        True,
+        f"Superseding {invalid} INVALID run(s) under amendment 001 A2.",
+    )
+
+
+def superseded_invalid_run_ids(
+    connection: sqlite3.Connection,
+) -> list[int]:
+    rows = connection.execute(
+        """
+        SELECT id
+        FROM research_runs
+        WHERE cohort_id = ?
+          AND status = 'INVALID'
+        ORDER BY id;
+        """,
+        (COHORT_ID,),
+    ).fetchall()
+
+    return [int(row["id"]) for row in rows]
+
+
+def build_run_notes(
+    *,
+    superseded_run_ids: list[int],
+    launcher_blob: str,
+    amendment_blob: str,
+) -> str:
+    parts = [
+        "Cohort 001 data-quality baseline collection.",
+        f"launcher_blob={launcher_blob}.",
+        f"amendment_001_blob={amendment_blob}.",
+    ]
+
+    if superseded_run_ids:
+        joined = ",".join(str(value) for value in superseded_run_ids)
+        parts.append(
+            f"supersedes_invalid_run_ids={joined}."
+        )
+
+    return " ".join(parts)
 
 
 def active_run_count(
@@ -427,21 +706,27 @@ def mark_unexpected_run_invalid(
 
     ended_at = utc_now_iso()
 
+    invalid_reason = (
+        "Launch wrapper caught unexpected "
+        f"exception: {reason}"
+    )[:1000]
+
     connection.execute(
         """
         UPDATE research_runs
         SET
             status = 'INVALID',
             ended_at = ?,
-            notes = ?
+            notes = CASE
+                WHEN notes IS NULL OR notes = '' THEN ?
+                ELSE notes || ' ' || ?
+            END
         WHERE id = ?;
         """,
         (
             ended_at,
-            (
-                "Launch wrapper caught unexpected "
-                f"exception: {reason}"
-            )[:1000],
+            invalid_reason,
+            invalid_reason,
             run_id,
         ),
     )
@@ -483,6 +768,14 @@ def main() -> int:
             "data collection."
         ),
     )
+    parser.add_argument(
+        "--allow-retry-after-invalid",
+        action="store_true",
+        help=(
+            "Permit superseding prior Cohort 001 runs that terminalised "
+            "INVALID, under preregistration amendment 001 A2."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.confirm:
@@ -506,6 +799,22 @@ def main() -> int:
         )
 
     require_clean_tracked_tree()
+
+    # Amendment 001 A1.
+    tracked_blobs = require_required_paths_tracked()
+
+    launcher_blob = tracked_blobs["run_cohort_001.py"]
+
+    amendment_hash = git_blob_at_head(
+        "research/cohort_001_preregistration_v2_amendment_001.md"
+    )
+
+    if amendment_hash != EXPECTED_AMENDMENT_GIT_BLOB:
+        raise RuntimeError(
+            "Preregistration amendment 001 hash mismatch.\n"
+            f"Expected: {EXPECTED_AMENDMENT_GIT_BLOB}\n"
+            f"Actual:   {amendment_hash}"
+        )
 
     code_sha = run_git(
         "rev-parse",
@@ -544,6 +853,8 @@ def main() -> int:
             f"Current derived state: {session_state}"
         )
 
+    require_database_writable(DB_PATH)
+
     connection = connect()
 
     try:
@@ -575,14 +886,26 @@ def main() -> int:
             connection
         )
 
-        if previous_runs > 0:
-            raise RuntimeError(
-                "A terminal Cohort 001 run already "
-                "exists. This launcher is intentionally "
-                "single-use for the first cohort. "
-                "Inspect the existing run before "
-                "collecting another."
+        # Amendment 001 A2.
+        status_counts = terminal_run_status_counts(
+            connection
+        )
+
+        gate_allowed, gate_reason = (
+            evaluate_previous_run_gate(
+                status_counts,
+                allow_retry_after_invalid=(
+                    args.allow_retry_after_invalid
+                ),
             )
+        )
+
+        if not gate_allowed:
+            raise RuntimeError(gate_reason)
+
+        superseded = superseded_invalid_run_ids(
+            connection
+        )
 
         print_preflight(
             code_sha=code_sha,
@@ -591,6 +914,35 @@ def main() -> int:
             session_state=session_state,
             previous_runs=previous_runs,
         )
+
+        print(
+            f"Launcher blob:     {launcher_blob}"
+        )
+        print(
+            f"Amendment blob:    {amendment_hash}"
+        )
+        print(
+            f"Prior COMPLETED:   {status_counts['COMPLETED']}"
+        )
+        print(
+            f"Prior FAILED:      {status_counts['FAILED']}"
+        )
+        print(
+            f"Prior INVALID:     {status_counts['INVALID']}"
+        )
+        print(
+            f"Gate:              {gate_reason}"
+        )
+
+        if superseded:
+            print(
+                "Superseding INVALID run ids: "
+                + ", ".join(
+                    str(value) for value in superseded
+                )
+            )
+
+        print()
 
         # Validate secrets before creating the run row.
         massive_api_key = (
@@ -639,6 +991,11 @@ def main() -> int:
                     session_state
                 ),
                 underlying="AAPL",
+                run_notes=build_run_notes(
+                    superseded_run_ids=superseded,
+                    launcher_blob=launcher_blob,
+                    amendment_blob=amendment_hash,
+                ),
             )
 
         except Exception as exc:
