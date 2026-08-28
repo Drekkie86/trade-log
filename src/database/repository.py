@@ -8,7 +8,7 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
 
-EXPECTED_SCHEMA_VERSION = 4
+EXPECTED_SCHEMA_VERSION = 6
 
 
 PROVENANCE_VALUES = {
@@ -987,6 +987,21 @@ def create_market_snapshot(
                 "provider_snapshot_id"
             ),
 
+        "research_run_id":
+            snapshot.get(
+                "research_run_id"
+            ),
+
+        "us_session_date":
+            snapshot.get(
+                "us_session_date"
+            ),
+
+        "us_session_state":
+            snapshot.get(
+                "us_session_state"
+            ),
+
         "underlying_price":
             snapshot.get(
                 "underlying_price"
@@ -1031,6 +1046,9 @@ def create_market_snapshot(
                 underlying,
                 provider,
                 provider_snapshot_id,
+                research_run_id,
+                us_session_date,
+                us_session_state,
                 underlying_price,
                 underlying_source,
                 underlying_at,
@@ -1044,6 +1062,9 @@ def create_market_snapshot(
                 :underlying,
                 :provider,
                 :provider_snapshot_id,
+                :research_run_id,
+                :us_session_date,
+                :us_session_state,
                 :underlying_price,
                 :underlying_source,
                 :underlying_at,
@@ -1196,6 +1217,11 @@ def create_market_snapshot(
                         "volume"
                     ),
 
+                "volume_trading_date":
+                    quote.get(
+                        "volume_trading_date"
+                    ),
+
                 "volume_source":
                     quote["volume_source"],
 
@@ -1209,6 +1235,11 @@ def create_market_snapshot(
                         "open_interest"
                     ),
 
+                "open_interest_as_of_date":
+                    quote.get(
+                        "open_interest_as_of_date"
+                    ),
+
                 "open_interest_source":
                     quote[
                         "open_interest_source"
@@ -1217,6 +1248,11 @@ def create_market_snapshot(
                 "open_interest_at":
                     quote.get(
                         "open_interest_at"
+                    ),
+
+                "shares_per_contract":
+                    quote.get(
+                        "shares_per_contract"
                     ),
             }
 
@@ -1264,12 +1300,16 @@ def create_market_snapshot(
                     vega_at,
 
                     volume,
+                    volume_trading_date,
                     volume_source,
                     volume_at,
 
                     open_interest,
+                    open_interest_as_of_date,
                     open_interest_source,
-                    open_interest_at
+                    open_interest_at,
+
+                    shares_per_contract
                 )
                 VALUES (
                     :snapshot_id,
@@ -1313,12 +1353,16 @@ def create_market_snapshot(
                     :vega_at,
 
                     :volume,
+                    :volume_trading_date,
                     :volume_source,
                     :volume_at,
 
                     :open_interest,
+                    :open_interest_as_of_date,
                     :open_interest_source,
-                    :open_interest_at
+                    :open_interest_at,
+
+                    :shares_per_contract
                 );
                 """,
                 quote_data,

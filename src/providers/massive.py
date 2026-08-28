@@ -1,16 +1,26 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import (
     date,
     datetime,
     timedelta,
     timezone,
 )
+from json import JSONDecodeError
 from typing import Any
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+from urllib.parse import (
+    urlencode,
+    urlparse,
+)
+from urllib.request import (
+    Request,
+    urlopen,
+)
+from zoneinfo import ZoneInfo
 
 
 MASSIVE_BASE_URL = "https://api.massive.com"
@@ -18,58 +28,286 @@ MASSIVE_BASE_URL = "https://api.massive.com"
 PROVENANCE_FETCHED = "FETCHED"
 PROVENANCE_UNKNOWN = "UNKNOWN"
 
+US_EASTERN = ZoneInfo(
+    "America/New_York"
+)
+
+
+class MassiveError(RuntimeError):
+    pass
+
+
+class MassiveAuthenticationError(
+    MassiveError
+):
+    pass
+
+
+class MassiveRateLimitError(
+    MassiveError
+):
+    pass
+
+
+class MassiveResponseError(
+    MassiveError
+):
+    pass
+
+
+class MassiveNetworkError(
+    MassiveError
+):
+    pass
+
+
+class MassiveUnsafeUrlError(
+    MassiveError
+):
+    pass
+
+
+class MassiveTruncatedError(
+    MassiveError
+):
+    pass
+
 
 @dataclass(frozen=True)
 class MassiveClient:
-    api_key: str
+    api_key: str = field(
+        repr=False
+    )
+
     base_url: str = MASSIVE_BASE_URL
     timeout_seconds: int = 30
+
+    max_retries: int = 3
+    retry_base_seconds: float = 1.0
+    retry_max_seconds: float = 8.0
+
+    def __post_init__(self):
+        if not self.api_key:
+            raise ValueError(
+                "Massive API key is required."
+            )
+
+        if self.timeout_seconds <= 0:
+            raise ValueError(
+                "timeout_seconds must be positive."
+            )
+
+        if self.max_retries < 0:
+            raise ValueError(
+                "max_retries cannot be negative."
+            )
+
+        self._validate_url(
+            self.base_url
+        )
+
+    def _validate_url(
+        self,
+        url: str,
+    ) -> None:
+        base = urlparse(
+            self.base_url
+        )
+
+        target = urlparse(url)
+
+        if (
+            target.scheme != base.scheme
+            or target.netloc != base.netloc
+        ):
+            raise MassiveUnsafeUrlError(
+                "Refusing to send Massive "
+                "credentials to unexpected URL: "
+                f"{target.scheme}://"
+                f"{target.netloc}"
+            )
+
+    def _retry_delay(
+        self,
+        attempt: int,
+        retry_after: str | None,
+    ) -> float:
+        if retry_after:
+            try:
+                parsed = float(
+                    retry_after
+                )
+
+                if parsed >= 0:
+                    return min(
+                        parsed,
+                        self.retry_max_seconds,
+                    )
+
+            except ValueError:
+                pass
+
+        return min(
+            self.retry_base_seconds
+            * (2 ** attempt),
+            self.retry_max_seconds,
+        )
 
     def _get_json_url(
         self,
         url: str,
     ) -> dict[str, Any]:
+        self._validate_url(url)
 
-        request = Request(
-            url,
-            headers={
-                "Authorization":
-                    f"Bearer {self.api_key}",
+        attempt = 0
 
-                "Accept":
-                    "application/json",
+        while True:
+            request = Request(
+                url,
+                headers={
+                    "Authorization":
+                        f"Bearer "
+                        f"{self.api_key}",
 
-                "User-Agent":
-                    "Christiania/0.1",
-            },
-            method="GET",
-        )
+                    "Accept":
+                        "application/json",
 
-        with urlopen(
-            request,
-            timeout=self.timeout_seconds,
-        ) as response:
-
-            payload = response.read().decode(
-                "utf-8"
+                    "User-Agent":
+                        "Christiania/0.1",
+                },
+                method="GET",
             )
 
-        return json.loads(
-            payload
-        )
+            try:
+                with urlopen(
+                    request,
+                    timeout=self.timeout_seconds,
+                ) as response:
+                    raw = (
+                        response
+                        .read()
+                        .decode("utf-8")
+                    )
+
+                try:
+                    payload = json.loads(
+                        raw
+                    )
+
+                except JSONDecodeError as exc:
+                    raise MassiveResponseError(
+                        "Massive returned "
+                        "malformed JSON."
+                    ) from exc
+
+                if not isinstance(
+                    payload,
+                    dict,
+                ):
+                    raise MassiveResponseError(
+                        "Massive returned an "
+                        "unexpected JSON structure."
+                    )
+
+                return payload
+
+            except HTTPError as exc:
+                status = exc.code
+
+                body = (
+                    exc.read()
+                    .decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                )
+
+                if status in {
+                    401,
+                    403,
+                }:
+                    raise (
+                        MassiveAuthenticationError(
+                            "Massive authentication "
+                            f"failed with HTTP "
+                            f"{status}."
+                        )
+                    ) from exc
+
+                retryable = (
+                    status == 429
+                    or 500 <= status <= 599
+                )
+
+                if retryable:
+                    if (
+                        attempt
+                        >= self.max_retries
+                    ):
+                        if status == 429:
+                            raise (
+                                MassiveRateLimitError(
+                                    "Massive rate limit "
+                                    "persisted after "
+                                    "retries."
+                                )
+                            ) from exc
+
+                        raise MassiveResponseError(
+                            "Massive server error "
+                            f"HTTP {status} persisted "
+                            "after retries."
+                        ) from exc
+
+                    delay = self._retry_delay(
+                        attempt,
+                        exc.headers.get(
+                            "Retry-After"
+                        ),
+                    )
+
+                    time.sleep(delay)
+
+                    attempt += 1
+                    continue
+
+                raise MassiveResponseError(
+                    "Massive request failed "
+                    f"with HTTP {status}: "
+                    f"{body[:500]}"
+                ) from exc
+
+            except URLError as exc:
+                if (
+                    attempt
+                    >= self.max_retries
+                ):
+                    raise MassiveNetworkError(
+                        "Could not reach Massive "
+                        "after retries."
+                    ) from exc
+
+                delay = self._retry_delay(
+                    attempt,
+                    None,
+                )
+
+                time.sleep(delay)
+
+                attempt += 1
 
     def _get_json(
         self,
         path: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-
         params = params or {}
 
         query = urlencode(
             {
                 key: value
-                for key, value in params.items()
+                for key, value
+                in params.items()
                 if value is not None
             }
         )
@@ -94,19 +332,28 @@ class MassiveClient:
         limit: int = 250,
         order: str = "asc",
         sort: str = "ticker",
-        expiration_date_gte: str | None = None,
-        expiration_date_lte: str | None = None,
-        contract_type: str | None = None,
+        expiration_date_gte:
+            str | None = None,
+        expiration_date_lte:
+            str | None = None,
+        contract_type:
+            str | None = None,
     ) -> dict[str, Any]:
-
-        symbol = underlying.strip().upper()
+        symbol = (
+            underlying
+            .strip()
+            .upper()
+        )
 
         if not symbol:
             raise ValueError(
                 "Underlying cannot be blank."
             )
 
-        if limit < 1 or limit > 250:
+        if (
+            limit < 1
+            or limit > 250
+        ):
             raise ValueError(
                 "Massive option-chain limit "
                 "must be between 1 and 250."
@@ -123,7 +370,8 @@ class MassiveClient:
             )
 
         return self._get_json(
-            f"/v3/snapshot/options/{symbol}",
+            f"/v3/snapshot/options/"
+            f"{symbol}",
             params={
                 "limit":
                     limit,
@@ -151,19 +399,24 @@ class MassiveClient:
         *,
         min_dte: int = 7,
         max_dte: int = 45,
-        contract_type: str | None = None,
+        contract_type:
+            str | None = None,
         page_limit: int = 250,
         max_pages: int = 20,
-        as_of_date: date | None = None,
+        as_of_date:
+            date | None = None,
+        require_complete:
+            bool = False,
     ) -> dict[str, Any]:
         """
         Fetch a paginated option-chain window.
 
-        By default Christiania requests contracts with
-        7-45 calendar days to expiration.
+        Default DTE calculations use the US
+        Eastern calendar date.
 
-        Results from every returned page are combined
-        into one Massive-shaped payload.
+        If require_complete=True, Christiania
+        refuses to return a truncated research
+        universe.
         """
 
         if min_dte < 0:
@@ -182,7 +435,10 @@ class MassiveClient:
                 "max_pages must be at least 1."
             )
 
-        if page_limit < 1 or page_limit > 250:
+        if (
+            page_limit < 1
+            or page_limit > 250
+        ):
             raise ValueError(
                 "Massive option-chain page limit "
                 "must be between 1 and 250."
@@ -191,7 +447,7 @@ class MassiveClient:
         reference_date = (
             as_of_date
             or datetime.now(
-                timezone.utc
+                US_EASTERN
             ).date()
         )
 
@@ -209,14 +465,19 @@ class MassiveClient:
             )
         ).isoformat()
 
-        first_page = self.get_option_chain_page(
-            underlying,
-            limit=page_limit,
-            order="asc",
-            sort="ticker",
-            expiration_date_gte=expiration_gte,
-            expiration_date_lte=expiration_lte,
-            contract_type=contract_type,
+        first_page = (
+            self.get_option_chain_page(
+                underlying,
+                limit=page_limit,
+                order="asc",
+                sort="ticker",
+                expiration_date_gte=
+                    expiration_gte,
+                expiration_date_lte=
+                    expiration_lte,
+                contract_type=
+                    contract_type,
+            )
         )
 
         combined_results = list(
@@ -226,7 +487,7 @@ class MassiveClient:
             or []
         )
 
-        request_ids = []
+        request_ids: list[str] = []
 
         first_request_id = (
             first_page.get(
@@ -247,10 +508,13 @@ class MassiveClient:
 
         while (
             next_url
-            and pages_fetched < max_pages
+            and pages_fetched
+            < max_pages
         ):
-            page = self._get_json_url(
-                next_url
+            page = (
+                self._get_json_url(
+                    next_url
+                )
             )
 
             combined_results.extend(
@@ -274,6 +538,20 @@ class MassiveClient:
             )
 
             pages_fetched += 1
+
+        truncated = bool(
+            next_url
+        )
+
+        if (
+            require_complete
+            and truncated
+        ):
+            raise MassiveTruncatedError(
+                "Massive option-chain research "
+                "universe was truncated after "
+                f"{pages_fetched} pages."
+            )
 
         return {
             "request_id":
@@ -308,8 +586,14 @@ class MassiveClient:
             "window_expiration_lte":
                 expiration_lte,
 
+            "reference_date":
+                reference_date.isoformat(),
+
+            "reference_timezone":
+                "America/New_York",
+
             "truncated":
-                bool(next_url),
+                truncated,
         }
 
 
@@ -380,29 +664,34 @@ def normalize_massive_option_chain(
 ]:
     """
     Convert Massive option-chain data into
-    Christiania's normalized research representation.
+    Christiania's normalized research form.
 
-    Missing values remain:
-        None + UNKNOWN
+    Missing values remain None + UNKNOWN.
 
     No database writes happen here.
     """
 
-    symbol = underlying.strip().upper()
+    symbol = (
+        underlying
+        .strip()
+        .upper()
+    )
 
     if not symbol:
         raise ValueError(
             "Underlying cannot be blank."
         )
 
-    results = payload.get(
-        "results"
-    ) or []
+    results = (
+        payload.get(
+            "results"
+        )
+        or []
+    )
 
     captured_at = _iso_now()
 
-    underlying_price = None
-    underlying_at = None
+    underlying_candidates = []
 
     for item in results:
         underlying_asset = (
@@ -416,24 +705,66 @@ def normalize_massive_option_chain(
             "price"
         )
 
-        if price is not None:
-            underlying_price = price
+        if price is None:
+            continue
 
-            underlying_at = (
-                _nanoseconds_to_iso(
-                    underlying_asset.get(
-                        "last_updated"
-                    )
+        observed_at = (
+            _nanoseconds_to_iso(
+                underlying_asset.get(
+                    "last_updated"
                 )
             )
+        )
 
-            break
+        underlying_candidates.append(
+            (
+                price,
+                observed_at,
+            )
+        )
+
+    underlying_price = None
+    underlying_at = None
+
+    if underlying_candidates:
+        timestamped = [
+            candidate
+            for candidate
+            in underlying_candidates
+            if candidate[1]
+            is not None
+        ]
+
+        if timestamped:
+            (
+                underlying_price,
+                underlying_at,
+            ) = max(
+                timestamped,
+                key=lambda item:
+                    item[1],
+            )
+
+        else:
+            (
+                underlying_price,
+                underlying_at,
+            ) = (
+                underlying_candidates[0]
+            )
 
     (
         normalized_underlying_price,
         underlying_source,
     ) = _value_and_source(
         underlying_price
+    )
+
+    request_ids = (
+        payload.get(
+            "request_ids"
+        )
+        or []
     )
 
     snapshot = {
@@ -464,7 +795,7 @@ def normalize_massive_option_chain(
             None,
 
         "fx_source":
-            "UNKNOWN",
+            PROVENANCE_UNKNOWN,
 
         "fx_at":
             None,
@@ -473,8 +804,12 @@ def normalize_massive_option_chain(
             (
                 "Normalized from Massive "
                 "option-chain snapshot. "
-                f"Pages={payload.get('pages_fetched', 1)}. "
-                f"Truncated={payload.get('truncated', False)}."
+                f"Pages="
+                f"{payload.get('pages_fetched', 1)}. "
+                f"Truncated="
+                f"{payload.get('truncated', False)}. "
+                f"RequestIds="
+                f"{','.join(request_ids)}."
             ),
     }
 
@@ -662,6 +997,11 @@ def normalize_massive_option_chain(
             "expiration":
                 expiration,
 
+            "shares_per_contract":
+                details.get(
+                    "shares_per_contract"
+                ),
+
             "quote_at":
                 quote_at,
 
@@ -698,8 +1038,12 @@ def normalize_massive_option_chain(
             "iv_source":
                 iv_source,
 
+            # Massive did not provide a
+            # dedicated model-observation
+            # timestamp in the Starter
+            # payload we inspected.
             "iv_at":
-                quote_at,
+                None,
 
             "delta":
                 delta,
@@ -708,7 +1052,7 @@ def normalize_massive_option_chain(
                 delta_source,
 
             "delta_at":
-                quote_at,
+                None,
 
             "gamma":
                 gamma,
@@ -717,7 +1061,7 @@ def normalize_massive_option_chain(
                 gamma_source,
 
             "gamma_at":
-                quote_at,
+                None,
 
             "theta":
                 theta,
@@ -726,7 +1070,7 @@ def normalize_massive_option_chain(
                 theta_source,
 
             "theta_at":
-                quote_at,
+                None,
 
             "vega":
                 vega,
@@ -735,7 +1079,7 @@ def normalize_massive_option_chain(
                 vega_source,
 
             "vega_at":
-                quote_at,
+                None,
 
             "volume":
                 volume,
@@ -743,8 +1087,10 @@ def normalize_massive_option_chain(
             "volume_source":
                 volume_source,
 
+            # Retrieval time is not the
+            # market observation time.
             "volume_at":
-                captured_at,
+                None,
 
             "open_interest":
                 open_interest,
@@ -752,8 +1098,11 @@ def normalize_massive_option_chain(
             "open_interest_source":
                 open_interest_source,
 
+            # OI is daily data; do not
+            # pretend captured_at is its
+            # observation timestamp.
             "open_interest_at":
-                captured_at,
+                None,
         }
 
         quotes.append(
