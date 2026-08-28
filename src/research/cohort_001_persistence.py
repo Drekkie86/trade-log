@@ -7,10 +7,11 @@ from src.research.cohort_001 import (
     COHORT_ID,
     CohortSelection,
     EmptyStratum,
+    SelectionExclusion,
 )
 
 
-SELECTION_RULE = "BASELINE_STRATIFIED_SAMPLE_V1"
+SELECTION_RULE = "BASELINE_STRATIFIED_SAMPLE_V2"
 
 RUN_STATUSES = {
     "STARTED",
@@ -54,6 +55,8 @@ class RunManifest:
     massive_raw_contracts: int | None
     massive_normalized_contracts: int | None
     normalization_drop_count: int | None
+    selection_eligible_count: int | None
+    selection_exclusion_count: int | None
     selected_strata_count: int | None
     empty_strata_count: int | None
     selected_contract_count: int | None
@@ -196,7 +199,7 @@ def set_run_status(
             "cannot have ended_at."
         )
 
-    conn.execute(
+    cursor = conn.execute(
         """
         UPDATE research_runs
         SET
@@ -213,7 +216,7 @@ def set_run_status(
         ),
     )
 
-    if conn.total_changes == 0:
+    if cursor.rowcount == 0:
         raise ValueError(
             f"Research run {run_id} "
             "does not exist."
@@ -330,26 +333,95 @@ def persist_normalization_drops(
     return count
 
 
+
+def _persist_selection_exclusions(
+    conn,
+    *,
+    run_id: int,
+    snapshot_id: int,
+    exclusions: Iterable[
+        SelectionExclusion
+    ],
+    excluded_at: str,
+    preregistration_hash: str,
+    code_git_sha: str,
+) -> int:
+    count = 0
+
+    for exclusion in exclusions:
+        conn.execute(
+            """
+            INSERT INTO selection_exclusions (
+                run_id,
+                snapshot_id,
+                option_quote_id,
+                provider,
+                underlying,
+                provider_contract_id,
+                option_symbol,
+                option_right,
+                strike,
+                expiration,
+                reason_code,
+                reason_detail,
+                excluded_at,
+                preregistration_hash,
+                code_git_sha
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                run_id,
+                snapshot_id,
+                exclusion.option_quote_id,
+                exclusion.provider,
+                exclusion.underlying,
+                exclusion.provider_contract_id,
+                exclusion.option_symbol,
+                exclusion.right,
+                exclusion.strike,
+                exclusion.expiration,
+                exclusion.reason_code,
+                exclusion.reason_detail,
+                excluded_at,
+                preregistration_hash,
+                code_git_sha,
+            ),
+        )
+
+        count += 1
+
+    return count
+
 def freeze_selection_manifest(
     conn,
     *,
     run_id: int,
+    snapshot_id: int,
     selections: Iterable[
         CohortSelection
     ],
     empty_strata: Iterable[
         EmptyStratum
     ],
+    selection_eligible_count: int,
+    selection_exclusions: Iterable[
+        SelectionExclusion
+    ],
     selected_at: str,
     preregistration_hash: str,
     code_git_sha: str,
 ) -> int:
     """
-    Persist the already-selected population before
-    any Saxo resolution is attempted.
+    Atomically persist the full selection-stage
+    partition and the already-selected population
+    before any Saxo option resolution is attempted.
 
-    The input selections must already contain their
-    randomized resolution_sequence values.
+    Mandatory reconciliation:
+
+        normalized contracts
+        = selection eligible
+        + selection exclusions
     """
 
     selected_at = _require_nonblank(
@@ -367,12 +439,23 @@ def freeze_selection_manifest(
         "code_git_sha",
     )
 
+    selection_eligible_count = (
+        _require_nonnegative(
+            selection_eligible_count,
+            "selection_eligible_count",
+        )
+    )
+
     selection_list = tuple(
         selections
     )
 
     empty_list = tuple(
         empty_strata
+    )
+
+    exclusion_list = tuple(
+        selection_exclusions
     )
 
     sequences = [
@@ -415,7 +498,8 @@ def freeze_selection_manifest(
         SELECT
             preregistration_hash,
             code_git_sha,
-            status
+            status,
+            massive_normalized_contracts
         FROM research_runs
         WHERE id = ?;
         """,
@@ -452,60 +536,131 @@ def freeze_selection_manifest(
             "terminal research run."
         )
 
-    for selection in selection_list:
-        conn.execute(
-            """
-            INSERT INTO research_selections (
-                run_id,
-                option_quote_id,
-                selected_at,
-                selection_rule,
-                dte_stratum,
-                delta_stratum,
-                option_right,
-                resolution_sequence,
-                preregistration_hash,
-                code_git_sha
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                run_id,
-                selection.quote.option_quote_id,
-                selected_at,
-                SELECTION_RULE,
-                (
-                    f"{selection.stratum.dte_min}-"
-                    f"{selection.stratum.dte_max}"
-                ),
-                (
-                    f"{selection.stratum.abs_delta_min:.2f}-"
-                    f"{selection.stratum.abs_delta_max:.2f}"
-                ),
-                selection.stratum.right,
-                selection.resolution_sequence,
-                preregistration_hash,
-                code_git_sha,
-            ),
+    normalized_count = (
+        current[
+            "massive_normalized_contracts"
+        ]
+    )
+
+    if normalized_count is None:
+        raise ValueError(
+            "Massive normalized count must "
+            "be persisted before selection."
+        )
+
+    if (
+        selection_eligible_count
+        + len(exclusion_list)
+        != normalized_count
+    ):
+        raise ValueError(
+            "Selection-universe counts "
+            "do not reconcile: normalized "
+            "must equal eligible plus "
+            "exclusions."
+        )
+
+    if (
+        len(selection_list)
+        > selection_eligible_count
+    ):
+        raise ValueError(
+            "Selected contracts cannot "
+            "exceed selection-eligible "
+            "contracts."
         )
 
     conn.execute(
-        """
-        UPDATE research_runs
-        SET
-            selected_strata_count = ?,
-            empty_strata_count = ?,
-            selected_contract_count = ?,
-            status = 'COLLECTING'
-        WHERE id = ?;
-        """,
-        (
-            len(selection_list),
-            len(empty_list),
-            len(selection_list),
-            run_id,
-        ),
+        "SAVEPOINT cohort_selection_freeze;"
     )
+
+    try:
+        _persist_selection_exclusions(
+            conn,
+            run_id=run_id,
+            snapshot_id=snapshot_id,
+            exclusions=exclusion_list,
+            excluded_at=selected_at,
+            preregistration_hash=(
+                preregistration_hash
+            ),
+            code_git_sha=code_git_sha,
+        )
+
+        for selection in selection_list:
+            conn.execute(
+                """
+                INSERT INTO research_selections (
+                    run_id,
+                    option_quote_id,
+                    selected_at,
+                    selection_rule,
+                    dte_stratum,
+                    delta_stratum,
+                    option_right,
+                    resolution_sequence,
+                    preregistration_hash,
+                    code_git_sha
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    run_id,
+                    selection.quote.option_quote_id,
+                    selected_at,
+                    SELECTION_RULE,
+                    (
+                        f"{selection.stratum.dte_min}-"
+                        f"{selection.stratum.dte_max}"
+                    ),
+                    (
+                        f"{selection.stratum.abs_delta_min:.2f}-"
+                        f"{selection.stratum.abs_delta_max:.2f}"
+                    ),
+                    selection.stratum.right,
+                    selection.resolution_sequence,
+                    preregistration_hash,
+                    code_git_sha,
+                ),
+            )
+
+        conn.execute(
+            """
+            UPDATE research_runs
+            SET
+                selection_eligible_count = ?,
+                selection_exclusion_count = ?,
+                selected_strata_count = ?,
+                empty_strata_count = ?,
+                selected_contract_count = ?,
+                status = 'COLLECTING'
+            WHERE id = ?;
+            """,
+            (
+                selection_eligible_count,
+                len(exclusion_list),
+                len(selection_list),
+                len(empty_list),
+                len(selection_list),
+                run_id,
+            ),
+        )
+
+        conn.execute(
+            "RELEASE SAVEPOINT "
+            "cohort_selection_freeze;"
+        )
+
+    except Exception:
+        conn.execute(
+            "ROLLBACK TO SAVEPOINT "
+            "cohort_selection_freeze;"
+        )
+        conn.execute(
+            "RELEASE SAVEPOINT "
+            "cohort_selection_freeze;"
+        )
+        raise
 
     return len(
         selection_list
@@ -571,6 +726,12 @@ def get_run_manifest(
         ),
         normalization_drop_count=(
             row["normalization_drop_count"]
+        ),
+        selection_eligible_count=(
+            row["selection_eligible_count"]
+        ),
+        selection_exclusion_count=(
+            row["selection_exclusion_count"]
         ),
         selected_strata_count=(
             row["selected_strata_count"]

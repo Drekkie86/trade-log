@@ -6,7 +6,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Callable
 
 
 SAXO_LIVE_BASE_URL = (
@@ -19,7 +19,46 @@ SAXO_SIM_BASE_URL = (
 
 
 class SaxoError(RuntimeError):
-    pass
+    failure_stage = "UNKNOWN"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_count: int = 0,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_count = retry_count
+
+
+class SaxoApiAuthenticationError(SaxoError):
+    failure_stage = "AUTHENTICATION"
+
+
+class SaxoNetworkError(SaxoError):
+    failure_stage = "NETWORK"
+
+
+class SaxoRateLimitError(SaxoError):
+    failure_stage = "NETWORK"
+
+
+class SaxoRootResolutionError(SaxoError):
+    failure_stage = "ROOT_RESOLUTION"
+
+
+class SaxoContractResolutionError(SaxoError):
+    failure_stage = "CONTRACT_RESOLUTION"
+
+
+class SaxoQuoteFetchError(SaxoError):
+    failure_stage = "QUOTE_FETCH"
+
+
+class SaxoUnderlyingResolutionError(SaxoError):
+    failure_stage = "UNDERLYING_FETCH"
 
 
 class QuoteQuality(str, Enum):
@@ -584,103 +623,193 @@ class SaxoClient:
 
     def __init__(
         self,
-        access_token: str,
+        access_token: str | None = None,
         base_url: str = SAXO_LIVE_BASE_URL,
         timeout_seconds: int = 30,
+        token_provider: Callable[..., str] | None = None,
     ):
-        if not access_token:
+        if not access_token and token_provider is None:
             raise ValueError(
-                "Saxo access token is required."
+                "Saxo access token or token_provider is required."
             )
 
         self.access_token = access_token
-        self.base_url = (
-            base_url.rstrip("/")
-        )
-        self.timeout_seconds = (
-            timeout_seconds
-        )
+        self.token_provider = token_provider
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self._request_retry_count = 0
+
+    def reset_retry_counter(self) -> None:
+        self._request_retry_count = 0
+
+    def consume_retry_count(self) -> int:
+        value = self._request_retry_count
+        self._request_retry_count = 0
+        return value
+
+    def _current_access_token(
+        self,
+        *,
+        force_refresh: bool = False,
+    ) -> str:
+        if self.token_provider is not None:
+            try:
+                token = self.token_provider(
+                    force_refresh=force_refresh
+                )
+            except TypeError:
+                token = self.token_provider()
+
+            if not token:
+                raise SaxoApiAuthenticationError(
+                    "Saxo token provider returned no access token."
+                )
+
+            return token
+
+        if not self.access_token:
+            raise SaxoApiAuthenticationError(
+                "Saxo access token is unavailable."
+            )
+
+        return self.access_token
+
+    @staticmethod
+    def _safe_error_body(
+        body: str,
+        *,
+        limit: int = 500,
+    ) -> str:
+        compact = " ".join(body.split())
+        if len(compact) > limit:
+            compact = compact[:limit] + "..."
+        return compact
 
     def _get_json(
         self,
         path: str,
-        params:
-            dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        *,
+        _auth_retry: bool = True,
     ) -> dict[str, Any]:
-
-        url = (
-            f"{self.base_url}{path}"
-        )
+        url = f"{self.base_url}{path}"
 
         if params:
             clean_params = {
                 key: value
-                for key, value
-                in params.items()
+                for key, value in params.items()
                 if value is not None
             }
-
-            query = (
-                urllib.parse.urlencode(
-                    clean_params
-                )
-            )
-
+            query = urllib.parse.urlencode(clean_params)
             if query:
-                url = (
-                    f"{url}?{query}"
-                )
+                url = f"{url}?{query}"
 
+        token = self._current_access_token()
         request = urllib.request.Request(
             url,
             method="GET",
             headers={
-                "Authorization":
-                    f"Bearer "
-                    f"{self.access_token}",
-
-                "Accept":
-                    "application/json",
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
             },
         )
 
         try:
-            with (
-                urllib.request.urlopen(
-                    request,
-                    timeout=(
-                        self.timeout_seconds
-                    ),
-                )
+            with urllib.request.urlopen(
+                request,
+                timeout=self.timeout_seconds,
             ) as response:
                 return json.loads(
-                    response
-                    .read()
-                    .decode("utf-8")
+                    response.read().decode("utf-8")
                 )
 
-        except (
-            urllib.error.HTTPError
-        ) as exc:
-            body = (
-                exc.read()
-                .decode(
+        except urllib.error.HTTPError as exc:
+            body = self._safe_error_body(
+                exc.read().decode(
                     "utf-8",
                     errors="replace",
                 )
             )
 
+            if (
+                exc.code == 401
+                and _auth_retry
+                and self.token_provider is not None
+            ):
+                self._current_access_token(
+                    force_refresh=True
+                )
+                self._request_retry_count += 1
+                return self._get_json(
+                    path,
+                    params,
+                    _auth_retry=False,
+                )
+
+            if exc.code in {401, 403}:
+                raise SaxoApiAuthenticationError(
+                    f"Saxo authentication failed with HTTP {exc.code}: {body}",
+                    status_code=exc.code,
+                    retry_count=self._request_retry_count,
+                ) from exc
+
+            if exc.code == 429:
+                raise SaxoRateLimitError(
+                    f"Saxo rate limit reached: {body}",
+                    status_code=exc.code,
+                    retry_count=self._request_retry_count,
+                ) from exc
+
             raise SaxoError(
-                f"Saxo HTTP "
-                f"{exc.code}: {body}"
+                f"Saxo HTTP {exc.code}: {body}",
+                status_code=exc.code,
+                retry_count=self._request_retry_count,
             ) from exc
 
+        except urllib.error.URLError as exc:
+            raise SaxoNetworkError(
+                f"Could not reach Saxo OpenAPI: {exc}",
+                retry_count=self._request_retry_count,
+            ) from exc
+
+    def _get_json_typed(
+        self,
+        path: str,
+        params: dict[str, Any] | None,
+        failure_type: type[SaxoError],
+    ) -> dict[str, Any]:
+        """
+        Add operation-specific failure typing while
+        preserving the long-standing _get_json(path,
+        params) interface used by test doubles.
+        """
+
+        try:
+            return self._get_json(
+                path,
+                params,
+            )
+
         except (
-            urllib.error.URLError
-        ) as exc:
-            raise SaxoError(
-                "Could not reach Saxo "
-                f"OpenAPI: {exc}"
+            SaxoApiAuthenticationError,
+            SaxoNetworkError,
+            SaxoRateLimitError,
+        ):
+            raise
+
+        except SaxoError as exc:
+            raise failure_type(
+                str(exc),
+                status_code=getattr(
+                    exc,
+                    "status_code",
+                    None,
+                ),
+                retry_count=getattr(
+                    exc,
+                    "retry_count",
+                    0,
+                ),
             ) from exc
 
     def search_option_roots(
@@ -690,7 +819,7 @@ class SaxoClient:
             bool = True,
     ) -> list[dict[str, Any]]:
 
-        payload = self._get_json(
+        payload = self._get_json_typed(
             "/ref/v1/instruments",
             {
                 "Keywords":
@@ -704,6 +833,7 @@ class SaxoClient:
                         include_non_tradable
                     ).lower(),
             },
+            SaxoRootResolutionError,
         )
 
         results = (
@@ -740,7 +870,7 @@ class SaxoClient:
         )
 
         if not roots:
-            raise SaxoError(
+            raise SaxoRootResolutionError(
                 "No Saxo OPRA "
                 "stock-option root found "
                 f"for {underlying}."
@@ -777,7 +907,7 @@ class SaxoClient:
             )
             > 1
         ):
-            raise SaxoError(
+            raise SaxoRootResolutionError(
                 "Multiple exact OPRA "
                 "option roots found for "
                 f"{underlying}."
@@ -786,7 +916,7 @@ class SaxoClient:
         if len(roots) == 1:
             return roots[0]
 
-        raise SaxoError(
+        raise SaxoRootResolutionError(
             "Multiple OPRA option roots "
             f"found for {underlying}; "
             "could not select one safely."
@@ -818,11 +948,12 @@ class SaxoClient:
                 "OptionSpaceSegment"
             ] = "AllDates"
 
-        return self._get_json(
+        return self._get_json_typed(
             "/ref/v1/instruments/"
             "contractoptionspaces/"
             f"{option_root_id}",
             params,
+            SaxoContractResolutionError,
         )
 
     @staticmethod
@@ -1013,7 +1144,7 @@ class SaxoClient:
                 )
 
         if not matches:
-            raise SaxoError(
+            raise SaxoContractResolutionError(
                 "No Saxo option contract "
                 "matched "
                 f"{underlying.upper()} "
@@ -1023,7 +1154,7 @@ class SaxoClient:
             )
 
         if len(matches) > 1:
-            raise SaxoError(
+            raise SaxoContractResolutionError(
                 "Multiple Saxo contracts "
                 "matched "
                 f"{underlying.upper()} "
@@ -1039,7 +1170,7 @@ class SaxoClient:
         uic: int,
     ) -> SaxoOptionQuote:
 
-        payload = self._get_json(
+        payload = self._get_json_typed(
             "/trade/v1/infoprices",
             {
                 "Uic":
@@ -1051,6 +1182,7 @@ class SaxoClient:
                 "FieldGroups":
                     "Quote",
             },
+            SaxoQuoteFetchError,
         )
 
         quote = (
@@ -1159,7 +1291,7 @@ class SaxoClient:
         timestamp and quote-quality metadata.
         """
 
-        payload = self._get_json(
+        payload = self._get_json_typed(
             "/trade/v1/infoprices",
             {
                 "Uic":
@@ -1171,6 +1303,7 @@ class SaxoClient:
                 "FieldGroups":
                     "Quote",
             },
+            SaxoQuoteFetchError,
         )
 
         quote = (
@@ -1271,6 +1404,66 @@ class SaxoClient:
                     "LastUpdated"
                 )
             ),
+        )
+
+    def search_underlying_stocks(
+        self,
+        keywords: str,
+    ) -> list[dict[str, Any]]:
+        payload = self._get_json_typed(
+            "/ref/v1/instruments",
+            {
+                "Keywords": keywords,
+                "AssetTypes": "Stock",
+                "IncludeNonTradable": "true",
+            },
+            SaxoUnderlyingResolutionError,
+        )
+        return list(payload.get("Data", []) or [])
+
+    def find_underlying_stock(
+        self,
+        underlying: str,
+    ) -> dict[str, Any]:
+        symbol = underlying.strip().upper()
+        results = self.search_underlying_stocks(symbol)
+
+        exact = [
+            item
+            for item in results
+            if str(item.get("Symbol", ""))
+            .upper()
+            .startswith(f"{symbol}:")
+        ]
+
+        if len(exact) == 1:
+            return exact[0]
+
+        if not exact and len(results) == 1:
+            return results[0]
+
+        if not results:
+            raise SaxoUnderlyingResolutionError(
+                f"No Saxo stock instrument found for {symbol}."
+            )
+
+        raise SaxoUnderlyingResolutionError(
+            f"Could not uniquely resolve Saxo stock instrument for {symbol}."
+        )
+
+    def get_underlying_quote_for_symbol(
+        self,
+        underlying: str,
+    ) -> SaxoUnderlyingQuote:
+        instrument = self.find_underlying_stock(underlying)
+        identifier = instrument.get("Identifier")
+        if identifier is None:
+            raise SaxoUnderlyingResolutionError(
+                "Resolved Saxo underlying has no Identifier."
+            )
+        return self.get_underlying_quote(
+            uic=int(identifier),
+            asset_type="Stock",
         )
 
     def get_option_contract_and_quote(

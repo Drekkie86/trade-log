@@ -169,10 +169,12 @@ def refresh_saxo_live_token() -> str:
             )
         )
 
+        safe_body = " ".join(body_text.split())[:500]
+
         raise SaxoAuthenticationError(
             f"Saxo token refresh failed "
             f"with HTTP {exc.code}: "
-            f"{body_text}"
+            f"{safe_body}"
         ) from exc
 
     access_token = payload.get(
@@ -239,7 +241,7 @@ def refresh_saxo_live_token() -> str:
     return access_token
 
 
-def get_saxo_live_access_token() -> str:
+def get_saxo_live_access_token(*, force_refresh: bool = False) -> str:
     access_token = (
         get_optional_setting(
             "SAXO_LIVE_ACCESS_TOKEN"
@@ -253,7 +255,8 @@ def get_saxo_live_access_token() -> str:
     )
 
     if (
-        access_token
+        not force_refresh
+        and access_token
         and _token_is_usable(
             access_expires_at
         )

@@ -16,14 +16,30 @@ from src.database.repository import (
     get_market_snapshot,
 )
 from src.providers.bridge import (
+    ContractIdentityError,
+    OptionBridgeError,
     bridge_massive_quote_to_saxo,
+)
+from src.providers.saxo import (
+    SaxoApiAuthenticationError,
+    SaxoContractResolutionError,
+    SaxoError,
+    SaxoNetworkError,
+    SaxoQuoteFetchError,
+    SaxoRateLimitError,
+    SaxoRootResolutionError,
+    SaxoUnderlyingResolutionError,
+)
+from src.providers.saxo_auth import (
+    SaxoAuthenticationError,
 )
 from src.providers.massive import (
     normalize_massive_option_chain_for_research,
 )
 from src.research.cohort_001 import (
-    CohortQuote,
+    SelectionUniverseInput,
     assign_resolution_sequence,
+    evaluate_selection_universe,
     select_primary_contracts,
 )
 from src.research.cohort_001_persistence import (
@@ -250,57 +266,74 @@ def _normalized_quotes_by_symbol(
     return mapped
 
 
-def _model_rows_by_symbol(
-    model_observations,
-):
-    return {
-        str(
-            model.option_symbol
-            or model.provider_contract_id
-        ): model
-        for model in model_observations
-        if (
-            model.option_symbol
-            or model.provider_contract_id
-        )
-    }
-
-
-def _cohort_quotes_from_model_evidence(
+def _selection_inputs_from_model_evidence(
     *,
     snapshot_record: dict[str, Any],
     model_observations,
-) -> list[CohortQuote]:
+    provider: str,
+    underlying: str,
+) -> list[SelectionUniverseInput]:
+    """
+    Build one selection-stage input for every
+    normalized option_quote row.
+
+    Iterating the normalized population first is
+    the key integrity rule: a contract cannot
+    disappear merely because provider-model delta
+    evidence is absent.
+    """
+
     quote_rows = (
-        _quote_rows_by_symbol(
-            snapshot_record
-        )
+        snapshot_record.get("quotes")
+        or []
     )
 
-    models = _model_rows_by_symbol(
-        model_observations
-    )
-
-    cohort_quotes: list[
-        CohortQuote
+    inputs: list[
+        SelectionUniverseInput
     ] = []
 
-    for symbol, model in models.items():
-        if model.delta is None:
-            continue
-
-        row = quote_rows.get(
-            symbol
+    for row in quote_rows:
+        identity = (
+            row.get("option_symbol")
+            or row.get(
+                "provider_contract_id"
+            )
         )
 
-        if row is None:
-            continue
+        matching_models = []
 
-        cohort_quotes.append(
-            CohortQuote(
+        if identity:
+            matching_models = [
+                model
+                for model
+                in model_observations
+                if (
+                    (
+                        model.option_symbol
+                        or
+                        model.provider_contract_id
+                    )
+                    == identity
+                )
+            ]
+
+        delta = None
+
+        if len(
+            matching_models
+        ) == 1:
+            delta = (
+                matching_models[0]
+                .delta
+            )
+
+        inputs.append(
+            SelectionUniverseInput(
                 option_quote_id=int(
                     row["id"]
                 ),
+                provider=provider,
+                underlying=underlying,
                 provider_contract_id=(
                     row.get(
                         "provider_contract_id"
@@ -320,13 +353,16 @@ def _cohort_quotes_from_model_evidence(
                 expiration=str(
                     row["expiration"]
                 ),
-                delta=float(
-                    model.delta
+                delta=delta,
+                model_observation_count=(
+                    len(
+                        matching_models
+                    )
                 ),
             )
         )
 
-    return cohort_quotes
+    return inputs
 
 
 def _persist_model_observations(
@@ -397,42 +433,126 @@ def _persist_model_observations(
 def _classify_resolution_failure(
     exc: Exception,
 ) -> tuple[str, str]:
-    name = (
-        exc.__class__.__name__
-        .upper()
-    )
-
-    if "AUTH" in name:
+    if isinstance(
+        exc,
+        (
+            SaxoAuthenticationError,
+            SaxoApiAuthenticationError,
+        ),
+    ):
         return (
             "AUTHENTICATION",
-            name,
+            exc.__class__.__name__,
         )
 
-    if (
-        "NETWORK" in name
-        or "URL" in name
+    if isinstance(
+        exc,
+        SaxoRootResolutionError,
+    ):
+        return (
+            "ROOT_RESOLUTION",
+            exc.__class__.__name__,
+        )
+
+    if isinstance(
+        exc,
+        SaxoContractResolutionError,
+    ):
+        return (
+            "CONTRACT_RESOLUTION",
+            exc.__class__.__name__,
+        )
+
+    if isinstance(
+        exc,
+        ContractIdentityError,
+    ):
+        return (
+            "IDENTITY_VALIDATION",
+            exc.__class__.__name__,
+        )
+
+    if isinstance(
+        exc,
+        SaxoQuoteFetchError,
+    ):
+        return (
+            "QUOTE_FETCH",
+            exc.__class__.__name__,
+        )
+
+    if isinstance(
+        exc,
+        (
+            SaxoNetworkError,
+            SaxoRateLimitError,
+        ),
     ):
         return (
             "NETWORK",
-            name,
+            exc.__class__.__name__,
         )
 
-    if "IDENTITY" in name:
+    if isinstance(
+        exc,
+        SaxoUnderlyingResolutionError,
+    ):
+        return (
+            "UNDERLYING_FETCH",
+            exc.__class__.__name__,
+        )
+
+    if isinstance(
+        exc,
+        OptionBridgeError,
+    ):
         return (
             "IDENTITY_VALIDATION",
-            name,
+            exc.__class__.__name__,
         )
 
-    if "CONTRACT" in name:
+    if isinstance(exc, SaxoError):
         return (
-            "CONTRACT_RESOLUTION",
-            name,
+            getattr(exc, "failure_stage", "UNKNOWN"),
+            exc.__class__.__name__,
         )
 
     return (
         "UNKNOWN",
-        name,
+        exc.__class__.__name__,
     )
+
+
+def _retry_count_from_client_or_exception(
+    saxo_client,
+    exc: Exception | None = None,
+) -> int:
+    if exc is not None:
+        value = getattr(exc, "retry_count", None)
+        if value is not None:
+            return int(value)
+
+    consumer = getattr(
+        saxo_client,
+        "consume_retry_count",
+        None,
+    )
+    if callable(consumer):
+        return int(consumer())
+
+    return 0
+
+
+def _reset_saxo_retry_counter(
+    saxo_client,
+) -> None:
+    resetter = getattr(
+        saxo_client,
+        "reset_retry_counter",
+        None,
+    )
+    if callable(resetter):
+        resetter()
 
 
 def run_cohort_001_collection(
@@ -709,8 +829,8 @@ def run_cohort_001_collection(
         ),
     )
 
-    cohort_quotes = (
-        _cohort_quotes_from_model_evidence(
+    selection_inputs = (
+        _selection_inputs_from_model_evidence(
             snapshot_record=(
                 snapshot_record
             ),
@@ -718,12 +838,32 @@ def run_cohort_001_collection(
                 normalized
                 .model_observations
             ),
+            provider="MASSIVE",
+            underlying=symbol,
         )
     )
 
+    selection_universe = (
+        evaluate_selection_universe(
+            selection_inputs
+        )
+    )
+
+    if (
+        selection_universe
+        .normalized_count
+        != normalized
+        .normalized_contract_count
+    ):
+        raise RuntimeError(
+            "Selection-stage population "
+            "does not reconcile to the "
+            "normalized Massive universe."
+        )
+
     selection_result = (
         select_primary_contracts(
-            cohort_quotes,
+            selection_universe.eligible,
             session_date=session_date,
         )
     )
@@ -737,9 +877,18 @@ def run_cohort_001_collection(
     freeze_selection_manifest(
         conn,
         run_id=run_id,
+        snapshot_id=snapshot_id,
         selections=sequenced,
         empty_strata=(
             selection_result.empty
+        ),
+        selection_eligible_count=(
+            selection_universe
+            .eligible_count
+        ),
+        selection_exclusions=(
+            selection_universe
+            .exclusions
         ),
         selected_at=utc_now_iso(),
         preregistration_hash=(
@@ -762,13 +911,114 @@ def run_cohort_001_collection(
 
     success_count = 0
     failure_count = 0
-    underlying_observed = False
+    run_invalid = False
+    invalid_reason: str | None = None
+
+    # B4: collect exactly one independent Saxo
+    # underlying observation after the Massive-only
+    # selection is frozen, but before randomized
+    # option resolution begins.
+    underlying_attempted_at = utc_now_iso()
+    _reset_saxo_retry_counter(saxo_client)
+
+    try:
+        underlying_quote = (
+            saxo_client
+            .get_underlying_quote_for_symbol(
+                symbol
+            )
+        )
+        underlying_completed_at = utc_now_iso()
+        underlying_retry_count = (
+            _retry_count_from_client_or_exception(
+                saxo_client
+            )
+        )
+
+        create_saxo_underlying_observation(
+            research_snapshot_id=snapshot_id,
+            underlying=symbol,
+            quote=underlying_quote,
+            source_snapshot_captured_at=(
+                source_captured_at
+            ),
+            massive_observed_at=(
+                snapshot_record[
+                    "snapshot"
+                ].get("underlying_at")
+            ),
+            retry_count=underlying_retry_count,
+            conn=conn,
+        )
+
+        _record_provider_attempt(
+            conn,
+            run_id=run_id,
+            provider="SAXO",
+            operation="UNDERLYING_QUOTE",
+            underlying=symbol,
+            attempted_at=underlying_attempted_at,
+            completed_at=underlying_completed_at,
+            succeeded=True,
+            retry_count=underlying_retry_count,
+        )
+
+        conn.execute(
+            """
+            UPDATE research_runs
+            SET underlying_observation_status =
+                'SUCCESS'
+            WHERE id = ?;
+            """,
+            (run_id,),
+        )
+
+    except Exception as exc:
+        underlying_completed_at = utc_now_iso()
+        failure_stage, failure_code = (
+            _classify_resolution_failure(exc)
+        )
+        retry_count = (
+            _retry_count_from_client_or_exception(
+                saxo_client,
+                exc,
+            )
+        )
+
+        _record_provider_attempt(
+            conn,
+            run_id=run_id,
+            provider="SAXO",
+            operation="UNDERLYING_QUOTE",
+            underlying=symbol,
+            attempted_at=underlying_attempted_at,
+            completed_at=underlying_completed_at,
+            succeeded=False,
+            retry_count=retry_count,
+            failure_code=failure_code,
+            failure_reason=str(exc),
+        )
+
+        conn.execute(
+            """
+            UPDATE research_runs
+            SET underlying_observation_status =
+                'FAILED'
+            WHERE id = ?;
+            """,
+            (run_id,),
+        )
+
+        run_invalid = True
+        invalid_reason = (
+            "Independent Saxo underlying "
+            f"observation failed ({failure_stage})."
+        )
 
     for selection in sequenced:
         option_symbol = (
             selection.quote.option_symbol
-            or
-            selection.quote.provider_contract_id
+            or selection.quote.provider_contract_id
         )
 
         massive_quote = (
@@ -784,6 +1034,7 @@ def run_cohort_001_collection(
             )
 
         attempted_at = utc_now_iso()
+        _reset_saxo_retry_counter(saxo_client)
 
         try:
             bridged = bridge_func(
@@ -791,166 +1042,47 @@ def run_cohort_001_collection(
                 symbol,
                 massive_quote,
             )
-
-            completed_at = utc_now_iso()
-
-            create_saxo_option_observation(
-                option_quote_id=(
-                    selection
-                    .quote
-                    .option_quote_id
-                ),
-                contract=(
-                    bridged.saxo_contract
-                ),
-                quote=(
-                    bridged.saxo_quote
-                ),
-                source_snapshot_captured_at=(
-                    source_captured_at
-                ),
-                source_quote_at=(
-                    massive_quote.get(
-                        "quote_at"
-                    )
-                ),
-                massive_observed_at=(
-                    massive_quote.get(
-                        "quote_at"
-                    )
-                ),
-                resolution_sequence=(
-                    selection
-                    .resolution_sequence
-                ),
-                conn=conn,
-            )
-
-            _record_provider_attempt(
-                conn,
-                run_id=run_id,
-                provider="SAXO",
-                operation=(
-                    "OPTION_RESOLUTION"
-                ),
-                underlying=symbol,
-                attempted_at=attempted_at,
-                completed_at=completed_at,
-                succeeded=True,
-            )
-
-            success_count += 1
-
-            if not underlying_observed:
-                try:
-                    underlying_quote = (
-                        saxo_client
-                        .get_option_underlying_quote(
-                            bridged.saxo_contract
-                        )
-                    )
-
-                    create_saxo_underlying_observation(
-                        research_snapshot_id=(
-                            snapshot_id
-                        ),
-                        underlying=symbol,
-                        quote=(
-                            underlying_quote
-                        ),
-                        source_snapshot_captured_at=(
-                            source_captured_at
-                        ),
-                        massive_observed_at=(
-                            snapshot_record[
-                                "snapshot"
-                            ].get(
-                                "underlying_at"
-                            )
-                        ),
-                        conn=conn,
-                    )
-
-                    conn.execute(
-                        """
-                        UPDATE research_runs
-                        SET underlying_observation_status =
-                            'SUCCESS'
-                        WHERE id = ?;
-                        """,
-                        (run_id,),
-                    )
-
-                    underlying_observed = True
-
-                except Exception:
-                    conn.execute(
-                        """
-                        UPDATE research_runs
-                        SET underlying_observation_status =
-                            'FAILED'
-                        WHERE id = ?;
-                        """,
-                        (run_id,),
-                    )
-
         except Exception as exc:
             completed_at = utc_now_iso()
-
-            (
-                failure_stage,
-                failure_code,
-            ) = _classify_resolution_failure(
-                exc
+            failure_stage, failure_code = (
+                _classify_resolution_failure(exc)
+            )
+            retry_count = (
+                _retry_count_from_client_or_exception(
+                    saxo_client,
+                    exc,
+                )
             )
 
             create_saxo_resolution_failure(
-                research_snapshot_id=(
-                    snapshot_id
-                ),
+                research_snapshot_id=snapshot_id,
                 option_quote_id=(
-                    selection
-                    .quote
-                    .option_quote_id
+                    selection.quote.option_quote_id
                 ),
                 underlying=symbol,
-                right=(
-                    selection.quote.right
-                ),
-                strike=(
-                    selection.quote.strike
-                ),
+                right=selection.quote.right,
+                strike=selection.quote.strike,
                 expiration=(
-                    selection
-                    .quote
-                    .expiration
+                    selection.quote.expiration
                 ),
                 provider_contract_id=(
-                    selection
-                    .quote
-                    .provider_contract_id
+                    selection.quote.provider_contract_id
                 ),
                 option_symbol=(
-                    selection
-                    .quote
-                    .option_symbol
+                    selection.quote.option_symbol
                 ),
                 shares_per_contract=(
                     massive_quote.get(
                         "shares_per_contract"
                     )
                 ),
-                failure_stage=(
-                    failure_stage
-                ),
-                failure_code=(
-                    failure_code
-                ),
+                failure_stage=failure_stage,
+                failure_code=failure_code,
                 failure_reason=str(exc),
                 attempted_at=attempted_at,
+                retry_count=retry_count,
                 resolution_sequence=(
-                    selection
-                    .resolution_sequence
+                    selection.resolution_sequence
                 ),
                 conn=conn,
             )
@@ -959,30 +1091,86 @@ def run_cohort_001_collection(
                 conn,
                 run_id=run_id,
                 provider="SAXO",
-                operation=(
-                    "OPTION_RESOLUTION"
-                ),
+                operation="OPTION_RESOLUTION",
                 underlying=symbol,
                 attempted_at=attempted_at,
                 completed_at=completed_at,
                 succeeded=False,
-                failure_code=(
-                    failure_code
-                ),
+                retry_count=retry_count,
+                failure_code=failure_code,
                 failure_reason=str(exc),
             )
 
             failure_count += 1
 
+            if failure_stage == "AUTHENTICATION":
+                run_invalid = True
+                invalid_reason = (
+                    "Saxo authentication failed "
+                    "during randomized resolution."
+                )
+                break
+
+            continue
+
+        completed_at = utc_now_iso()
+        retry_count = (
+            _retry_count_from_client_or_exception(
+                saxo_client
+            )
+        )
+
+        # Persistence is intentionally outside the
+        # provider-resolution exception handler.
+        # A database failure must never become fake
+        # evidence that Saxo failed to resolve.
+        create_saxo_option_observation(
+            option_quote_id=(
+                selection.quote.option_quote_id
+            ),
+            contract=bridged.saxo_contract,
+            quote=bridged.saxo_quote,
+            source_snapshot_captured_at=(
+                source_captured_at
+            ),
+            source_quote_at=(
+                massive_quote.get("quote_at")
+            ),
+            massive_observed_at=(
+                massive_quote.get("quote_at")
+            ),
+            retry_count=retry_count,
+            resolution_sequence=(
+                selection.resolution_sequence
+            ),
+            conn=conn,
+        )
+
+        _record_provider_attempt(
+            conn,
+            run_id=run_id,
+            provider="SAXO",
+            operation="OPTION_RESOLUTION",
+            underlying=symbol,
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+            succeeded=True,
+            retry_count=retry_count,
+        )
+
+        success_count += 1
+
     if not sequenced:
-        conn.execute(
-            """
-            UPDATE research_runs
-            SET underlying_observation_status =
-                'NOT_ATTEMPTED'
-            WHERE id = ?;
-            """,
-            (run_id,),
+        run_invalid = True
+        invalid_reason = (
+            "Cohort produced zero selected contracts."
+        )
+
+    if sequenced and success_count == 0:
+        run_invalid = True
+        invalid_reason = (
+            invalid_reason
+            or "Zero Saxo resolutions succeeded."
         )
 
     ended_at = utc_now_iso()
@@ -1007,27 +1195,34 @@ def run_cohort_001_collection(
         run_id=run_id,
         underlying=symbol,
         completed_at=ended_at,
-        succeeded=True,
+        succeeded=(not run_invalid),
+        failure_code=(
+            "RUN_INVALID"
+            if run_invalid
+            else None
+        ),
+        failure_reason=invalid_reason,
+    )
+
+    final_status = (
+        "INVALID"
+        if run_invalid
+        else "COMPLETED"
     )
 
     set_run_status(
         conn,
         run_id=run_id,
-        status="COMPLETED",
+        status=final_status,
         ended_at=ended_at,
+        notes=invalid_reason,
     )
 
     return CohortRunResult(
         run_id=run_id,
         snapshot_id=snapshot_id,
-        selected_contract_count=(
-            len(sequenced)
-        ),
-        saxo_resolution_success_count=(
-            success_count
-        ),
-        saxo_resolution_failure_count=(
-            failure_count
-        ),
-        status="COMPLETED",
+        selected_contract_count=len(sequenced),
+        saxo_resolution_success_count=success_count,
+        saxo_resolution_failure_count=failure_count,
+        status=final_status,
     )

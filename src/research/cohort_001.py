@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import math
 from random import Random, SystemRandom
 from typing import Iterable, Protocol
 
@@ -54,6 +55,61 @@ class CohortQuote:
 
 
 @dataclass(frozen=True)
+class SelectionUniverseInput:
+    """
+    Provider-neutral selection-stage input.
+
+    Provider adapters convert their evidence into
+    this structure. Cohort selection therefore does
+    not depend directly on Massive, Saxo, or a
+    future provider.
+    """
+
+    option_quote_id: int
+    provider: str
+    underlying: str
+    provider_contract_id: str | None
+    option_symbol: str | None
+    right: str
+    strike: float
+    expiration: str
+    delta: float | None
+    model_observation_count: int
+
+
+@dataclass(frozen=True)
+class SelectionExclusion:
+    option_quote_id: int | None
+    provider: str
+    underlying: str
+    provider_contract_id: str | None
+    option_symbol: str | None
+    right: str | None
+    strike: float | None
+    expiration: str | None
+    reason_code: str
+    reason_detail: str | None
+
+
+@dataclass(frozen=True)
+class SelectionUniverseResult:
+    eligible: tuple[CohortQuote, ...]
+    exclusions: tuple[SelectionExclusion, ...]
+
+    @property
+    def eligible_count(self) -> int:
+        return len(self.eligible)
+
+    @property
+    def exclusion_count(self) -> int:
+        return len(self.exclusions)
+
+    @property
+    def normalized_count(self) -> int:
+        return self.eligible_count + self.exclusion_count
+
+
+@dataclass(frozen=True)
 class CohortStratum:
     dte_name: str
     dte_min: int
@@ -62,6 +118,7 @@ class CohortStratum:
     delta_name: str
     abs_delta_min: float
     abs_delta_max: float
+    is_final_delta_band: bool
 
     right: str
 
@@ -133,16 +190,25 @@ def all_strata() -> tuple[
         CohortStratum
     ] = []
 
+    final_delta_index = (
+        len(ABS_DELTA_STRATA) - 1
+    )
+
     for (
         dte_name,
         dte_min,
         dte_max,
     ) in DTE_STRATA:
         for (
-            delta_name,
-            delta_min,
-            delta_max,
-        ) in ABS_DELTA_STRATA:
+            delta_index,
+            (
+                delta_name,
+                delta_min,
+                delta_max,
+            ),
+        ) in enumerate(
+            ABS_DELTA_STRATA
+        ):
             for right in RIGHTS:
                 strata.append(
                     CohortStratum(
@@ -157,6 +223,10 @@ def all_strata() -> tuple[
                         ),
                         abs_delta_max=(
                             delta_max
+                        ),
+                        is_final_delta_band=(
+                            delta_index
+                            == final_delta_index
                         ),
                         right=right,
                     )
@@ -214,14 +284,16 @@ def _in_delta_interval(
     value: float,
     lower: float,
     upper: float,
+    *,
+    is_final: bool,
 ) -> bool:
     """
     Delta bands form a non-overlapping partition.
 
     Lower bounds are inclusive. Upper bounds are
-    exclusive, except the final 0.80 boundary.
+    exclusive, except the final configured band.
     """
-    if upper == 0.80:
+    if is_final:
         return (
             value >= lower
             and value <= upper
@@ -268,6 +340,9 @@ def _belongs_to_stratum(
         abs_delta,
         stratum.abs_delta_min,
         stratum.abs_delta_max,
+        is_final=(
+            stratum.is_final_delta_band
+        ),
     )
 
 
@@ -279,6 +354,7 @@ def _selection_sort_key(
     str,
     float,
     str,
+    int,
 ]:
     abs_delta = abs(
         float(
@@ -302,8 +378,187 @@ def _selection_sort_key(
         quote.expiration[:10],
         float(quote.strike),
         symbol,
+        int(
+            quote.option_quote_id
+        ),
     )
 
+
+
+def evaluate_selection_universe(
+    inputs: Iterable[
+        SelectionUniverseInput
+    ],
+) -> SelectionUniverseResult:
+    """
+    Partition every normalized contract into exactly
+    one selection-stage state:
+
+      * ELIGIBLE
+      * EXCLUDED with an explicit reason
+
+    Required reconciliation:
+
+      normalized = eligible + exclusions
+    """
+
+    input_list = tuple(inputs)
+
+    quote_ids = [
+        item.option_quote_id
+        for item in input_list
+    ]
+
+    if len(set(quote_ids)) != len(quote_ids):
+        raise ValueError(
+            "Selection-universe option_quote_id "
+            "values must be unique."
+        )
+
+    eligible: list[CohortQuote] = []
+    exclusions: list[
+        SelectionExclusion
+    ] = []
+
+    for item in input_list:
+        identity = (
+            item.option_symbol
+            or item.provider_contract_id
+        )
+
+        def exclude(
+            reason_code: str,
+            detail: str | None = None,
+        ) -> None:
+            exclusions.append(
+                SelectionExclusion(
+                    option_quote_id=(
+                        item.option_quote_id
+                    ),
+                    provider=item.provider,
+                    underlying=item.underlying,
+                    provider_contract_id=(
+                        item.provider_contract_id
+                    ),
+                    option_symbol=(
+                        item.option_symbol
+                    ),
+                    right=item.right,
+                    strike=item.strike,
+                    expiration=item.expiration,
+                    reason_code=reason_code,
+                    reason_detail=detail,
+                )
+            )
+
+        if not identity:
+            exclude(
+                "NO_SYMBOL",
+                (
+                    "Normalized contract has no "
+                    "provider contract identifier "
+                    "or option symbol."
+                ),
+            )
+            continue
+
+        if item.model_observation_count > 1:
+            exclude(
+                "DUPLICATE_MODEL_OBSERVATION",
+                (
+                    "More than one provider model "
+                    "observation matched this "
+                    "normalized contract."
+                ),
+            )
+            continue
+
+        if item.model_observation_count == 0:
+            exclude(
+                "NO_MATCHING_MODEL_OBSERVATION",
+                (
+                    "No provider model observation "
+                    "matched this normalized "
+                    "contract, so delta is "
+                    "unavailable."
+                ),
+            )
+            continue
+
+        if item.delta is None:
+            exclude(
+                "MISSING_DELTA",
+                (
+                    "Matched provider model "
+                    "observation has no delta."
+                ),
+            )
+            continue
+
+        try:
+            delta = float(item.delta)
+        except (TypeError, ValueError):
+            exclude(
+                "INVALID_DELTA",
+                "Provider delta is not numeric.",
+            )
+            continue
+
+        if not math.isfinite(delta):
+            exclude(
+                "INVALID_DELTA",
+                "Provider delta is not finite.",
+            )
+            continue
+
+        abs_delta = abs(delta)
+
+        if not (
+            ABS_DELTA_STRATA[0][1]
+            <= abs_delta
+            <= ABS_DELTA_STRATA[-1][2]
+        ):
+            exclude(
+                "OUTSIDE_DELTA_SAMPLING_RANGE",
+                (
+                    "Absolute delta "
+                    f"{abs_delta:.12g} is outside "
+                    "the preregistered 0.10-0.80 "
+                    "sampling range."
+                ),
+            )
+            continue
+
+        eligible.append(
+            CohortQuote(
+                option_quote_id=(
+                    item.option_quote_id
+                ),
+                provider_contract_id=(
+                    item.provider_contract_id
+                ),
+                option_symbol=(
+                    item.option_symbol
+                ),
+                right=item.right,
+                strike=float(item.strike),
+                expiration=item.expiration,
+                delta=delta,
+            )
+        )
+
+    result = SelectionUniverseResult(
+        eligible=tuple(eligible),
+        exclusions=tuple(exclusions),
+    )
+
+    if result.normalized_count != len(input_list):
+        raise RuntimeError(
+            "Selection universe failed "
+            "to reconcile."
+        )
+
+    return result
 
 def select_primary_contracts(
     quotes: Iterable[CohortQuote],
@@ -314,11 +569,12 @@ def select_primary_contracts(
     Select exactly one primary contract from each
     non-empty Cohort 001 stratum.
 
-    Frozen tie-break order:
+    Frozen v2 tie-break order:
       1. smallest |delta| distance to stratum midpoint
       2. earlier expiration
       3. lower strike
       4. lexical option symbol
+      5. lower immutable option_quote_id
 
     No Saxo information is accepted by this function.
     Selection therefore cannot depend on whether Saxo

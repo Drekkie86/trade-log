@@ -6,6 +6,7 @@ import pytest
 
 from src.research.cohort_001 import (
     CohortQuote,
+    SelectionExclusion,
     assign_resolution_sequence,
     make_test_rng,
     select_primary_contracts,
@@ -67,6 +68,33 @@ def build_database(
     connection.executescript(
         schema
     )
+
+    version = connection.execute(
+        """
+        SELECT version
+        FROM schema_version;
+        """
+    ).fetchone()[0]
+
+    if version == 6:
+        migration = (
+            PROJECT_ROOT
+            / "migrations"
+            / "007_selection_universe_integrity.sql"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        connection.executescript(
+            migration
+        )
+
+    assert connection.execute(
+        """
+        SELECT version
+        FROM schema_version;
+        """
+    ).fetchone()[0] == 7
 
     return connection
 
@@ -440,12 +468,23 @@ def test_freeze_selection_writes_before_resolution(
             )
         )
 
+        set_massive_collection_counts(
+            connection,
+            run_id=run_id,
+            raw_contracts=1,
+            normalized_contracts=1,
+            normalization_drop_count=0,
+        )
+
         written = (
             freeze_selection_manifest(
                 connection,
                 run_id=run_id,
+                snapshot_id=snapshot_id,
                 selections=selections,
                 empty_strata=empty,
+                selection_eligible_count=1,
+                selection_exclusions=(),
                 selected_at=(
                     "2026-08-28T12:00:03Z"
                 ),
@@ -546,6 +585,14 @@ def test_selection_hash_must_match_run(
             )
         )
 
+        set_massive_collection_counts(
+            connection,
+            run_id=run_id,
+            raw_contracts=1,
+            normalized_contracts=1,
+            normalization_drop_count=0,
+        )
+
         with pytest.raises(
             ValueError,
             match="preregistration hash",
@@ -553,8 +600,11 @@ def test_selection_hash_must_match_run(
             freeze_selection_manifest(
                 connection,
                 run_id=run_id,
+                snapshot_id=snapshot_id,
                 selections=selections,
                 empty_strata=empty,
+                selection_eligible_count=1,
+                selection_exclusions=(),
                 selected_at=(
                     "2026-08-28T12:00:03Z"
                 ),
@@ -603,6 +653,14 @@ def test_selection_must_belong_to_run_snapshot(
             )
         )
 
+        set_massive_collection_counts(
+            connection,
+            run_id=run_id,
+            raw_contracts=1,
+            normalized_contracts=1,
+            normalization_drop_count=0,
+        )
+
         with pytest.raises(
             sqlite3.IntegrityError,
             match="must belong",
@@ -610,8 +668,11 @@ def test_selection_must_belong_to_run_snapshot(
             freeze_selection_manifest(
                 connection,
                 run_id=run_id,
+                snapshot_id=other_snapshot,
                 selections=selections,
                 empty_strata=empty,
+                selection_eligible_count=1,
+                selection_exclusions=(),
                 selected_at=(
                     "2026-08-28T12:00:03Z"
                 ),
@@ -669,6 +730,14 @@ def test_resolution_sequence_must_be_complete(
             )
         )
 
+        set_massive_collection_counts(
+            connection,
+            run_id=run_id,
+            raw_contracts=1,
+            normalized_contracts=1,
+            normalization_drop_count=0,
+        )
+
         with pytest.raises(
             ValueError,
             match="requires.*resolution_sequence",
@@ -676,8 +745,11 @@ def test_resolution_sequence_must_be_complete(
             freeze_selection_manifest(
                 connection,
                 run_id=run_id,
+                snapshot_id=snapshot_id,
                 selections=selected.selected,
                 empty_strata=selected.empty,
+                selection_eligible_count=1,
+                selection_exclusions=(),
                 selected_at=(
                     "2026-08-28T12:00:03Z"
                 ),
@@ -690,6 +762,187 @@ def test_resolution_sequence_must_be_complete(
     finally:
         connection.close()
 
+
+
+def test_selection_exclusion_persists_and_reconciles(
+    tmp_path,
+):
+    connection = build_database(
+        tmp_path
+    )
+
+    try:
+        run_id, snapshot_id = (
+            create_run_and_snapshot(
+                connection
+            )
+        )
+
+        quote_id = insert_quote(
+            connection,
+            snapshot_id,
+            symbol="O:TEST1",
+            right="C",
+            strike=320,
+            expiration="2026-09-11",
+        )
+
+        set_massive_collection_counts(
+            connection,
+            run_id=run_id,
+            raw_contracts=1,
+            normalized_contracts=1,
+            normalization_drop_count=0,
+        )
+
+        exclusion = SelectionExclusion(
+            option_quote_id=quote_id,
+            provider="MASSIVE",
+            underlying="AAPL",
+            provider_contract_id="O:TEST1",
+            option_symbol="O:TEST1",
+            right="C",
+            strike=320.0,
+            expiration="2026-09-11",
+            reason_code="MISSING_DELTA",
+            reason_detail=(
+                "Matched provider model "
+                "observation has no delta."
+            ),
+        )
+
+        written = freeze_selection_manifest(
+            connection,
+            run_id=run_id,
+            snapshot_id=snapshot_id,
+            selections=(),
+            empty_strata=(),
+            selection_eligible_count=0,
+            selection_exclusions=(
+                exclusion,
+            ),
+            selected_at=(
+                "2026-08-28T12:00:03Z"
+            ),
+            preregistration_hash="hash123",
+            code_git_sha="sha123",
+        )
+
+        assert written == 0
+
+        manifest = get_run_manifest(
+            connection,
+            run_id=run_id,
+        )
+
+        assert manifest is not None
+        assert (
+            manifest.selection_eligible_count
+            == 0
+        )
+        assert (
+            manifest.selection_exclusion_count
+            == 1
+        )
+
+        row = connection.execute(
+            """
+            SELECT *
+            FROM selection_exclusions
+            WHERE run_id = ?;
+            """,
+            (run_id,),
+        ).fetchone()
+
+        assert row is not None
+        assert (
+            row["reason_code"]
+            == "MISSING_DELTA"
+        )
+
+        reconciliation = (
+            connection.execute(
+                """
+                SELECT *
+                FROM v_selection_universe_reconciliation
+                WHERE run_id = ?;
+                """,
+                (run_id,),
+            ).fetchone()
+        )
+
+        assert (
+            reconciliation[
+                "selection_population_reconciles"
+            ]
+            == 1
+        )
+
+    finally:
+        connection.close()
+
+
+def test_selection_freeze_rejects_nonreconciling_population(
+    tmp_path,
+):
+    connection = build_database(
+        tmp_path
+    )
+
+    try:
+        run_id, snapshot_id = (
+            create_run_and_snapshot(
+                connection
+            )
+        )
+
+        set_massive_collection_counts(
+            connection,
+            run_id=run_id,
+            raw_contracts=2,
+            normalized_contracts=2,
+            normalization_drop_count=0,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="do not reconcile",
+        ):
+            freeze_selection_manifest(
+                connection,
+                run_id=run_id,
+                snapshot_id=snapshot_id,
+                selections=(),
+                empty_strata=(),
+                selection_eligible_count=1,
+                selection_exclusions=(),
+                selected_at=(
+                    "2026-08-28T12:00:03Z"
+                ),
+                preregistration_hash="hash123",
+                code_git_sha="sha123",
+            )
+
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM selection_exclusions
+            WHERE run_id = ?;
+            """,
+            (run_id,),
+        ).fetchone()[0] == 0
+
+        assert connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM research_selections
+            WHERE run_id = ?;
+            """,
+            (run_id,),
+        ).fetchone()[0] == 0
+
+    finally:
+        connection.close()
 
 def test_terminal_run_locks_manifest(
     tmp_path,

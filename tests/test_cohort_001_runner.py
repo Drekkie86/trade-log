@@ -48,6 +48,33 @@ def build_database(
         schema
     )
 
+    version = connection.execute(
+        """
+        SELECT version
+        FROM schema_version;
+        """
+    ).fetchone()[0]
+
+    if version == 6:
+        migration = (
+            PROJECT_ROOT
+            / "migrations"
+            / "007_selection_universe_integrity.sql"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        connection.executescript(
+            migration
+        )
+
+    assert connection.execute(
+        """
+        SELECT version
+        FROM schema_version;
+        """
+    ).fetchone()[0] == 7
+
     return connection
 
 
@@ -61,6 +88,32 @@ def make_payload():
         "pages_fetched": 1,
         "truncated": False,
         "results": [
+            {
+                "details": {
+                    "ticker":
+                        "O:AAPL260911C00340000",
+                    "contract_type":
+                        "call",
+                    "strike_price":
+                        340,
+                    "expiration_date":
+                        "2026-09-11",
+                    "shares_per_contract":
+                        100,
+                },
+                "implied_volatility":
+                    0.24,
+                "greeks": {
+                    "gamma": 0.01,
+                    "theta": -0.1,
+                    "vega": 0.2,
+                },
+                "day": {
+                    "volume": 4,
+                },
+                "open_interest":
+                    100,
+            },
             {
                 "details": {
                     "ticker":
@@ -209,12 +262,16 @@ class FakeUnderlyingQuote:
 class FakeSaxoClient:
     def __init__(self):
         self.underlying_calls = 0
+        self.underlying_symbols = []
 
-    def get_option_underlying_quote(
+    def get_underlying_quote_for_symbol(
         self,
-        contract,
+        symbol,
     ):
         self.underlying_calls += 1
+        self.underlying_symbols.append(
+            symbol
+        )
         return FakeUnderlyingQuote()
 
 
@@ -287,6 +344,20 @@ def test_runner_freezes_before_saxo_and_completes(
             result.selected_contract_count
             == 2
         )
+        exclusions = connection.execute(
+            """
+            SELECT *
+            FROM selection_exclusions
+            WHERE run_id = ?;
+            """,
+            (result.run_id,),
+        ).fetchall()
+
+        assert len(exclusions) == 1
+        assert (
+            exclusions[0]["reason_code"]
+            == "MISSING_DELTA"
+        )
         assert (
             result.saxo_resolution_success_count
             == 2
@@ -311,9 +382,25 @@ def test_runner_freezes_before_saxo_and_completes(
             == 2
         )
         assert (
+            run["massive_normalized_contracts"]
+            == 3
+        )
+        assert (
+            run["selection_eligible_count"]
+            == 2
+        )
+        assert (
+            run["selection_exclusion_count"]
+            == 1
+        )
+        assert (
             run["underlying_observation_status"]
             == "SUCCESS"
         )
+        assert saxo.underlying_calls == 1
+        assert saxo.underlying_symbols == [
+            "AAPL"
+        ]
 
         selections = connection.execute(
             """
@@ -352,7 +439,7 @@ def test_runner_freezes_before_saxo_and_completes(
             """
         ).fetchall()
 
-        assert len(model_rows) == 2
+        assert len(model_rows) == 3
 
         quote_model_values = connection.execute(
             """
