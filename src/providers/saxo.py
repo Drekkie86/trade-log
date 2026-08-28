@@ -1439,6 +1439,20 @@ class SaxoClient:
         if len(exact) == 1:
             return exact[0]
 
+        primary_exact = [
+            item
+            for item in exact
+            if (
+                item.get("Identifier") is not None
+                and item.get("PrimaryListing") is not None
+                and str(item.get("Identifier"))
+                == str(item.get("PrimaryListing"))
+            )
+        ]
+
+        if len(primary_exact) == 1:
+            return primary_exact[0]
+
         if not exact and len(results) == 1:
             return results[0]
 
