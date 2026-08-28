@@ -50,7 +50,7 @@ def build_database(
 
     version = connection.execute(
         """
-        SELECT version
+        SELECT MAX(version)
         FROM schema_version;
         """
     ).fetchone()[0]
@@ -70,7 +70,7 @@ def build_database(
 
     assert connection.execute(
         """
-        SELECT version
+        SELECT MAX(version)
         FROM schema_version;
         """
     ).fetchone()[0] == 7

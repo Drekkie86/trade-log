@@ -170,11 +170,18 @@ SELECT
 
 FROM research_runs AS rr;
 
-UPDATE schema_version
-SET
-    version = 7,
-    applied_at = strftime(
+INSERT INTO schema_version (
+    version,
+    applied_at
+)
+SELECT
+    7,
+    strftime(
         '%Y-%m-%dT%H:%M:%SZ',
         'now'
     )
-WHERE version = 6;
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM schema_version
+    WHERE version = 7
+);

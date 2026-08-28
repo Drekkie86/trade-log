@@ -34,10 +34,13 @@ def connect(path: Path) -> sqlite3.Connection:
 
 def version(connection: sqlite3.Connection) -> int:
     row = connection.execute(
-        "SELECT version FROM schema_version;"
+        """
+        SELECT MAX(version) AS version
+        FROM schema_version;
+        """
     ).fetchone()
-    if row is None:
-        raise RuntimeError("schema_version contains no row.")
+    if row is None or row["version"] is None:
+        raise RuntimeError("schema_version contains no version.")
     return int(row["version"])
 
 
