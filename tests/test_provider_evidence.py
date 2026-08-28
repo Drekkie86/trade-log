@@ -38,22 +38,6 @@ def make_v6_database(
         encoding="utf-8"
     )
 
-    migration_005 = (
-        PROJECT_ROOT
-        / "migrations"
-        / "005_provider_evidence_hardening.sql"
-    ).read_text(
-        encoding="utf-8"
-    )
-
-    migration_006 = (
-        PROJECT_ROOT
-        / "migrations"
-        / "006_cohort_research_integrity.sql"
-    ).read_text(
-        encoding="utf-8"
-    )
-
     connection = sqlite3.connect(
         db_path
     )
@@ -68,14 +52,6 @@ def make_v6_database(
 
     connection.executescript(
         schema_sql
-    )
-
-    connection.executescript(
-        migration_005
-    )
-
-    connection.executescript(
-        migration_006
     )
 
     connection.commit()
