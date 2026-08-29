@@ -289,6 +289,58 @@ def partition_pairs(
     }
 
 
+
+def count_eligible_entry_rows(db_path: str | Path) -> int:
+    """Count entry rows that are eligible for matched/unmatched accounting.
+
+    This mirrors the ENTRY-side predicate used by ``load_matched_pairs_v3``:
+    completed run, bid/ask present, and non-crossed quote. It deliberately
+    counts every eligible entry contract for every consecutive observed
+    session pair, regardless of whether the next-session row exists or has
+    a usable quote.
+
+    The analysis script asserts ``eligible == matched + unmatched`` so any
+    future provider row with a partial/invalid exit quote cannot silently
+    disappear from both populations.
+    """
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        dates = connection.execute(
+            """
+            SELECT symbol, trading_date
+            FROM thetadata_eod_runs
+            WHERE status='COMPLETED'
+            GROUP BY symbol, trading_date
+            ORDER BY symbol, trading_date
+            """
+        ).fetchall()
+        by_symbol: dict[str, list[str]] = defaultdict(list)
+        for row in dates:
+            by_symbol[str(row["symbol"])].append(str(row["trading_date"]))
+
+        total = 0
+        for symbol, symbol_dates in by_symbol.items():
+            for entry_date, _exit_date in zip(symbol_dates, symbol_dates[1:]):
+                row = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM thetadata_eod_option_rows a
+                    JOIN thetadata_eod_runs ra ON ra.run_id=a.run_id
+                    WHERE ra.symbol=? AND ra.trading_date=?
+                      AND ra.status='COMPLETED'
+                      AND a.bid IS NOT NULL
+                      AND a.ask IS NOT NULL
+                      AND a.ask >= a.bid
+                    """,
+                    (symbol, entry_date),
+                ).fetchone()
+                total += int(row[0])
+        return total
+    finally:
+        connection.close()
+
+
 # =====================================================================
 # Entry observations with no matched next observed session
 # =====================================================================

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.research.thetadata_empirical_diagnostics_v3 import (  # noqa: E402
     classify_unmatched_entries,
+    count_eligible_entry_rows,
     dependence_report,
     group_medians,
     load_matched_pairs_v3,
@@ -66,9 +67,21 @@ def main() -> int:
     print("Loading matched pairs and computing forwards ...")
     pairs = load_matched_pairs_v3(db_path)
     unmatched = classify_unmatched_entries(db_path)
+    eligible_entries = count_eligible_entry_rows(db_path)
+    accounted_entries = len(pairs) + len(unmatched)
+    if accounted_entries != eligible_entries:
+        raise RuntimeError(
+            "ACCOUNTING INVARIANT FAILED: eligible entry rows "
+            f"({eligible_entries}) != matched ({len(pairs)}) + unmatched "
+            f"({len(unmatched)}) = {accounted_entries}. A provider row may "
+            "have a partial/invalid next-session quote that is disappearing "
+            "from both populations. Do not interpret diagnostics until fixed."
+        )
     forwards = synthetic_forwards(db_path)
+    print(f"Eligible entry rows      : {eligible_entries}")
     print(f"Matched pairs (all)      : {len(pairs)}")
     print(f"Unmatched entry rows     : {len(unmatched)}")
+    print("Accounting invariant     : PASS")
     print(f"Parity references computed: {len(forwards)}")
     print()
 

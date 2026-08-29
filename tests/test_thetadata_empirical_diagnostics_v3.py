@@ -19,6 +19,7 @@ import pytest
 
 from src.research.thetadata_empirical_diagnostics_v3 import (
     MatchedPairV3,
+    count_eligible_entry_rows,
     dependence_report,
     fisher_interval,
     load_matched_pairs_v3,
@@ -334,3 +335,26 @@ def test_dependence_report_gives_both_estimators_and_never_selects():
 def test_pearson_refuses_degenerate_input():
     assert pearson([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]) is None
     assert pearson([1.0], [1.0]) is None
+
+
+def test_accounting_invariant_detects_partial_exit_quote(tmp_path):
+    """A present-but-partial exit quote must not disappear silently."""
+    path = tmp_path / "partial.db"
+    builder = StagingBuilder(path)
+    builder.row(
+        "AAPL", "2026-08-27", "2026-09-18", 300.0, "CALL", 1.00, 1.10
+    )
+    builder.row(
+        "AAPL", "2026-08-28", "2026-09-18", 300.0, "CALL", None, 1.05
+    )
+    builder.close()
+
+    matched = load_matched_pairs_v3(path)
+    from src.research.thetadata_empirical_diagnostics_v3 import classify_unmatched_entries
+    unmatched = classify_unmatched_entries(path)
+    eligible = count_eligible_entry_rows(path)
+
+    assert eligible == 1
+    assert len(matched) == 0
+    assert len(unmatched) == 0
+    assert eligible != len(matched) + len(unmatched)

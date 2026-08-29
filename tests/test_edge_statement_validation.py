@@ -158,17 +158,48 @@ def test_loosened_independence_unit_without_justification_is_rejected():
     assert any("loosens the default" in e for e in result.errors)
 
 
-def test_loosened_independence_unit_with_justification_is_accepted():
+def test_loosened_independence_unit_with_clean_evidence_is_accepted():
     doc = base_document()
     doc["confirmation"]["independence_unit"] = "session"
     doc["confirmation"]["independence_justification"] = (
-        "Cross-underlying paired-edge correlation measured at r=0.05, "
-        "95% CI [-0.30, 0.39], n=40 sessions; sessions treated as "
-        "independent on this basis."
+        "Dedicated dependence-calibration dataset supports session-level "
+        "independence within the stated uncertainty."
     )
+    doc["confirmation"]["independence_evidence"] = {
+        "dataset_id": "DEPENDENCE_CALIBRATION_2026_09",
+        "data_start": "2026-09-01",
+        "data_end": "2026-09-09",
+        "estimate": 0.05,
+        "ci_low": -0.30,
+        "ci_high": 0.39,
+    }
 
     result = validate_edge_statement(doc, discovery_windows=AUGUST_WINDOW)
     assert result.ok, result.errors
+
+
+def test_loosened_independence_unit_rejects_burned_august_evidence():
+    doc = base_document()
+    doc["confirmation"]["independence_unit"] = "session"
+    doc["confirmation"]["independence_justification"] = (
+        "Use the observed JPM-XOM dependence estimate."
+    )
+    doc["confirmation"]["independence_evidence"] = {
+        "dataset_id": "AUGUST_2026_THETADATA",
+        "data_start": "2026-08-01",
+        "data_end": "2026-08-31",
+        "estimate": 0.607,
+        "ci_low": 0.211,
+        "ci_high": 0.832,
+    }
+
+    result = validate_edge_statement(doc, discovery_windows=AUGUST_WINDOW)
+
+    assert not result.ok
+    assert any(
+        "burned discovery data may not justify a looser independence unit" in e
+        for e in result.errors
+    )
 
 
 def test_unknown_independence_unit_is_rejected():

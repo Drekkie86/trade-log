@@ -307,6 +307,59 @@
             "number",
             "null"
           ]
+        },
+        "independence_evidence": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "dataset_id",
+            "data_start",
+            "data_end",
+            "estimate",
+            "ci_low",
+            "ci_high"
+          ],
+          "properties": {
+            "dataset_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "data_start": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "data_end": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "estimate": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "ci_low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "ci_high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
         }
       }
     },

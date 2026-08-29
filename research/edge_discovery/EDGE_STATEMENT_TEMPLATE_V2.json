@@ -44,7 +44,15 @@
     "alpha_or_q": null,
     "multiplicity_method": null,
     "effect_size_floor": null,
-    "independence_justification": ""
+    "independence_justification": "",
+    "independence_evidence": {
+      "dataset_id": null,
+      "data_start": null,
+      "data_end": null,
+      "estimate": null,
+      "ci_low": null,
+      "ci_high": null
+    }
   },
   "searched_family": {
     "features_searched": [],

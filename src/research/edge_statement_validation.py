@@ -277,16 +277,67 @@ def validate_edge_statement(
             f"{ALLOWED_INDEPENDENCE_UNITS}"
         )
     elif unit is not None and unit != DEFAULT_INDEPENDENCE_UNIT:
-        if not str(
+        justification = str(
             _get(document, "confirmation", "independence_justification")
             or ""
-        ).strip():
+        ).strip()
+        evidence = _get(document, "confirmation", "independence_evidence")
+
+        if not justification:
             errors.append(
                 f"independence_unit {unit!r} loosens the default "
                 f"{DEFAULT_INDEPENDENCE_UNIT!r} and requires "
                 "confirmation.independence_justification with a measured "
                 "dependence estimate and its confidence interval"
             )
+
+        if not isinstance(evidence, Mapping):
+            errors.append(
+                f"independence_unit {unit!r} loosens the default and requires "
+                "confirmation.independence_evidence naming the dataset, "
+                "measurement window, estimate, and confidence interval"
+            )
+        else:
+            dataset_id = str(evidence.get("dataset_id") or "").strip()
+            evidence_start = evidence.get("data_start")
+            evidence_end = evidence.get("data_end")
+            estimate = evidence.get("estimate")
+            ci_low = evidence.get("ci_low")
+            ci_high = evidence.get("ci_high")
+
+            if not dataset_id:
+                errors.append("confirmation.independence_evidence.dataset_id is required")
+            if not _is_iso_date(evidence_start):
+                errors.append("confirmation.independence_evidence.data_start must be an ISO date")
+            if not _is_iso_date(evidence_end):
+                errors.append("confirmation.independence_evidence.data_end must be an ISO date")
+            if not isinstance(estimate, (int, float)):
+                errors.append("confirmation.independence_evidence.estimate must be numeric")
+            if not isinstance(ci_low, (int, float)) or not isinstance(ci_high, (int, float)):
+                errors.append("confirmation.independence_evidence requires numeric ci_low and ci_high")
+            elif ci_low > ci_high:
+                errors.append("confirmation.independence_evidence ci_low exceeds ci_high")
+
+            if _is_iso_date(evidence_start) and _is_iso_date(evidence_end):
+                if str(evidence_end) < str(evidence_start):
+                    errors.append("confirmation.independence_evidence.data_end precedes data_start")
+                for window in discovery_windows:
+                    if window.overlaps(str(evidence_start), str(evidence_end)):
+                        errors.append(
+                            "confirmation.independence_evidence window "
+                            f"{evidence_start}..{evidence_end} overlaps registered "
+                            f"discovery window {window.window_id} "
+                            f"({window.start}..{window.end}); burned discovery data "
+                            "may not justify a looser independence unit"
+                        )
+                for window in holdout_windows:
+                    if window.overlaps(str(evidence_start), str(evidence_end)):
+                        errors.append(
+                            "confirmation.independence_evidence window "
+                            f"{evidence_start}..{evidence_end} overlaps contaminated "
+                            f"holdout-access window {window.window_id} "
+                            f"({window.start}..{window.end})"
+                        )
 
     # -----------------------------------------------------------------
     # Multiplicity and cost provenance
