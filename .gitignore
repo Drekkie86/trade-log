@@ -6,4 +6,7 @@ trade_log.db
 *.db
 
 .env
+creds.txt
 .streamlit/secrets.toml
+
+Christiania_Full_Claude_Review_*.zip

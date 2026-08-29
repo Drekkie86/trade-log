@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "access_events": [
+    {
+      "event_id": "DISCOVERY_AUGUST_2026_THETADATA",
+      "start": "2026-08-01",
+      "end": "2026-08-31",
+      "access_type": "NON_MECHANICAL_DISCOVERY",
+      "reason": "Historical EOD data inspected and used to shape research design and diagnostics.",
+      "contaminates_confirmation": true
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "status": "UNFROZEN",
+  "period_id": "EDGE_PROGRAMME_001",
+  "period_start": null,
+  "period_end": null,
+  "max_families": null,
+  "alpha_or_q_budget": null,
+  "allocation_method": null,
+  "notes": "Scanner/discovery family preregistration must fail while status is UNFROZEN. Freeze this deliberately before opening the first edge family."
+}

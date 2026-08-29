@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Christiania Edge Statement v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "candidate_id",
+    "family_id",
+    "created_at_utc",
+    "created_from_discovery_data_end",
+    "eligible_population",
+    "setup",
+    "tradability",
+    "estimand",
+    "confirmation",
+    "searched_family",
+    "edge_statement",
+    "results"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "PREREGISTERED",
+        "CONFIRMED",
+        "REJECTED",
+        "DECAYED"
+      ]
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "family_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at_utc": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_from_discovery_data_end": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "preregistration_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "eligible_population": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "underlyings",
+        "option_rights",
+        "dte_min",
+        "dte_max",
+        "premium_min",
+        "premium_max",
+        "other_conditions"
+      ],
+      "properties": {
+        "underlyings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "option_rights": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "CALL",
+              "PUT"
+            ]
+          }
+        },
+        "dte_min": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "dte_max": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "premium_min": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "premium_max": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "other_conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "structure",
+        "direction",
+        "entry_rule",
+        "exit_rule",
+        "max_holding_period"
+      ],
+      "properties": {
+        "structure": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "direction": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_rule": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit_rule": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_holding_period": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "tradability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bid_must_be_positive",
+        "max_spread_to_mid",
+        "minimum_quote_size",
+        "broker_availability_required",
+        "defined_risk_required",
+        "max_loss_eur"
+      ],
+      "properties": {
+        "bid_must_be_positive": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_spread_to_mid": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minimum_quote_size": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "broker_availability_required": {
+          "type": "boolean"
+        },
+        "defined_risk_required": {
+          "type": "boolean"
+        },
+        "max_loss_eur": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "estimand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_metric",
+        "comparator",
+        "cost_provenance",
+        "net_of_costs_required"
+      ],
+      "properties": {
+        "primary_metric": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comparator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cost_provenance": {
+          "enum": [
+            "QUOTED",
+            "ASSUMED",
+            "ACTUAL_FILL",
+            null
+          ]
+        },
+        "net_of_costs_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data_start",
+        "data_end",
+        "independence_unit",
+        "minimum_independent_units",
+        "test",
+        "alpha_or_q",
+        "multiplicity_method",
+        "effect_size_floor"
+      ],
+      "properties": {
+        "data_start": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_end": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "independence_unit": {
+          "enum": [
+            "underlying_session",
+            "underlying_week",
+            "session",
+            null
+          ]
+        },
+        "independence_justification": {
+          "type": "string"
+        },
+        "minimum_independent_units": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "test": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alpha_or_q": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "multiplicity_method": {
+          "enum": [
+            "BONFERRONI",
+            "HOLM",
+            "BENJAMINI_HOCHBERG",
+            "PREREGISTERED_SINGLE_HYPOTHESIS",
+            null
+          ]
+        },
+        "effect_size_floor": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "searched_family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "features_searched",
+        "thresholds_searched",
+        "structures_searched",
+        "horizons_searched",
+        "hypothesis_count"
+      ],
+      "properties": {
+        "features_searched": {
+          "type": "array"
+        },
+        "thresholds_searched": {
+          "type": "array"
+        },
+        "structures_searched": {
+          "type": "array"
+        },
+        "horizons_searched": {
+          "type": "array"
+        },
+        "hypothesis_count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "edge_statement": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "results": {
+      "type": "object"
+    }
+  }
+}

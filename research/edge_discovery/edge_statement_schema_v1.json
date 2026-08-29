@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Christiania Edge Statement v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "status",
+    "candidate_id",
+    "family_id",
+    "eligible_population",
+    "setup",
+    "tradability",
+    "estimand",
+    "confirmation",
+    "searched_family",
+    "edge_statement",
+    "results"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "PREREGISTERED",
+        "CONFIRMED",
+        "REJECTED"
+      ]
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "family_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at_utc": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_from_discovery_data_end": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "eligible_population": {
+      "type": "object"
+    },
+    "setup": {
+      "type": "object"
+    },
+    "tradability": {
+      "type": "object"
+    },
+    "estimand": {
+      "type": "object"
+    },
+    "confirmation": {
+      "type": "object"
+    },
+    "searched_family": {
+      "type": "object"
+    },
+    "edge_statement": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "results": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

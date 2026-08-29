@@ -1,0 +1,93 @@
+{
+  "cohort_id": "COHORT_002",
+  "status": "DRAFT_NOT_PREREGISTERED",
+  "purpose": "EMPIRICAL_DEPENDENCE_AND_COST_MEASUREMENT",
+  "underlyings": [
+    "AAPL",
+    "XOM",
+    "JPM"
+  ],
+  "collection": {
+    "timezone": "America/New_York",
+    "target_time": "13:30",
+    "window_start": "13:25",
+    "window_end": "13:45",
+    "batches_per_session_day": 1
+  },
+  "universe": {
+    "min_dte": 7,
+    "max_dte": 45,
+    "rights": [
+      "CALL",
+      "PUT"
+    ],
+    "dte_bins": [
+      [
+        7,
+        14
+      ],
+      [
+        15,
+        30
+      ],
+      [
+        31,
+        45
+      ]
+    ],
+    "abs_delta_bins": [
+      [
+        0.1,
+        0.2
+      ],
+      [
+        0.2,
+        0.35
+      ],
+      [
+        0.35,
+        0.5
+      ],
+      [
+        0.5,
+        0.65
+      ],
+      [
+        0.65,
+        0.8
+      ]
+    ],
+    "final_delta_upper_inclusive": true,
+    "require_complete_chain": true
+  },
+  "null_pairs": {
+    "pairs_per_underlying_day_target": 5,
+    "minimum_contracts_per_selected_stratum": 2,
+    "selection": "DETERMINISTIC_PSEUDORANDOM_STRATA",
+    "contract_a_rank": [
+      "DELTA_DISTANCE_TO_BIN_MIDPOINT",
+      "EARLIER_EXPIRY",
+      "LOWER_STRIKE",
+      "LEXICAL_SYMBOL",
+      "IMMUTABLE_QUOTE_ID"
+    ],
+    "contract_b_rank": [
+      "SAME_EXPIRY_PREFERRED",
+      "ABS_DELTA_DISTANCE_TO_A",
+      "STRIKE_DISTANCE_TO_A",
+      "LEXICAL_SYMBOL",
+      "IMMUTABLE_QUOTE_ID"
+    ]
+  },
+  "outcome": {
+    "primary_horizon": "NEXT_ELIGIBLE_US_TRADING_DAY_SAME_WINDOW",
+    "gross_reference": "MID_TO_MID",
+    "paper_executable_reference": "ASK_TO_BID_LONG_OPTION"
+  },
+  "minimum_empirical_promotion": {
+    "eligible_session_days": 60,
+    "minimum_daily_summaries_per_underlying": 50,
+    "minimum_pairwise_same_day_observations": 45
+  },
+  "edge_rule_family_count": 0
+}

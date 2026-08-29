@@ -1,0 +1,60 @@
+{
+  "schema_version": "2.0",
+  "status": "DRAFT",
+  "candidate_id": "EDGE_CANDIDATE_XXX",
+  "family_id": "FAMILY_XXX",
+  "created_at_utc": null,
+  "created_from_discovery_data_end": null,
+  "eligible_population": {
+    "underlyings": [],
+    "option_rights": [],
+    "dte_min": null,
+    "dte_max": null,
+    "premium_min": null,
+    "premium_max": null,
+    "other_conditions": []
+  },
+  "setup": {
+    "structure": null,
+    "direction": null,
+    "entry_rule": null,
+    "exit_rule": null,
+    "max_holding_period": null
+  },
+  "tradability": {
+    "bid_must_be_positive": null,
+    "max_spread_to_mid": null,
+    "minimum_quote_size": null,
+    "broker_availability_required": true,
+    "defined_risk_required": true,
+    "max_loss_eur": null
+  },
+  "estimand": {
+    "primary_metric": null,
+    "comparator": null,
+    "cost_provenance": null,
+    "net_of_costs_required": true
+  },
+  "confirmation": {
+    "data_start": null,
+    "data_end": null,
+    "independence_unit": "underlying_session",
+    "minimum_independent_units": null,
+    "test": null,
+    "alpha_or_q": null,
+    "multiplicity_method": null,
+    "effect_size_floor": null,
+    "independence_justification": ""
+  },
+  "searched_family": {
+    "features_searched": [],
+    "thresholds_searched": [],
+    "structures_searched": [],
+    "horizons_searched": [],
+    "hypothesis_count": null
+  },
+  "edge_statement": null,
+  "results": {
+    "locked_until_confirmation": true
+  }
+}

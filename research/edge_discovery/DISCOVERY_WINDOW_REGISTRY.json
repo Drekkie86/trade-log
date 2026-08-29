@@ -1,0 +1,11 @@
+{
+  "registry_version": "1.0",
+  "discovery_windows": [
+    {
+      "window_id": "AUGUST_2026_THETADATA",
+      "start": "2026-08-01",
+      "end": "2026-08-31",
+      "description": "AAPL/XOM/JPM ThetaData historical EOD data used to shape tradability, premium, DTE, moneyness and dependence analysis. Burned for confirmation."
+    }
+  ]
+}
