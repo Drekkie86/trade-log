@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 
 from src.database.repository import (
+    EXPECTED_SCHEMA_VERSION,
     assert_schema_version,
     close_trade,
     create_trade,
@@ -22,7 +23,7 @@ def test_schema_version_is_expected(
         get_schema_version(
             db_path
         )
-        == 9
+        == EXPECTED_SCHEMA_VERSION
     )
 
     assert_schema_version(
