@@ -8,7 +8,7 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
 
-EXPECTED_SCHEMA_VERSION = 7
+EXPECTED_SCHEMA_VERSION = 8
 
 
 PROVENANCE_VALUES = {
@@ -1778,3 +1778,668 @@ def set_candidate_status(
                 candidate_id,
             ),
         )
+# =====================================================================
+# CHRISTIANIA SHADOW / REFERENCE PERSISTENCE LAYER — SCHEMA V8
+# =====================================================================
+
+
+SHADOW_STATES = {
+    "SURFACED",
+    "INVESTIGATED",
+    "DECIDED",
+    "SHADOW_TRACKED",
+    "CLOSED_OR_EXPIRED",
+    "SCORED",
+    "REJECTED",
+}
+
+SHADOW_OUTCOME_HORIZONS = {
+    "NEXT_ELIGIBLE_SESSION",
+    "PLUS_3_SESSIONS",
+    "PLUS_5_SESSIONS",
+    "TERMINAL_EXPIRY",
+    "MFE",
+    "MAE",
+}
+
+OBSERVATION_STATES = {
+    "PRESENT",
+    "ABSENT",
+    "INVALID",
+    "DUPLICATE",
+    "ERROR",
+}
+
+UNIVERSE_STATUSES = {
+    "CONSISTENT",
+    "DISAGREEMENT_RECORDED",
+    "UNUSABLE",
+}
+
+
+def create_listing_reference_contract(
+    contract: dict[str, Any],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    _require_fields(
+        contract,
+        [
+            "research_run_id",
+            "provider",
+            "underlying",
+            "provider_contract_id",
+            "expiration",
+            "strike",
+            "right",
+            "observed_at",
+        ],
+        "listing reference contract",
+    )
+
+    if contract["right"] not in {"C", "P"}:
+        raise ValueError(
+            "Listing reference contract right must be C or P."
+        )
+
+    shares_per_contract = contract.get(
+        "shares_per_contract"
+    )
+    if (
+        shares_per_contract is not None
+        and shares_per_contract <= 0
+    ):
+        raise ValueError(
+            "shares_per_contract must be positive when present."
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO listing_reference_contracts (
+                research_run_id,
+                provider,
+                underlying,
+                provider_contract_id,
+                option_symbol,
+                expiration,
+                strike,
+                right,
+                exercise_style,
+                shares_per_contract,
+                primary_exchange,
+                additional_underlyings_json,
+                observed_at,
+                ingested_at
+            )
+            VALUES (
+                :research_run_id,
+                :provider,
+                :underlying,
+                :provider_contract_id,
+                :option_symbol,
+                :expiration,
+                :strike,
+                :right,
+                :exercise_style,
+                :shares_per_contract,
+                :primary_exchange,
+                :additional_underlyings_json,
+                :observed_at,
+                :ingested_at
+            );
+            """,
+            {
+                "research_run_id":
+                    contract["research_run_id"],
+                "provider":
+                    contract["provider"],
+                "underlying":
+                    contract["underlying"],
+                "provider_contract_id":
+                    contract["provider_contract_id"],
+                "option_symbol":
+                    contract.get("option_symbol"),
+                "expiration":
+                    contract["expiration"],
+                "strike":
+                    contract["strike"],
+                "right":
+                    contract["right"],
+                "exercise_style":
+                    contract.get("exercise_style"),
+                "shares_per_contract":
+                    shares_per_contract,
+                "primary_exchange":
+                    contract.get("primary_exchange"),
+                "additional_underlyings_json":
+                    contract.get(
+                        "additional_underlyings_json"
+                    ),
+                "observed_at":
+                    contract["observed_at"],
+                "ingested_at":
+                    contract.get(
+                        "ingested_at",
+                        contract["observed_at"],
+                    ),
+            },
+        )
+        return int(cursor.lastrowid)
+
+
+def record_provider_observation_availability(
+    observation: dict[str, Any],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    _require_fields(
+        observation,
+        [
+            "reference_contract_id",
+            "provider",
+            "evidence_family",
+            "state",
+            "observed_at",
+        ],
+        "provider observation",
+    )
+
+    if observation["state"] not in OBSERVATION_STATES:
+        raise ValueError(
+            f"Invalid observation state: {observation['state']}"
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO provider_observation_availability (
+                reference_contract_id,
+                provider,
+                evidence_family,
+                state,
+                provider_observation_id,
+                reason_code,
+                reason_detail,
+                observed_at,
+                raw_timestamp,
+                ingested_at
+            )
+            VALUES (
+                :reference_contract_id,
+                :provider,
+                :evidence_family,
+                :state,
+                :provider_observation_id,
+                :reason_code,
+                :reason_detail,
+                :observed_at,
+                :raw_timestamp,
+                :ingested_at
+            );
+            """,
+            {
+                "reference_contract_id":
+                    observation["reference_contract_id"],
+                "provider":
+                    observation["provider"],
+                "evidence_family":
+                    observation["evidence_family"],
+                "state":
+                    observation["state"],
+                "provider_observation_id":
+                    observation.get(
+                        "provider_observation_id"
+                    ),
+                "reason_code":
+                    observation.get("reason_code"),
+                "reason_detail":
+                    observation.get("reason_detail"),
+                "observed_at":
+                    observation["observed_at"],
+                "raw_timestamp":
+                    observation.get("raw_timestamp"),
+                "ingested_at":
+                    observation.get(
+                        "ingested_at",
+                        observation["observed_at"],
+                    ),
+            },
+        )
+        return int(cursor.lastrowid)
+
+
+def create_shadow_candidate(
+    candidate: dict[str, Any],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    _require_fields(
+        candidate,
+        [
+            "research_run_id",
+            "reference_contract_id",
+            "underlying",
+            "scanner_family_id",
+            "scanner_version",
+            "scanner_rule_version",
+            "surfaced_at",
+            "structure_id",
+            "structure_version",
+            "hypothesis_family",
+            "hypothesis_version",
+            "sizing_policy_version",
+            "max_theoretical_loss_minor",
+            "universe_status",
+        ],
+        "shadow candidate",
+    )
+
+    if candidate["universe_status"] not in UNIVERSE_STATUSES:
+        raise ValueError(
+            f"Invalid universe status: {candidate['universe_status']}"
+        )
+
+    if candidate["max_theoretical_loss_minor"] < 0:
+        raise ValueError(
+            "max_theoretical_loss_minor cannot be negative."
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO shadow_candidates (
+                research_run_id,
+                reference_contract_id,
+                underlying,
+                scanner_family_id,
+                scanner_version,
+                scanner_rule_version,
+                surfaced_at,
+                entry_quote_observation_id,
+                entry_greek_observation_id,
+                quote_freshness_class,
+                greek_quality_class,
+                universe_status,
+                structure_id,
+                structure_version,
+                structure_json,
+                hypothesis_family,
+                hypothesis_version,
+                sizing_policy_version,
+                max_theoretical_loss_minor,
+                cost_model_version,
+                cost_provenance,
+                admission_label
+            )
+            VALUES (
+                :research_run_id,
+                :reference_contract_id,
+                :underlying,
+                :scanner_family_id,
+                :scanner_version,
+                :scanner_rule_version,
+                :surfaced_at,
+                :entry_quote_observation_id,
+                :entry_greek_observation_id,
+                :quote_freshness_class,
+                :greek_quality_class,
+                :universe_status,
+                :structure_id,
+                :structure_version,
+                :structure_json,
+                :hypothesis_family,
+                :hypothesis_version,
+                :sizing_policy_version,
+                :max_theoretical_loss_minor,
+                :cost_model_version,
+                :cost_provenance,
+                'CANDIDATE — NOT VALIDATED FOR LIVE EDGE TRADING'
+            );
+            """,
+            {
+                **candidate,
+                "entry_quote_observation_id":
+                    candidate.get(
+                        "entry_quote_observation_id"
+                    ),
+                "entry_greek_observation_id":
+                    candidate.get(
+                        "entry_greek_observation_id"
+                    ),
+                "quote_freshness_class":
+                    candidate.get(
+                        "quote_freshness_class"
+                    ),
+                "greek_quality_class":
+                    candidate.get(
+                        "greek_quality_class"
+                    ),
+                "structure_json":
+                    candidate.get("structure_json"),
+                "cost_model_version":
+                    candidate.get(
+                        "cost_model_version"
+                    ),
+                "cost_provenance":
+                    candidate.get("cost_provenance"),
+            },
+        )
+        candidate_id = int(cursor.lastrowid)
+
+        connection.execute(
+            """
+            INSERT INTO shadow_state_events (
+                candidate_id,
+                from_state,
+                to_state,
+                occurred_at,
+                actor,
+                reason_code,
+                note
+            )
+            VALUES (?, NULL, 'SURFACED', ?, ?, ?, ?);
+            """,
+            (
+                candidate_id,
+                candidate["surfaced_at"],
+                candidate.get(
+                    "actor",
+                    "SYSTEM",
+                ),
+                candidate.get(
+                    "reason_code",
+                    "SCANNER_SURFACED",
+                ),
+                candidate.get("note"),
+            ),
+        )
+
+        return candidate_id
+
+
+def append_shadow_state_event(
+    candidate_id: int,
+    *,
+    to_state: str,
+    occurred_at: str,
+    actor: str,
+    reason_code: str | None = None,
+    note: str | None = None,
+    db_path=None,
+    conn=None,
+) -> int:
+    if to_state not in SHADOW_STATES:
+        raise ValueError(
+            f"Invalid shadow state: {to_state}"
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        row = connection.execute(
+            """
+            SELECT to_state
+            FROM shadow_state_events
+            WHERE candidate_id = ?
+            ORDER BY id DESC
+            LIMIT 1;
+            """,
+            (candidate_id,),
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(
+                f"Shadow candidate {candidate_id} has no lifecycle state."
+            )
+
+        cursor = connection.execute(
+            """
+            INSERT INTO shadow_state_events (
+                candidate_id,
+                from_state,
+                to_state,
+                occurred_at,
+                actor,
+                reason_code,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                candidate_id,
+                row["to_state"],
+                to_state,
+                occurred_at,
+                actor,
+                reason_code,
+                note,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def append_shadow_outcome_observation(
+    observation: dict[str, Any],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    _require_fields(
+        observation,
+        [
+            "candidate_id",
+            "horizon",
+            "provider",
+            "observed_at",
+        ],
+        "shadow outcome observation",
+    )
+
+    if observation["horizon"] not in SHADOW_OUTCOME_HORIZONS:
+        raise ValueError(
+            f"Invalid shadow outcome horizon: {observation['horizon']}"
+        )
+
+    bid = observation.get("bid")
+    ask = observation.get("ask")
+    if (
+        bid is not None
+        and ask is not None
+        and ask < bid
+    ):
+        raise ValueError(
+            "Shadow outcome ask cannot be below bid."
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO shadow_outcome_observations (
+                candidate_id,
+                horizon,
+                provider,
+                observed_at,
+                raw_timestamp,
+                bid,
+                ask,
+                mid,
+                underlying_price,
+                pnl_minor,
+                return_fraction,
+                quality_state,
+                evidence_json
+            )
+            VALUES (
+                :candidate_id,
+                :horizon,
+                :provider,
+                :observed_at,
+                :raw_timestamp,
+                :bid,
+                :ask,
+                :mid,
+                :underlying_price,
+                :pnl_minor,
+                :return_fraction,
+                :quality_state,
+                :evidence_json
+            );
+            """,
+            {
+                **observation,
+                "raw_timestamp":
+                    observation.get("raw_timestamp"),
+                "bid":
+                    bid,
+                "ask":
+                    ask,
+                "mid":
+                    observation.get("mid"),
+                "underlying_price":
+                    observation.get(
+                        "underlying_price"
+                    ),
+                "pnl_minor":
+                    observation.get("pnl_minor"),
+                "return_fraction":
+                    observation.get(
+                        "return_fraction"
+                    ),
+                "quality_state":
+                    observation.get("quality_state"),
+                "evidence_json":
+                    observation.get("evidence_json"),
+            },
+        )
+        return int(cursor.lastrowid)
+
+
+def append_underlying_pin_event(
+    *,
+    underlying: str,
+    candidate_id: int,
+    action: str,
+    occurred_at: str,
+    reason: str,
+    db_path=None,
+    conn=None,
+) -> int:
+    if action not in {"PIN", "UNPIN"}:
+        raise ValueError(
+            "Pin action must be PIN or UNPIN."
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO underlying_pin_events (
+                underlying,
+                candidate_id,
+                action,
+                occurred_at,
+                reason
+            )
+            VALUES (?, ?, ?, ?, ?);
+            """,
+            (
+                underlying,
+                candidate_id,
+                action,
+                occurred_at,
+                reason,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_shadow_candidate(
+    candidate_id: int,
+    *,
+    db_path=None,
+    conn=None,
+) -> dict[str, Any] | None:
+    own_connection = conn is None
+    connection = conn or get_connection(db_path)
+
+    try:
+        candidate = connection.execute(
+            """
+            SELECT *
+            FROM shadow_candidates
+            WHERE id = ?;
+            """,
+            (candidate_id,),
+        ).fetchone()
+
+        if candidate is None:
+            return None
+
+        state_events = connection.execute(
+            """
+            SELECT *
+            FROM shadow_state_events
+            WHERE candidate_id = ?
+            ORDER BY id;
+            """,
+            (candidate_id,),
+        ).fetchall()
+
+        outcomes = connection.execute(
+            """
+            SELECT *
+            FROM shadow_outcome_observations
+            WHERE candidate_id = ?
+            ORDER BY id;
+            """,
+            (candidate_id,),
+        ).fetchall()
+
+        pins = connection.execute(
+            """
+            SELECT *
+            FROM underlying_pin_events
+            WHERE candidate_id = ?
+            ORDER BY id;
+            """,
+            (candidate_id,),
+        ).fetchall()
+
+        return {
+            "candidate": dict(candidate),
+            "state_events": [
+                dict(row)
+                for row in state_events
+            ],
+            "outcomes": [
+                dict(row)
+                for row in outcomes
+            ],
+            "pin_events": [
+                dict(row)
+                for row in pins
+            ],
+        }
+
+    finally:
+        if own_connection:
+            connection.close()
