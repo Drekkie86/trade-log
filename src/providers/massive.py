@@ -325,6 +325,152 @@ class MassiveClient:
             url
         )
 
+    def get_option_contracts_reference_page(
+        self,
+        underlying: str,
+        *,
+        limit: int = 1000,
+        order: str = "asc",
+        sort: str = "ticker",
+        expiration_date_gte: str | None = None,
+        expiration_date_lte: str | None = None,
+        contract_type: str | None = None,
+        expired: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Fetch one Massive reference-contract page.
+
+        This endpoint answers which contracts are listed.
+        It is deliberately separate from the option-chain
+        snapshot endpoint, which is used for market/model observations.
+        """
+
+        symbol = underlying.strip().upper()
+
+        if not symbol:
+            raise ValueError("Underlying cannot be blank.")
+
+        if limit < 1 or limit > 1000:
+            raise ValueError(
+                "Massive reference-contract limit must be between 1 and 1000."
+            )
+
+        if contract_type not in {None, "call", "put"}:
+            raise ValueError("contract_type must be call, put, or None.")
+
+        return self._get_json(
+            "/v3/reference/options/contracts",
+            params={
+                "underlying_ticker": symbol,
+                "limit": limit,
+                "order": order,
+                "sort": sort,
+                "expiration_date.gte": expiration_date_gte,
+                "expiration_date.lte": expiration_date_lte,
+                "contract_type": contract_type,
+                "expired": str(expired).lower(),
+            },
+        )
+
+    def get_option_contracts_reference(
+        self,
+        underlying: str,
+        *,
+        min_dte: int = 7,
+        max_dte: int = 45,
+        contract_type: str | None = None,
+        page_limit: int = 1000,
+        max_pages: int = 20,
+        as_of_date: date | None = None,
+        require_complete: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Enumerate the Massive listing-reference frame for a DTE window.
+
+        Reference contracts define the listed frame.
+        Snapshot rows are enrichment and must be reconciled onto this frame.
+        """
+
+        if min_dte < 0:
+            raise ValueError("min_dte cannot be negative.")
+
+        if max_dte < min_dte:
+            raise ValueError("max_dte cannot be smaller than min_dte.")
+
+        if max_pages < 1:
+            raise ValueError("max_pages must be at least 1.")
+
+        if page_limit < 1 or page_limit > 1000:
+            raise ValueError(
+                "Massive reference-contract page limit must be between 1 and 1000."
+            )
+
+        reference_date = as_of_date or datetime.now(US_EASTERN).date()
+
+        expiration_gte = (
+            reference_date + timedelta(days=min_dte)
+        ).isoformat()
+        expiration_lte = (
+            reference_date + timedelta(days=max_dte)
+        ).isoformat()
+
+        first_page = self.get_option_contracts_reference_page(
+            underlying,
+            limit=page_limit,
+            order="asc",
+            sort="ticker",
+            expiration_date_gte=expiration_gte,
+            expiration_date_lte=expiration_lte,
+            contract_type=contract_type,
+            expired=False,
+        )
+
+        combined_results = list(first_page.get("results") or [])
+        request_ids: list[str] = []
+
+        first_request_id = first_page.get("request_id")
+        if first_request_id:
+            request_ids.append(first_request_id)
+
+        next_url = first_page.get("next_url")
+        pages_fetched = 1
+
+        while next_url and pages_fetched < max_pages:
+            page = self._get_json_url(next_url)
+            combined_results.extend(page.get("results") or [])
+
+            request_id = page.get("request_id")
+            if request_id:
+                request_ids.append(request_id)
+
+            next_url = page.get("next_url")
+            pages_fetched += 1
+
+        truncated = bool(next_url)
+
+        if require_complete and truncated:
+            raise MassiveTruncatedError(
+                "Massive reference-contract listing frame was truncated "
+                f"after {pages_fetched} pages."
+            )
+
+        return {
+            "request_id": first_request_id,
+            "request_ids": request_ids,
+            "results": combined_results,
+            "status": first_page.get("status"),
+            "next_url": next_url,
+            "pages_fetched": pages_fetched,
+            "window_min_dte": min_dte,
+            "window_max_dte": max_dte,
+            "window_expiration_gte": expiration_gte,
+            "window_expiration_lte": expiration_lte,
+            "reference_date": reference_date.isoformat(),
+            "reference_timezone": "America/New_York",
+            "truncated": truncated,
+            "frame_semantics": "LISTING_REFERENCE",
+        }
+
     def get_option_chain_page(
         self,
         underlying: str,
