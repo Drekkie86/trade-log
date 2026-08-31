@@ -1,7 +1,4 @@
-import sqlite3
 from pathlib import Path
-
-import pytest
 
 from src.database.repository import get_connection
 
@@ -9,8 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "trade_log_schema.sql"
 
 
-def build_v10(path):
+def build_latest(path):
     conn = get_connection(path)
+
     conn.executescript(
         SCHEMA.read_text(
             encoding="utf-8"
@@ -18,7 +16,8 @@ def build_v10(path):
     )
 
     native_version = conn.execute(
-        "SELECT MAX(version) FROM schema_version;"
+        "SELECT MAX(version) "
+        "FROM schema_version;"
     ).fetchone()[0]
 
     for migration in sorted(
@@ -28,10 +27,7 @@ def build_v10(path):
             migration.name.split("_", 1)[0]
         )
 
-        if (
-            number > native_version
-            and number <= 10
-        ):
+        if number > native_version:
             conn.executescript(
                 migration.read_text(
                     encoding="utf-8"
@@ -42,19 +38,20 @@ def build_v10(path):
     return conn
 
 
-def test_v10_schema_and_immutability(
+def test_v11_schema_exists(
     tmp_path,
 ):
-    conn = build_v10(
-        tmp_path / "v10.db"
+    conn = build_latest(
+        tmp_path / "v11.db"
     )
 
     try:
         version = conn.execute(
-            "SELECT MAX(version) FROM schema_version;"
+            "SELECT MAX(version) "
+            "FROM schema_version;"
         ).fetchone()[0]
 
-        assert version == 10
+        assert version == 11
 
         names = {
             row["name"]
@@ -63,7 +60,13 @@ def test_v10_schema_and_immutability(
             )
         }
 
-        assert "hypothesis_scanner_runs" in names
-        assert "hypothesis_scanner_evaluations" in names
+        assert (
+            "shadow_structure_proposals"
+            in names
+        )
+        assert (
+            "trg_shadow_structure_proposals_no_update"
+            in names
+        )
     finally:
         conn.close()
