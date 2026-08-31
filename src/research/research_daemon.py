@@ -243,6 +243,50 @@ def acquire_daemon_lock(
         conn.close()
 
 
+
+def reconcile_orphaned_iterations(
+    *,
+    db_path=None,
+) -> int:
+    """
+    Terminally classify stale RUNNING iterations left by a hard process stop.
+
+    This function is called only after the singleton daemon lease has been
+    acquired. A second genuinely live daemon therefore cannot race this
+    startup repair.
+    """
+    cutoff = datetime.now(UTC) - LOCK_STALE_AFTER
+    cutoff_iso = _iso_utc(cutoff)
+    now_iso = _iso_utc()
+
+    conn = get_connection(db_path)
+
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE research_daemon_iterations
+                SET
+                    completed_at = ?,
+                    status = 'ORPHANED',
+                    error_type = 'INTERRUPTED_PROCESS',
+                    error_message = (
+                        'Recovered stale RUNNING iteration on daemon startup.'
+                    )
+                WHERE status = 'RUNNING'
+                  AND started_at < ?;
+                """,
+                (
+                    now_iso,
+                    cutoff_iso,
+                ),
+            )
+
+        return int(cursor.rowcount)
+    finally:
+        conn.close()
+
+
 def heartbeat_daemon_lock(
     *,
     owner_token: str,
@@ -568,6 +612,15 @@ def run_daemon(
         owner_token=owner_token,
         db_path=db_path,
     )
+
+    orphaned = reconcile_orphaned_iterations(
+        db_path=db_path,
+    )
+
+    if orphaned:
+        print(
+            f"Recovered {orphaned} orphaned daemon iteration(s)."
+        )
 
     massive_client = MassiveClient(
         massive_key
