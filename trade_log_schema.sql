@@ -2492,16 +2492,18 @@ FROM trade_legs l;
 -- SCHEMA VERSION
 -- =====================================================================
 
-DELETE FROM schema_version;
-
 INSERT INTO schema_version (
     version,
     applied_at
 )
-VALUES (
+SELECT
     6,
     strftime(
         '%Y-%m-%dT%H:%M:%SZ',
         'now'
     )
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM schema_version
+    WHERE version = 6
 );

@@ -8,7 +8,7 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
 
-EXPECTED_SCHEMA_VERSION = 8
+EXPECTED_SCHEMA_VERSION = 9
 
 
 PROVENANCE_VALUES = {
@@ -56,6 +56,13 @@ def get_connection(db_path=None) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON;")
+
+    current_journal_mode = connection.execute(
+        "PRAGMA journal_mode;"
+    ).fetchone()[0]
+
+    if str(current_journal_mode).lower() != "wal":
+        connection.execute("PRAGMA journal_mode = WAL;")
 
     return connection
 
@@ -1817,12 +1824,46 @@ UNIVERSE_STATUSES = {
 }
 
 
-def create_listing_reference_contract(
+
+_LISTING_REFERENCE_INSERT_SQL = """
+INSERT INTO listing_reference_contracts (
+    research_run_id,
+    provider,
+    underlying,
+    provider_contract_id,
+    option_symbol,
+    expiration,
+    strike,
+    right,
+    exercise_style,
+    shares_per_contract,
+    primary_exchange,
+    additional_underlyings_json,
+    observed_at,
+    ingested_at
+)
+VALUES (
+    :research_run_id,
+    :provider,
+    :underlying,
+    :provider_contract_id,
+    :option_symbol,
+    :expiration,
+    :strike,
+    :right,
+    :exercise_style,
+    :shares_per_contract,
+    :primary_exchange,
+    :additional_underlyings_json,
+    :observed_at,
+    :ingested_at
+);
+"""
+
+
+def _normalize_listing_reference_contract(
     contract: dict[str, Any],
-    *,
-    db_path=None,
-    conn=None,
-) -> int:
+) -> dict[str, Any]:
     _require_fields(
         contract,
         [
@@ -1854,90 +1895,168 @@ def create_listing_reference_contract(
             "shares_per_contract must be positive when present."
         )
 
+    return {
+        "research_run_id":
+            contract["research_run_id"],
+        "provider":
+            contract["provider"],
+        "underlying":
+            contract["underlying"],
+        "provider_contract_id":
+            contract["provider_contract_id"],
+        "option_symbol":
+            contract.get("option_symbol"),
+        "expiration":
+            contract["expiration"],
+        "strike":
+            contract["strike"],
+        "right":
+            contract["right"],
+        "exercise_style":
+            contract.get("exercise_style"),
+        "shares_per_contract":
+            shares_per_contract,
+        "primary_exchange":
+            contract.get("primary_exchange"),
+        "additional_underlyings_json":
+            contract.get(
+                "additional_underlyings_json"
+            ),
+        "observed_at":
+            contract["observed_at"],
+        "ingested_at":
+            contract.get(
+                "ingested_at",
+                contract["observed_at"],
+            ),
+    }
+
+
+def create_listing_reference_contracts(
+    contracts: list[dict[str, Any]],
+    *,
+    db_path=None,
+    conn=None,
+) -> dict[tuple[int, str, str], int]:
+    """
+    Batch-insert listing-reference contracts with one transaction.
+
+    Returns IDs keyed by:
+    (research_run_id, provider, provider_contract_id).
+    """
+
+    if not contracts:
+        return {}
+
+    normalized = [
+        _normalize_listing_reference_contract(contract)
+        for contract in contracts
+    ]
+
+    requested_keys = {
+        (
+            int(row["research_run_id"]),
+            str(row["provider"]),
+            str(row["provider_contract_id"]),
+        )
+        for row in normalized
+    }
+
+    if len(requested_keys) != len(normalized):
+        raise ValueError(
+            "Duplicate listing-reference identity inside batch."
+        )
+
     with transaction(
         db_path=db_path,
         conn=conn,
     ) as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO listing_reference_contracts (
-                research_run_id,
-                provider,
-                underlying,
-                provider_contract_id,
-                option_symbol,
-                expiration,
-                strike,
-                right,
-                exercise_style,
-                shares_per_contract,
-                primary_exchange,
-                additional_underlyings_json,
-                observed_at,
-                ingested_at
-            )
-            VALUES (
-                :research_run_id,
-                :provider,
-                :underlying,
-                :provider_contract_id,
-                :option_symbol,
-                :expiration,
-                :strike,
-                :right,
-                :exercise_style,
-                :shares_per_contract,
-                :primary_exchange,
-                :additional_underlyings_json,
-                :observed_at,
-                :ingested_at
-            );
-            """,
-            {
-                "research_run_id":
-                    contract["research_run_id"],
-                "provider":
-                    contract["provider"],
-                "underlying":
-                    contract["underlying"],
-                "provider_contract_id":
-                    contract["provider_contract_id"],
-                "option_symbol":
-                    contract.get("option_symbol"),
-                "expiration":
-                    contract["expiration"],
-                "strike":
-                    contract["strike"],
-                "right":
-                    contract["right"],
-                "exercise_style":
-                    contract.get("exercise_style"),
-                "shares_per_contract":
-                    shares_per_contract,
-                "primary_exchange":
-                    contract.get("primary_exchange"),
-                "additional_underlyings_json":
-                    contract.get(
-                        "additional_underlyings_json"
-                    ),
-                "observed_at":
-                    contract["observed_at"],
-                "ingested_at":
-                    contract.get(
-                        "ingested_at",
-                        contract["observed_at"],
-                    ),
-            },
+        connection.executemany(
+            _LISTING_REFERENCE_INSERT_SQL,
+            normalized,
         )
-        return int(cursor.lastrowid)
+
+        result: dict[
+            tuple[int, str, str],
+            int,
+        ] = {}
+
+        groups: dict[
+            tuple[int, str],
+            set[str],
+        ] = {}
+
+        for run_id, provider, provider_contract_id in requested_keys:
+            groups.setdefault(
+                (run_id, provider),
+                set(),
+            ).add(provider_contract_id)
+
+        for (run_id, provider), provider_ids in groups.items():
+            rows = connection.execute(
+                """
+                SELECT
+                    id,
+                    research_run_id,
+                    provider,
+                    provider_contract_id
+                FROM listing_reference_contracts
+                WHERE research_run_id = ?
+                  AND provider = ?;
+                """,
+                (run_id, provider),
+            ).fetchall()
+
+            for row in rows:
+                key = (
+                    int(row["research_run_id"]),
+                    str(row["provider"]),
+                    str(row["provider_contract_id"]),
+                )
+                if key[2] in provider_ids:
+                    result[key] = int(row["id"])
+
+        if set(result) != requested_keys:
+            missing = requested_keys - set(result)
+            raise RuntimeError(
+                "Batch insert completed but not every inserted "
+                f"reference identity could be reloaded: {sorted(missing)}"
+            )
+
+        return result
 
 
-def record_provider_observation_availability(
+_PROVIDER_OBSERVATION_INSERT_SQL = """
+INSERT INTO provider_observation_availability (
+    reference_contract_id,
+    provider,
+    evidence_family,
+    state,
+    provider_observation_id,
+    reason_code,
+    reason_detail,
+    observed_at,
+    raw_timestamp,
+    ingested_at
+)
+VALUES (
+    :reference_contract_id,
+    :provider,
+    :evidence_family,
+    :state,
+    :provider_observation_id,
+    :reason_code,
+    :reason_detail,
+    :observed_at,
+    :raw_timestamp,
+    :ingested_at
+);
+"""
+
+
+def _normalize_provider_observation(
     observation: dict[str, Any],
-    *,
-    db_path=None,
-    conn=None,
-) -> int:
+) -> dict[str, Any]:
     _require_fields(
         observation,
         [
@@ -1955,63 +2074,212 @@ def record_provider_observation_availability(
             f"Invalid observation state: {observation['state']}"
         )
 
+    return {
+        "reference_contract_id":
+            observation["reference_contract_id"],
+        "provider":
+            observation["provider"],
+        "evidence_family":
+            observation["evidence_family"],
+        "state":
+            observation["state"],
+        "provider_observation_id":
+            observation.get(
+                "provider_observation_id"
+            ),
+        "reason_code":
+            observation.get("reason_code"),
+        "reason_detail":
+            observation.get("reason_detail"),
+        "observed_at":
+            observation["observed_at"],
+        "raw_timestamp":
+            observation.get("raw_timestamp"),
+        "ingested_at":
+            observation.get(
+                "ingested_at",
+                observation["observed_at"],
+            ),
+    }
+
+
+def record_provider_observation_availabilities(
+    observations: list[dict[str, Any]],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    """
+    Batch-insert provider observation-availability rows.
+    """
+
+    if not observations:
+        return 0
+
+    normalized = [
+        _normalize_provider_observation(observation)
+        for observation in observations
+    ]
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        connection.executemany(
+            _PROVIDER_OBSERVATION_INSERT_SQL,
+            normalized,
+        )
+
+    return len(normalized)
+
+
+def create_listing_reference_contract(
+    contract: dict[str, Any],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    normalized = _normalize_listing_reference_contract(
+        contract
+    )
+
     with transaction(
         db_path=db_path,
         conn=conn,
     ) as connection:
         cursor = connection.execute(
+            _LISTING_REFERENCE_INSERT_SQL,
+            normalized,
+        )
+        return int(cursor.lastrowid)
+
+
+def record_provider_observation_availability(
+    observation: dict[str, Any],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    normalized = _normalize_provider_observation(
+        observation
+    )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        cursor = connection.execute(
+            _PROVIDER_OBSERVATION_INSERT_SQL,
+            normalized,
+        )
+        return int(cursor.lastrowid)
+
+
+def record_unmatched_provider_contract_observation(
+    observation: dict[str, Any],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    _require_fields(
+        observation,
+        [
+            "research_run_id",
+            "provider",
+            "evidence_family",
+            "anomaly_type",
+            "underlying",
+            "observed_at",
+        ],
+        "unmatched provider contract observation",
+    )
+
+    allowed = {
+        "SNAPSHOT_ONLY",
+        "THETA_QUOTE_ONLY",
+        "THETA_GREEK_ONLY",
+        "SAXO_REFERENCE_ONLY",
+        "PROVIDER_ONLY",
+    }
+    if observation["anomaly_type"] not in allowed:
+        raise ValueError(
+            f"Invalid unmatched anomaly type: {observation['anomaly_type']}"
+        )
+
+    provider_contract_id = observation.get("provider_contract_id")
+    expiration = observation.get("expiration")
+    strike = observation.get("strike")
+    right = observation.get("right")
+
+    if not provider_contract_id and not (
+        expiration is not None
+        and strike is not None
+        and right is not None
+    ):
+        raise ValueError(
+            "Unmatched provider evidence requires either a provider_contract_id "
+            "or expiration/strike/right."
+        )
+
+    if right is not None and right not in {"C", "P"}:
+        raise ValueError(
+            "Unmatched provider option right must be C or P."
+        )
+
+    with transaction(db_path=db_path, conn=conn) as connection:
+        cursor = connection.execute(
             """
-            INSERT INTO provider_observation_availability (
-                reference_contract_id,
+            INSERT INTO unmatched_provider_contract_observations (
+                research_run_id,
                 provider,
                 evidence_family,
-                state,
-                provider_observation_id,
+                anomaly_type,
+                underlying,
+                provider_contract_id,
+                expiration,
+                strike,
+                right,
                 reason_code,
-                reason_detail,
                 observed_at,
                 raw_timestamp,
+                raw_payload_json,
                 ingested_at
             )
             VALUES (
-                :reference_contract_id,
+                :research_run_id,
                 :provider,
                 :evidence_family,
-                :state,
-                :provider_observation_id,
+                :anomaly_type,
+                :underlying,
+                :provider_contract_id,
+                :expiration,
+                :strike,
+                :right,
                 :reason_code,
-                :reason_detail,
                 :observed_at,
                 :raw_timestamp,
+                :raw_payload_json,
                 :ingested_at
             );
             """,
             {
-                "reference_contract_id":
-                    observation["reference_contract_id"],
-                "provider":
-                    observation["provider"],
-                "evidence_family":
-                    observation["evidence_family"],
-                "state":
-                    observation["state"],
-                "provider_observation_id":
-                    observation.get(
-                        "provider_observation_id"
-                    ),
-                "reason_code":
-                    observation.get("reason_code"),
-                "reason_detail":
-                    observation.get("reason_detail"),
-                "observed_at":
+                "research_run_id": observation["research_run_id"],
+                "provider": observation["provider"],
+                "evidence_family": observation["evidence_family"],
+                "anomaly_type": observation["anomaly_type"],
+                "underlying": observation["underlying"],
+                "provider_contract_id": provider_contract_id,
+                "expiration": expiration,
+                "strike": strike,
+                "right": right,
+                "reason_code": observation.get("reason_code"),
+                "observed_at": observation["observed_at"],
+                "raw_timestamp": observation.get("raw_timestamp"),
+                "raw_payload_json": observation.get("raw_payload_json"),
+                "ingested_at": observation.get(
+                    "ingested_at",
                     observation["observed_at"],
-                "raw_timestamp":
-                    observation.get("raw_timestamp"),
-                "ingested_at":
-                    observation.get(
-                        "ingested_at",
-                        observation["observed_at"],
-                    ),
+                ),
             },
         )
         return int(cursor.lastrowid)

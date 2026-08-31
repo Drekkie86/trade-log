@@ -7,22 +7,15 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 DB_PATH = PROJECT_ROOT / "trade_log.db"
-MIGRATION_PATH = (
-    PROJECT_ROOT
-    / "migrations"
-    / "008_shadow_persistence.sql"
-)
-EXPECTED_BEFORE = 7
-EXPECTED_AFTER = 8
+MIGRATION_PATH = PROJECT_ROOT / "migrations" / "009_hostile_review_hardening.sql"
+EXPECTED_BEFORE = 8
+EXPECTED_AFTER = 9
 
 
 def stamp() -> str:
-    return datetime.now(timezone.utc).strftime(
-        "%Y%m%dT%H%M%SZ"
-    )
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -52,10 +45,7 @@ def sqlite_backup(source: Path, destination: Path) -> None:
 
 def version(connection: sqlite3.Connection) -> int:
     row = connection.execute(
-        """
-        SELECT MAX(version) AS version
-        FROM schema_version;
-        """
+        "SELECT MAX(version) AS version FROM schema_version;"
     ).fetchone()
     if row is None or row["version"] is None:
         raise RuntimeError("schema_version contains no version.")
@@ -64,7 +54,7 @@ def version(connection: sqlite3.Connection) -> int:
 
 def verify(connection: sqlite3.Connection) -> None:
     if version(connection) != EXPECTED_AFTER:
-        raise RuntimeError("Schema did not reach v8.")
+        raise RuntimeError("Schema did not reach v9.")
 
     objects = {
         row["name"]
@@ -72,61 +62,43 @@ def verify(connection: sqlite3.Connection) -> None:
             "SELECT name FROM sqlite_master;"
         )
     }
-
     for required in {
-        "listing_reference_contracts",
-        "provider_observation_availability",
-        "shadow_candidates",
-        "shadow_state_events",
-        "shadow_outcome_observations",
-        "underlying_pin_events",
-        "v_reference_snapshot_reconciliation",
-        "v_shadow_current_state",
-        "v_underlying_pin_state",
+        "unmatched_provider_contract_observations",
+        "trg_shadow_state_transition_guard",
+        "trg_underlying_pin_first_event",
+        "v_active_underlying_pins",
     }:
         if required not in objects:
-            raise RuntimeError(
-                f"Missing v8 schema object: {required}"
-            )
+            raise RuntimeError(f"Missing v9 schema object: {required}")
 
-    integrity = connection.execute(
-        "PRAGMA integrity_check;"
-    ).fetchone()[0]
-    if integrity != "ok":
-        raise RuntimeError(
-            f"integrity_check failed: {integrity}"
-        )
+    if connection.execute("PRAGMA integrity_check;").fetchone()[0] != "ok":
+        raise RuntimeError("integrity_check failed.")
 
-    fk = connection.execute(
-        "PRAGMA foreign_key_check;"
-    ).fetchall()
+    fk = connection.execute("PRAGMA foreign_key_check;").fetchall()
     if fk:
         raise RuntimeError(
             f"foreign_key_check returned {len(fk)} row(s)."
         )
 
 
-def migrate_copy(
-    source: Path,
-    migration_sql: str,
-) -> None:
+def rehearse(source: Path, sql: str) -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
-        rehearsal = Path(temp_dir) / "trade_log_rehearsal.db"
-        shutil.copy2(source, rehearsal)
-        connection = connect(rehearsal)
+        copy = Path(temp_dir) / "trade_log_rehearsal.db"
+        sqlite_backup(source, copy)
+        connection = connect(copy)
         try:
             if version(connection) != EXPECTED_BEFORE:
                 raise RuntimeError(
                     f"Rehearsal expected v{EXPECTED_BEFORE}."
                 )
-            connection.executescript(migration_sql)
+            connection.executescript(sql)
             verify(connection)
         finally:
             connection.close()
 
 
 def main() -> int:
-    print("Christiania - real database migration to v8")
+    print("Christiania - real database migration to v9")
     print("------------------------------------------")
     print()
 
@@ -138,7 +110,7 @@ def main() -> int:
         print(f"Migration not found: {MIGRATION_PATH}")
         return 1
 
-    migration_sql = MIGRATION_PATH.read_text(encoding="utf-8")
+    sql = MIGRATION_PATH.read_text(encoding="utf-8")
 
     connection = connect(DB_PATH)
     try:
@@ -154,7 +126,7 @@ def main() -> int:
             verify(connection)
         finally:
             connection.close()
-        print("Database is already valid v8.")
+        print("Database is already valid v9.")
         return 0
 
     if current != EXPECTED_BEFORE:
@@ -165,18 +137,16 @@ def main() -> int:
         return 1
 
     print("Rehearsing migration on a temporary copy...")
-    migrate_copy(DB_PATH, migration_sql)
+    rehearse(DB_PATH, sql)
     print("Rehearsal successful.")
 
-    backup = PROJECT_ROOT / (
-        f"trade_log_before_v8_{stamp()}.db"
-    )
+    backup = PROJECT_ROOT / f"trade_log_before_v9_{stamp()}.db"
     sqlite_backup(DB_PATH, backup)
     print(f"Backup created: {backup.name}")
 
     connection = connect(DB_PATH)
     try:
-        connection.executescript(migration_sql)
+        connection.executescript(sql)
         verify(connection)
         connection.commit()
     except Exception:
@@ -188,11 +158,9 @@ def main() -> int:
         connection.close()
 
     print("Migration successful.")
-    print("Database schema: v8")
+    print("Database schema: v9")
     print("SQLite integrity_check: ok")
     print("Foreign-key check: clean")
-    print()
-    print("Keep the backup until the full test suite is green.")
     return 0
 
 
