@@ -27,10 +27,7 @@ def build_latest(path):
             migration.name.split("_", 1)[0]
         )
 
-        if (
-            number > native_version
-            and number <= 11
-        ):
+        if number > native_version:
             conn.executescript(
                 migration.read_text(
                     encoding="utf-8"
@@ -41,11 +38,11 @@ def build_latest(path):
     return conn
 
 
-def test_v11_schema_exists(
+def test_v12_schema_exists(
     tmp_path,
 ):
     conn = build_latest(
-        tmp_path / "v11.db"
+        tmp_path / "v12.db"
     )
 
     try:
@@ -54,7 +51,7 @@ def test_v11_schema_exists(
             "FROM schema_version;"
         ).fetchone()[0]
 
-        assert version == 11
+        assert version == 12
 
         names = {
             row["name"]
@@ -63,12 +60,9 @@ def test_v11_schema_exists(
             )
         }
 
+        assert "fx_observations" in names
         assert (
-            "shadow_structure_proposals"
-            in names
-        )
-        assert (
-            "trg_shadow_structure_proposals_no_update"
+            "shadow_admission_decisions"
             in names
         )
     finally:
