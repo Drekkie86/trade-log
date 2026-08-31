@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "trade_log_schema.sql"
 
 
-def build_latest(path):
+def build_v13(path):
     conn = get_connection(path)
 
     conn.executescript(
@@ -27,9 +27,13 @@ def build_latest(path):
             migration.name.split("_", 1)[0]
         )
 
+        # IMPORTANT:
+        # This dedicated migration test is intentionally frozen
+        # to its own target version. Future migrations must not
+        # change what "build_v13" means.
         if (
             number > native_version
-            and number <= 12
+            and number <= 13
         ):
             conn.executescript(
                 migration.read_text(
@@ -41,11 +45,11 @@ def build_latest(path):
     return conn
 
 
-def test_v12_schema_exists(
+def test_v13_schema_exists(
     tmp_path,
 ):
-    conn = build_latest(
-        tmp_path / "v12.db"
+    conn = build_v13(
+        tmp_path / "v13.db"
     )
 
     try:
@@ -54,7 +58,7 @@ def test_v12_schema_exists(
             "FROM schema_version;"
         ).fetchone()[0]
 
-        assert version == 12
+        assert version == 13
 
         names = {
             row["name"]
@@ -63,9 +67,16 @@ def test_v12_schema_exists(
             )
         }
 
-        assert "fx_observations" in names
         assert (
-            "shadow_admission_decisions"
+            "research_daemon_lock"
+            in names
+        )
+        assert (
+            "research_daemon_iterations"
+            in names
+        )
+        assert (
+            "shadow_mark_observations"
             in names
         )
     finally:
