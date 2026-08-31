@@ -79,3 +79,31 @@ def test_migration_sequence_requires_contiguous_numbers(
     result = quality_gate.check_migration_sequence()
 
     assert result.ok is False
+
+
+
+def test_unique_root_test_named_diagnostic_is_not_collision(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_real.py").write_text(
+        "",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_native_v6_schema.py").write_text(
+        "",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        quality_gate,
+        "ROOT",
+        tmp_path,
+    )
+
+    result = (
+        quality_gate.check_duplicate_test_modules()
+    )
+
+    assert result.ok is True

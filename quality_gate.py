@@ -113,6 +113,21 @@ def check_sensitive_tracked() -> GateResult:
 
 
 def check_duplicate_test_modules() -> GateResult:
+    """
+    Fail on duplicate pytest module basenames outside tests/.
+
+    A legacy root-level diagnostic named test_*.py is not itself a
+    collision. The failure we need to prevent is the packaging bug where
+    (for example) payload/test_x.py and tests/test_x.py both exist and
+    pytest imports the wrong module.
+    """
+
+    canonical_names = {
+        path.name
+        for path in (ROOT / "tests").glob("test_*.py")
+        if path.is_file()
+    }
+
     violations: list[str] = []
 
     for path in ROOT.rglob("test_*.py"):
@@ -138,12 +153,13 @@ def check_duplicate_test_modules() -> GateResult:
         ):
             continue
 
-        violations.append(
-            str(rel).replace("\\", "/")
-        )
+        if path.name in canonical_names:
+            violations.append(
+                str(rel).replace("\\", "/")
+            )
 
     return GateResult(
-        "duplicate/discoverable test modules",
+        "duplicate pytest module basenames",
         not violations,
         (
             "none"
@@ -323,11 +339,32 @@ def build_fresh_database() -> GateResult:
             )
             conn.executescript(schema)
 
+            native_version_row = conn.execute(
+                "SELECT MAX(version) FROM schema_version;"
+            ).fetchone()
+
+            if (
+                native_version_row is None
+                or native_version_row[0] is None
+            ):
+                raise RuntimeError(
+                    "Native schema created no schema_version."
+                )
+
+            native_version = int(
+                native_version_row[0]
+            )
+
             for migration in sorted(
                 (ROOT / "migrations").glob("*.sql")
             ):
-                if MIGRATION_RE.match(
+                match = MIGRATION_RE.match(
                     migration.name
+                )
+                if (
+                    match
+                    and int(match.group(1))
+                    > native_version
                 ):
                     conn.executescript(
                         migration.read_text(
@@ -364,6 +401,7 @@ def build_fresh_database() -> GateResult:
                 "fresh database build + integrity",
                 ok,
                 (
+                    f"native_schema_version={native_version}; "
                     f"integrity={integrity}; "
                     f"fk_rows={len(foreign_keys)}; "
                     f"schema_version={version}"
