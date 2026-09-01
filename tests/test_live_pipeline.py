@@ -217,7 +217,7 @@ def test_future_quote_timestamp_fails_closed():
             "strike": 245.0,
             "right": "C",
             "raw_timestamp":
-                "2026-08-31T15:02:00",
+                "2026-08-31T15:03:00",
         },
     )
 

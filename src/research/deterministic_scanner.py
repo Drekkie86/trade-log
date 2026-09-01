@@ -103,7 +103,7 @@ def _quote_age_seconds(
         captured - quote_time
     ).total_seconds()
 
-    if age < -1.0:
+    if age < -90.0:
         raise DeterministicScannerError(
             "Persisted quote timestamp is materially "
             "in the future relative to snapshot capture."

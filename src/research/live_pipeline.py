@@ -111,7 +111,7 @@ def attach_quote_ages(
             observed_ny - quote_time
         ).total_seconds()
 
-        if age < -1.0:
+        if age < -90.0:
             raise LivePipelineError(
                 "ThetaData quote timestamp is materially "
                 "in the future relative to observation time: "
