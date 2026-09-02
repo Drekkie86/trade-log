@@ -866,6 +866,7 @@ def collect_underlying(
     min_dte: int,
     max_dte: int,
     observed_at: datetime,
+    observation_clock=None,
     db_path=None,
 ) -> UnderlyingResearchSummary:
     underlying = (
@@ -951,6 +952,22 @@ def collect_underlying(
         max_dte=max_dte,
     )
 
+    theta_quote_observed_at = (
+        observation_clock()
+        if observation_clock is not None
+        else datetime.now(NY)
+    )
+    if theta_quote_observed_at.tzinfo is None:
+        raise ValueError(
+            "observation_clock must return a timezone-aware datetime."
+        )
+    theta_quote_observed_at = theta_quote_observed_at.astimezone(NY)
+    theta_quote_observed_utc = (
+        theta_quote_observed_at.astimezone(UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
     greek_rows = filter_dte_window(
         fetch_live_first_order_greek_rows(
             theta_client,
@@ -966,7 +983,7 @@ def collect_underlying(
             reference_contracts,
         quote_rows=quote_rows,
         greek_rows=greek_rows,
-        observed_at=observed_at,
+        observed_at=theta_quote_observed_at,
     )
 
     diagnostics = diagnose_admission(
@@ -975,7 +992,7 @@ def collect_underlying(
 
     _persist_theta_availability_batch(
         joined=joined,
-        observed_at=observed_utc,
+        observed_at=theta_quote_observed_utc,
         db_path=db_path,
     )
 
@@ -995,7 +1012,7 @@ def collect_underlying(
     persist_thetadata_unmatched_evidence(
         research_run_id=run_id,
         unmatched=unmatched,
-        observed_at=observed_utc,
+        observed_at=theta_quote_observed_utc,
         db_path=db_path,
     )
 
@@ -1005,10 +1022,10 @@ def collect_underlying(
             underlying=underlying,
             quote_rows=quote_rows,
             greek_rows=greek_rows,
-            captured_at=observed_at,
+            captured_at=theta_quote_observed_at,
             us_session_state=
                 classify_us_session(
-                    observed_at
+                    theta_quote_observed_at
                 ),
             db_path=db_path,
         )
@@ -1087,6 +1104,7 @@ def run_independent_research(
     min_dte: int = 7,
     max_dte: int = 45,
     observed_at: datetime | None = None,
+    observation_clock=None,
     repo_root: Path | None = None,
     code_git_sha: str | None = None,
     db_path=None,
@@ -1155,6 +1173,8 @@ def run_independent_research(
                     max_dte=max_dte,
                     observed_at=
                         observed_at,
+                    observation_clock=
+                        observation_clock,
                     db_path=db_path,
                 )
             except Exception as exc:
