@@ -27,6 +27,7 @@ DEFAULT_INTERVAL_MINUTES = 15
 DEFAULT_SESSION_START = clock_time(9, 45)
 DEFAULT_SESSION_END = clock_time(15, 45)
 LOCK_STALE_AFTER = timedelta(minutes=30)
+RESEARCH_RUN_STALE_AFTER = timedelta(hours=6)
 
 
 class ResearchDaemonError(RuntimeError):
@@ -283,6 +284,116 @@ def reconcile_orphaned_iterations(
             )
 
         return int(cursor.rowcount)
+    finally:
+        conn.close()
+
+
+
+def reconcile_orphaned_research_runs(
+    *,
+    db_path=None,
+) -> int:
+    """
+    Terminally fail abandoned COLLECTING research runs.
+
+    Research runs do not currently carry the daemon owner token, so this uses
+    a deliberately longer threshold than daemon-iteration recovery. This
+    avoids misclassifying a slow but still-live manual/full-cycle run merely
+    because it exceeded the 30-minute daemon lease threshold.
+
+    Any ATTEMPTED underlying rows belonging to the abandoned run are also
+    terminalized so the run cannot end with dangling in-progress children.
+    """
+    cutoff = (
+        datetime.now(UTC)
+        - RESEARCH_RUN_STALE_AFTER
+    )
+    cutoff_iso = _iso_utc(cutoff)
+    now_iso = _iso_utc()
+    reason = (
+        "Recovered stale COLLECTING research run "
+        "on daemon startup."
+    )
+
+    conn = get_connection(db_path)
+
+    try:
+        with conn:
+            stale = conn.execute(
+                """
+                SELECT id
+                FROM research_runs
+                WHERE status = 'COLLECTING'
+                  AND started_at < ?
+                ORDER BY id;
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            for row in stale:
+                run_id = int(row["id"])
+
+                child_cursor = conn.execute(
+                    """
+                    UPDATE research_run_underlyings
+                    SET
+                        completed_at = ?,
+                        status = 'FAILED',
+                        failure_code = 'INTERRUPTED_PROCESS',
+                        failure_reason = ?
+                    WHERE run_id = ?
+                      AND status = 'ATTEMPTED';
+                    """,
+                    (
+                        now_iso,
+                        reason,
+                        run_id,
+                    ),
+                )
+
+                interrupted_underlyings = int(
+                    child_cursor.rowcount
+                )
+
+                cursor = conn.execute(
+                    """
+                    UPDATE research_runs
+                    SET
+                        ended_at = ?,
+                        status = 'FAILED',
+                        failed_underlyings =
+                            failed_underlyings + ?,
+                        underlying_observation_status =
+                            CASE
+                                WHEN attempted_underlyings > 0
+                                    THEN 'FAILED'
+                                ELSE underlying_observation_status
+                            END,
+                        notes =
+                            COALESCE(notes, '')
+                            || CASE
+                                WHEN notes IS NULL OR notes = ''
+                                    THEN ''
+                                ELSE char(10)
+                            END
+                            || ?
+                    WHERE id = ?
+                      AND status = 'COLLECTING';
+                    """,
+                    (
+                        now_iso,
+                        interrupted_underlyings,
+                        reason,
+                        run_id,
+                    ),
+                )
+
+                if cursor.rowcount != 1:
+                    raise ResearchDaemonError(
+                        "Stale research run could not be terminalized."
+                    )
+
+        return len(stale)
     finally:
         conn.close()
 
@@ -620,6 +731,15 @@ def run_daemon(
     if orphaned:
         print(
             f"Recovered {orphaned} orphaned daemon iteration(s)."
+        )
+
+    orphaned_runs = reconcile_orphaned_research_runs(
+        db_path=db_path,
+    )
+
+    if orphaned_runs:
+        print(
+            f"Recovered {orphaned_runs} abandoned research run(s)."
         )
 
     massive_client = MassiveClient(

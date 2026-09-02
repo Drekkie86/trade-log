@@ -126,7 +126,7 @@ class FakeTheta:
                                 -0.05,
                             "vega":
                                 0.10,
-                            "iv":
+                            "implied_vol":
                                 0.25,
                             "iv_error":
                                 0.001,

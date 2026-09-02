@@ -5,6 +5,7 @@ import pytest
 
 from src.database.provider_evidence import (
     create_provider_model_observation,
+    create_provider_model_observations,
     create_saxo_option_observation,
     create_saxo_resolution_failure,
     create_saxo_underlying_observation,
@@ -700,3 +701,145 @@ def test_provider_evidence_is_immutable(
 
     finally:
         connection.close()
+
+
+
+def test_provider_model_observation_batch_matches_single_semantics(
+    tmp_path,
+):
+    _, connection = make_v6_database(
+        tmp_path
+    )
+
+    try:
+        _, quote_id = create_source_quote(
+            connection
+        )
+
+        written = create_provider_model_observations(
+            [
+                {
+                    "option_quote_id": quote_id,
+                    "provider": "THETADATA",
+                    "implied_volatility": 0.25,
+                    "delta": 0.41,
+                    "theta": -0.20,
+                    "vega": 0.30,
+                    "ingested_at": "2026-08-27T21:50:40Z",
+                    "observed_at": "2026-08-27T21:50:35Z",
+                    "model_name": "ThetaData first_order snapshot",
+                },
+                {
+                    "option_quote_id": quote_id,
+                    "provider": "THETADATA",
+                    "implied_volatility": 0.26,
+                    "delta": 0.42,
+                    "theta": -0.21,
+                    "vega": 0.31,
+                    "ingested_at": "2026-08-27T21:50:41Z",
+                    "observed_at": "2026-08-27T21:50:36Z",
+                    "model_name": "ThetaData first_order snapshot",
+                },
+            ],
+            conn=connection,
+        )
+
+        assert written == 2
+
+        rows = connection.execute(
+            """
+            SELECT provider, source, implied_volatility, delta,
+                   theta, vega, observed_at, model_name
+            FROM provider_model_observations
+            WHERE option_quote_id = ?
+              AND provider = 'THETADATA'
+            ORDER BY id;
+            """,
+            (quote_id,),
+        ).fetchall()
+
+        assert len(rows) == 2
+        assert rows[0]["source"] == "PROVIDER_DERIVED"
+        assert rows[0]["implied_volatility"] == 0.25
+        assert rows[1]["implied_volatility"] == 0.26
+        assert rows[1]["delta"] == 0.42
+    finally:
+        connection.close()
+
+
+def test_provider_model_observation_batch_rejects_empty_model_values(
+    tmp_path,
+):
+    _, connection = make_v6_database(
+        tmp_path
+    )
+
+    try:
+        _, quote_id = create_source_quote(
+            connection
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="requires at least one model value",
+        ):
+            create_provider_model_observations(
+                [
+                    {
+                        "option_quote_id": quote_id,
+                        "provider": "THETADATA",
+                    }
+                ],
+                conn=connection,
+            )
+    finally:
+        connection.close()
+
+
+def test_provider_model_observation_batch_uses_one_transaction(
+    monkeypatch,
+):
+    from contextlib import contextmanager
+
+    import src.database.provider_evidence as provider_module
+
+    calls = {
+        "transactions": 0,
+        "executemany": 0,
+        "row_count": 0,
+    }
+
+    class FakeConnection:
+        def executemany(self, sql, rows):
+            calls["executemany"] += 1
+            calls["row_count"] = len(rows)
+
+    @contextmanager
+    def fake_transaction(*, db_path=None, conn=None):
+        calls["transactions"] += 1
+        yield FakeConnection()
+
+    monkeypatch.setattr(
+        provider_module,
+        "transaction",
+        fake_transaction,
+    )
+
+    rows = [
+        {
+            "option_quote_id": index + 1,
+            "provider": "THETADATA",
+            "implied_volatility": 0.25,
+            "delta": 0.5,
+        }
+        for index in range(1000)
+    ]
+
+    assert create_provider_model_observations(
+        rows
+    ) == 1000
+    assert calls == {
+        "transactions": 1,
+        "executemany": 1,
+        "row_count": 1000,
+    }

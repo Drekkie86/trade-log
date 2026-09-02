@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from src.database.provider_evidence import (
-    create_provider_model_observation,
+    create_provider_model_observations,
 )
 from src.database.repository import (
     assert_schema_version,
@@ -672,6 +672,8 @@ def _persist_theta_market_evidence(
             ).fetchall()
         }
 
+        model_observations: list[dict[str, Any]] = []
+
         for greek in greek_rows:
             identity = (
                 underlying.upper(),
@@ -693,7 +695,7 @@ def _persist_theta_market_evidence(
 
             values = {
                 "implied_volatility":
-                    greek.get("iv"),
+                    greek.get("implied_vol"),
                 "delta":
                     greek.get("delta"),
                 "gamma":
@@ -710,56 +712,62 @@ def _persist_theta_market_evidence(
             ):
                 continue
 
-            create_provider_model_observation(
-                option_quote_id=
-                    option_quote_id,
-                provider=
-                    "THETADATA",
-                implied_volatility=
-                    values[
-                        "implied_volatility"
-                    ],
-                delta=
-                    values["delta"],
-                gamma=
-                    values["gamma"],
-                theta=
-                    values["theta"],
-                vega=
-                    values["vega"],
-                ingested_at=
-                    captured_utc,
-                observed_at=
-                    greek.get(
-                        "raw_timestamp"
-                    ),
-                model_name=
-                    "ThetaData first_order snapshot",
-                model_underlying_price=
-                    greek.get(
-                        "underlying_price"
-                    ),
-                model_input_notes=
-                    json.dumps(
-                        {
-                            "iv_error":
-                                greek.get(
-                                    "iv_error"
-                                ),
-                            "underlying_timestamp":
-                                greek.get(
-                                    "underlying_timestamp"
-                                ),
-                            "provider_raw_timestamp":
-                                greek.get(
-                                    "raw_timestamp"
-                                ),
-                        },
-                        sort_keys=True,
-                        default=str,
-                    ),
-                conn=conn,
+            model_observations.append(
+                {
+                    "option_quote_id":
+                        option_quote_id,
+                    "provider":
+                        "THETADATA",
+                    "implied_volatility":
+                        values[
+                            "implied_volatility"
+                        ],
+                    "delta":
+                        values["delta"],
+                    "gamma":
+                        values["gamma"],
+                    "theta":
+                        values["theta"],
+                    "vega":
+                        values["vega"],
+                    "ingested_at":
+                        captured_utc,
+                    "observed_at":
+                        greek.get(
+                            "raw_timestamp"
+                        ),
+                    "model_name":
+                        "ThetaData first_order snapshot",
+                    "model_underlying_price":
+                        greek.get(
+                            "underlying_price"
+                        ),
+                    "model_input_notes":
+                        json.dumps(
+                            {
+                                "iv_error":
+                                    greek.get(
+                                        "iv_error"
+                                    ),
+                                "underlying_timestamp":
+                                    greek.get(
+                                        "underlying_timestamp"
+                                    ),
+                                "provider_raw_timestamp":
+                                    greek.get(
+                                        "raw_timestamp"
+                                    ),
+                            },
+                            sort_keys=True,
+                            default=str,
+                        ),
+                }
             )
+
+        create_provider_model_observations(
+            model_observations,
+            conn=conn,
+        )
 
         conn.commit()
 

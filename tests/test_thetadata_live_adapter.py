@@ -69,7 +69,7 @@ def test_greek_snapshot_normalizes_put():
           "data": [
             {
               "delta": -0.2,
-              "iv": 0.3,
+              "implied_vol": 0.3,
               "iv_error": 0.001
             }
           ]
@@ -88,6 +88,7 @@ def test_greek_snapshot_normalizes_put():
     )
 
     assert rows[0]["right"] == "P"
+    assert rows[0]["implied_vol"] == 0.3
     assert rows[0]["iv_error"] == 0.001
 
 

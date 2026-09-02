@@ -261,6 +261,149 @@ def create_provider_model_observation(
         return cursor.lastrowid
 
 
+
+def create_provider_model_observations(
+    observations: list[dict[str, Any]],
+    *,
+    db_path=None,
+    conn=None,
+) -> int:
+    """
+    Persist provider-derived model observations in one transaction.
+
+    This is the bulk companion to create_provider_model_observation().
+    Validation intentionally mirrors the single-row API while avoiding a
+    connection/transaction per Greek row during live chain persistence.
+    """
+    if not observations:
+        return 0
+
+    rows: list[tuple[Any, ...]] = []
+
+    for observation in observations:
+        provider = str(
+            observation.get("provider")
+            or ""
+        ).strip()
+
+        if not provider:
+            raise ValueError(
+                "Provider cannot be blank."
+            )
+
+        values = (
+            observation.get(
+                "implied_volatility"
+            ),
+            observation.get("delta"),
+            observation.get("gamma"),
+            observation.get("theta"),
+            observation.get("vega"),
+        )
+
+        if all(
+            value is None
+            for value in values
+        ):
+            raise ValueError(
+                "Provider model observation "
+                "requires at least one model value."
+            )
+
+        ingested_at = (
+            observation.get("ingested_at")
+            or utc_now_iso()
+        )
+
+        rows.append(
+            (
+                int(
+                    observation[
+                        "option_quote_id"
+                    ]
+                ),
+                provider,
+                ingested_at,
+                observation.get(
+                    "observed_at"
+                ),
+                observation.get(
+                    "model_name"
+                ),
+                observation.get(
+                    "provider_request_id"
+                ),
+                observation.get(
+                    "implied_volatility"
+                ),
+                observation.get("delta"),
+                observation.get("gamma"),
+                observation.get("theta"),
+                observation.get("vega"),
+                observation.get(
+                    "model_underlying_price"
+                ),
+                observation.get(
+                    "model_rate"
+                ),
+                observation.get(
+                    "model_dividend_yield"
+                ),
+                observation.get(
+                    "model_input_notes"
+                ),
+            )
+        )
+
+    with transaction(
+        db_path=db_path,
+        conn=conn,
+    ) as connection:
+        connection.executemany(
+            """
+            INSERT INTO provider_model_observations (
+                option_quote_id,
+                provider,
+                ingested_at,
+                observed_at,
+                source,
+                model_name,
+                provider_request_id,
+                implied_volatility,
+                delta,
+                gamma,
+                theta,
+                vega,
+                model_underlying_price,
+                model_rate,
+                model_dividend_yield,
+                model_input_notes
+            )
+            VALUES (
+                ?,
+                ?,
+                ?,
+                ?,
+                'PROVIDER_DERIVED',
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?
+            );
+            """,
+            rows,
+        )
+
+    return len(rows)
+
+
 def create_saxo_underlying_observation(
     *,
     research_snapshot_id: int,
