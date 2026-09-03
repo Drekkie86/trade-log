@@ -8,6 +8,7 @@ from src.database.repository import (
     get_connection,
 )
 from src.research.hypothesis_scanner import (
+    HypothesisScannerError,
     scan_local_iv_residuals,
 )
 
@@ -442,3 +443,169 @@ def test_scanner_persists_full_selection_surface(
 
     finally:
         conn.close()
+
+
+def add_theta_only_contract(
+    *,
+    db_path,
+    run_id,
+    strike,
+    iv,
+    delta,
+):
+    snapshot_id = create_market_snapshot(
+        {
+            "captured_at": "2026-08-31T18:00:05Z",
+            "underlying": "AAPL",
+            "provider": "THETADATA",
+            "research_run_id": run_id,
+            "us_session_date": "2026-08-31",
+            "us_session_state": "INTRADAY",
+            "underlying_price": None,
+            "underlying_source": "UNKNOWN",
+            "underlying_at": None,
+            "fx_to_eur": None,
+            "fx_source": "UNKNOWN",
+            "fx_at": None,
+        },
+        [
+            {
+                "provider_contract_id": f"THETA:AAPL:2026-09-18:{strike}:C",
+                "option_symbol": None,
+                "right": "C",
+                "strike": strike,
+                "expiration": "2026-09-18",
+                "quote_at": "2026-08-31T14:00:00",
+                "bid": 5.0,
+                "bid_source": "FETCHED",
+                "bid_at": "2026-08-31T14:00:00",
+                "ask": 5.1,
+                "ask_source": "FETCHED",
+                "ask_at": "2026-08-31T14:00:00",
+                "last": None,
+                "last_source": "UNKNOWN",
+                "last_at": None,
+                "implied_volatility": None,
+                "iv_source": "UNKNOWN",
+                "iv_at": None,
+                "delta": None,
+                "delta_source": "UNKNOWN",
+                "delta_at": None,
+                "gamma": None,
+                "gamma_source": "UNKNOWN",
+                "gamma_at": None,
+                "theta": None,
+                "theta_source": "UNKNOWN",
+                "theta_at": None,
+                "vega": None,
+                "vega_source": "UNKNOWN",
+                "vega_at": None,
+                "volume": None,
+                "volume_source": "UNKNOWN",
+                "volume_at": None,
+                "open_interest": None,
+                "open_interest_source": "UNKNOWN",
+                "open_interest_at": None,
+            }
+        ],
+        db_path=db_path,
+    )
+
+    conn = get_connection(db_path)
+    try:
+        quote_id = conn.execute(
+            "SELECT id FROM option_quotes WHERE snapshot_id = ?;",
+            (snapshot_id,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    create_provider_model_observation(
+        option_quote_id=quote_id,
+        provider="THETADATA",
+        implied_volatility=iv,
+        delta=delta,
+        gamma=None,
+        theta=None,
+        vega=None,
+        ingested_at="2026-08-31T18:00:05Z",
+        observed_at="2026-08-31T14:00:00",
+        model_name="ThetaData first_order snapshot",
+        model_underlying_price=101.0,
+        model_input_notes='{"iv_error": 0.001}',
+        db_path=db_path,
+    )
+
+
+def test_theta_only_reference_absence_does_not_abort_scan(db_path):
+    run_id = create_completed_run(db_path)
+
+    add_contract(db_path=db_path, run_id=run_id, strike=95.0, iv=0.20, delta=0.60)
+    add_contract(db_path=db_path, run_id=run_id, strike=100.0, iv=0.28, delta=0.50)
+    add_contract(db_path=db_path, run_id=run_id, strike=105.0, iv=0.20, delta=0.40)
+    add_theta_only_contract(
+        db_path=db_path, run_id=run_id, strike=110.0, iv=0.20, delta=0.30
+    )
+
+    result = scan_local_iv_residuals(
+        research_run_id=run_id,
+        residual_threshold=0.03,
+        persist=True,
+        db_path=db_path,
+    )
+
+    assert result.structural_input_count == 4
+    assert len(result.evaluations) == 3
+    assert all(item.strike != 110.0 for item in result.evaluations)
+    assert result.evaluable_count == 1
+    assert result.surfaced_count == 1
+
+    conn = get_connection(db_path)
+    try:
+        run_row = conn.execute(
+            """
+            SELECT structural_input_count, evaluable_count, surfaced_count
+            FROM hypothesis_scanner_runs
+            WHERE id = ?;
+            """,
+            (result.persisted_scanner_run_id,),
+        ).fetchone()
+        assert run_row["structural_input_count"] == 4
+        assert run_row["evaluable_count"] == 1
+        assert run_row["surfaced_count"] == 1
+    finally:
+        conn.close()
+
+
+def test_duplicate_reference_identity_still_fails_closed(db_path):
+    run_id = create_completed_run(db_path)
+    add_contract(db_path=db_path, run_id=run_id, strike=100.0, iv=0.20, delta=0.50)
+
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO listing_reference_contracts (
+                research_run_id, provider, underlying, provider_contract_id,
+                expiration, strike, right, observed_at, ingested_at
+            )
+            VALUES (?, 'MASSIVE', 'AAPL', 'O:DUPLICATE100',
+                    '2026-09-18', 100.0, 'C',
+                    '2026-08-31T18:00:00Z',
+                    '2026-08-31T18:00:00Z');
+            """,
+            (run_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(
+        HypothesisScannerError,
+        match="Ambiguous canonical reference/model join",
+    ):
+        scan_local_iv_residuals(
+            research_run_id=run_id,
+            persist=False,
+            db_path=db_path,
+        )

@@ -19,7 +19,7 @@ from src.research.deterministic_scanner import (
 UTC = ZoneInfo("UTC")
 
 SCANNER_FAMILY_ID = "LOCAL_IV_RESIDUAL_V1"
-SCANNER_VERSION = "1.0.0"
+SCANNER_VERSION = "1.0.1"
 RULE_VERSION = "LOCAL_IV_RESIDUAL_RULES_V1"
 HYPOTHESIS_FAMILY = "LOCAL_SURFACE_IV_RESIDUAL"
 HYPOTHESIS_VERSION = "1.0.0"
@@ -248,18 +248,10 @@ def _load_reference_and_iv(
                 ),
         }
 
-    missing = (
-        set(option_quote_ids)
-        - set(result)
-    )
-
-    if missing:
-        raise HypothesisScannerError(
-            "Structurally eligible quotes could not "
-            "be mapped uniquely to reference evidence: "
-            f"{sorted(missing)[:10]}"
-        )
-
+    # Quotes absent from the Massive reference frame are already
+    # preserved upstream as provider-disagreement evidence. This
+    # reference-dependent hypothesis simply cannot evaluate them.
+    # Genuine duplicate/ambiguous joins above remain hard failures.
     return result
 
 
@@ -556,6 +548,7 @@ def _persist(
     evaluations: list[
         HypothesisEvaluation
     ],
+    structural_input_count: int | None = None,
     db_path=None,
 ) -> int:
     evaluated_at = datetime.now(
@@ -618,7 +611,11 @@ def _persist(
                     config_hash,
                     config_json,
                     evaluated_at,
-                    len(evaluations),
+                    (
+                        len(evaluations)
+                        if structural_input_count is None
+                        else structural_input_count
+                    ),
                     evaluable_count,
                     surfaced_count,
                 ),
@@ -809,9 +806,12 @@ def scan_local_iv_residuals(
     ] = {}
 
     for item in eligible:
-        detail = metadata[
+        detail = metadata.get(
             item.option_quote_id
-        ]
+        )
+
+        if detail is None:
+            continue
 
         key = (
             item.underlying,
@@ -867,6 +867,8 @@ def scan_local_iv_residuals(
             config=config,
             evaluations=
                 evaluations,
+            structural_input_count=
+                len(eligible),
             db_path=db_path,
         )
         if persist
