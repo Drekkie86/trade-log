@@ -24,6 +24,16 @@ class FakeStructural:
 
 
 @dataclass(frozen=True)
+class FakeSurfaceV2:
+    research_run_id: int = 42
+    persisted_model_run_id: int = 8
+    structural_input_count: int = 12
+    reference_mapped_count: int = 11
+    evaluable_count: int = 7
+    observations: tuple = ()
+
+
+@dataclass(frozen=True)
 class FakeHypothesis:
     research_run_id: int = 42
     persisted_scanner_run_id: int = 7
@@ -59,13 +69,13 @@ def test_research_cycle_orders_the_three_stages(
         )
 
     def fake_hypothesis(**kwargs):
-        calls.append(
-            (
-                "hypothesis",
-                kwargs["research_run_id"],
-            )
-        )
+        calls.append(("hypothesis", kwargs["research_run_id"]))
         return FakeHypothesis()
+
+    def fake_surface_v2(**kwargs):
+        calls.append(("surface_v2", kwargs["research_run_id"]))
+        assert kwargs["structural_summary"].eligible == 12
+        return FakeSurfaceV2()
 
     monkeypatch.setattr(
         "src.research.research_cycle."
@@ -83,6 +93,10 @@ def test_research_cycle_orders_the_three_stages(
         "src.research.research_cycle."
         "scan_local_iv_residuals",
         fake_hypothesis,
+    )
+    monkeypatch.setattr(
+        "src.research.research_cycle.scan_local_surface_residual_v2",
+        fake_surface_v2,
     )
 
     result = run_research_cycle(
@@ -112,11 +126,16 @@ def test_research_cycle_orders_the_three_stages(
             "hypothesis",
             42,
         ),
+        (
+            "surface_v2",
+            42,
+        ),
     ]
 
     assert result.research.run_id == 42
     assert result.structural.eligible == 12
     assert result.hypothesis.surfaced_count == 2
+    assert result.surface_v2.evaluable_count == 7
 
 
 def test_research_cycle_propagates_frozen_thresholds(
@@ -155,6 +174,12 @@ def test_research_cycle_propagates_frozen_thresholds(
         ]
         return FakeHypothesis()
 
+    def fake_surface_v2(**kwargs):
+        captured["surface_v2_spread"] = kwargs["max_spread_to_mid"]
+        captured["surface_v2_persist"] = kwargs["persist"]
+        captured["surface_v2_reused_structural"] = kwargs["structural_summary"].eligible
+        return FakeSurfaceV2()
+
     monkeypatch.setattr(
         "src.research.research_cycle."
         "run_independent_research",
@@ -171,6 +196,10 @@ def test_research_cycle_propagates_frozen_thresholds(
         "src.research.research_cycle."
         "scan_local_iv_residuals",
         fake_hypothesis,
+    )
+    monkeypatch.setattr(
+        "src.research.research_cycle.scan_local_surface_residual_v2",
+        fake_surface_v2,
     )
 
     run_research_cycle(
@@ -194,3 +223,6 @@ def test_research_cycle_propagates_frozen_thresholds(
         == 0.025
     )
     assert captured["persist"] is True
+    assert captured["surface_v2_spread"] == 0.15
+    assert captured["surface_v2_persist"] is True
+    assert captured["surface_v2_reused_structural"] == 12

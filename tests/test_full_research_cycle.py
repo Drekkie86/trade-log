@@ -14,8 +14,14 @@ class FakeHypothesis:
 
 
 @dataclass(frozen=True)
+class FakeSurfaceV2:
+    persisted_model_run_id: int = 999
+
+
+@dataclass(frozen=True)
 class FakeResearchCycle:
     hypothesis: FakeHypothesis = FakeHypothesis()
+    surface_v2: FakeSurfaceV2 = FakeSurfaceV2()
 
 
 @dataclass(frozen=True)

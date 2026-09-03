@@ -16,6 +16,10 @@ from src.research.independent_runner import (
     IndependentResearchRunResult,
     run_independent_research,
 )
+from src.research.local_surface_residual_v2 import (
+    LocalSurfaceResidualV2Result,
+    scan_local_surface_residual_v2,
+)
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,7 @@ class ResearchCycleResult:
     research: IndependentResearchRunResult
     structural: ScannerRunSummary
     hypothesis: HypothesisScannerResult
+    surface_v2: LocalSurfaceResidualV2Result
 
 
 def run_research_cycle(
@@ -84,8 +89,17 @@ def run_research_cycle(
         db_path=db_path,
     )
 
+    surface_v2 = scan_local_surface_residual_v2(
+        research_run_id=research.run_id,
+        max_spread_to_mid=max_spread_to_mid,
+        persist=True,
+        structural_summary=structural,
+        db_path=db_path,
+    )
+
     return ResearchCycleResult(
         research=research,
         structural=structural,
         hypothesis=hypothesis,
+        surface_v2=surface_v2,
     )

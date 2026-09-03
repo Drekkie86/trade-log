@@ -15,7 +15,9 @@ def test_research_cycle_reuses_structural_scan(
         observations=(),
     )
     hypothesis = object()
+    surface_v2 = object()
     received = {}
+    received_v2 = {}
 
     monkeypatch.setattr(
         research_cycle,
@@ -38,6 +40,16 @@ def test_research_cycle_reuses_structural_scan(
         fake_hypothesis,
     )
 
+    def fake_surface_v2(**kwargs):
+        received_v2.update(kwargs)
+        return surface_v2
+
+    monkeypatch.setattr(
+        research_cycle,
+        "scan_local_surface_residual_v2",
+        fake_surface_v2,
+    )
+
     result = research_cycle.run_research_cycle(
         symbols=["AAPL"],
         massive_client=object(),
@@ -46,7 +58,9 @@ def test_research_cycle_reuses_structural_scan(
 
     assert result.structural is structural
     assert result.hypothesis is hypothesis
+    assert result.surface_v2 is surface_v2
     assert received["structural_summary"] is structural
+    assert received_v2["structural_summary"] is structural
 
 
 def test_hypothesis_accepts_precomputed_structural(
