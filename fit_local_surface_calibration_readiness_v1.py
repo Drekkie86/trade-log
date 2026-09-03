@@ -1,0 +1,2 @@
+from src.research.local_surface_calibration_readiness_v1 import fit_local_surface_calibration_readiness_v1
+if __name__=='__main__': print(fit_local_surface_calibration_readiness_v1())
