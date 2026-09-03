@@ -12,7 +12,7 @@ MIGRATION = ROOT / "migrations" / "020_local_surface_empirical_null_v1.sql"
 def test_migration_020_adds_null_model_tables_and_view(db_path):
     conn = get_connection(db_path)
     try:
-        assert conn.execute("SELECT MAX(version) FROM schema_version;").fetchone()[0] == 23
+        assert conn.execute("SELECT MAX(version) FROM schema_version;").fetchone()[0] == 24
         objects = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view','index');")}
         assert {
             "local_surface_null_v1_runs",
