@@ -237,3 +237,41 @@ def test_future_quote_timestamp_fails_closed():
                 tzinfo=NY,
             ),
         )
+
+
+def test_theta_timing_diagnostics_are_signed_and_observational():
+    from src.research.live_pipeline import theta_timing_diagnostics
+
+    observed_at = datetime(
+        2026, 9, 3, 14, 30, 5,
+        tzinfo=NY,
+    )
+    result = theta_timing_diagnostics(
+        quote_row={"raw_timestamp": "2026-09-03T14:30:02.000"},
+        greek_row={
+            "raw_timestamp": "2026-09-03T14:30:03.500",
+            "underlying_timestamp": "2026-09-03T14:30:01.000",
+        },
+        observed_at=observed_at,
+    )
+
+    assert result["timing_diagnostic_version"] == "THETADATA_TIMING_DIAGNOSTIC_V1"
+    assert result["greek_age_seconds"] == pytest.approx(1.5)
+    assert result["quote_greek_skew_seconds"] == pytest.approx(1.5)
+    assert result["underlying_greek_skew_seconds"] == pytest.approx(2.5)
+    assert result["timing_status"] == ["COMPLETE"]
+
+
+def test_theta_timing_missing_timestamp_is_measured_not_blocked():
+    from src.research.live_pipeline import theta_timing_diagnostics
+
+    result = theta_timing_diagnostics(
+        quote_row={"raw_timestamp": "2026-09-03T14:30:02.000"},
+        greek_row={"raw_timestamp": None, "underlying_timestamp": None},
+        observed_at=datetime(2026, 9, 3, 14, 30, 5, tzinfo=NY),
+    )
+
+    assert result["greek_age_seconds"] is None
+    assert result["quote_greek_skew_seconds"] is None
+    assert result["underlying_greek_skew_seconds"] is None
+    assert "GREEK_TIMESTAMP_ABSENT" in result["timing_status"]

@@ -22,6 +22,7 @@ from src.database.repository import (
 from src.research.live_pipeline import (
     build_live_join,
     diagnose_admission,
+    theta_timing_diagnostics,
 )
 from src.research.reference_persistence import (
     persist_massive_reference_and_snapshot,
@@ -673,6 +674,15 @@ def _persist_theta_market_evidence(
         }
 
         model_observations: list[dict[str, Any]] = []
+        quote_row_by_identity = {
+            (
+                underlying.upper(),
+                str(quote["expiration"]),
+                float(quote["strike"]),
+                str(quote["right"]),
+            ): quote
+            for quote in quote_rows
+        }
 
         for greek in greek_rows:
             identity = (
@@ -692,6 +702,12 @@ def _persist_theta_market_evidence(
                 # The unmatched-provider anomaly path separately preserves
                 # this identity. Do not invent an option_quote linkage.
                 continue
+
+            timing = theta_timing_diagnostics(
+                quote_row=quote_row_by_identity.get(identity),
+                greek_row=greek,
+                observed_at=captured_at,
+            )
 
             values = {
                 "implied_volatility":
@@ -757,10 +773,20 @@ def _persist_theta_market_evidence(
                                     greek.get(
                                         "raw_timestamp"
                                     ),
+                                "timing_status":
+                                    timing["timing_status"],
                             },
                             sort_keys=True,
                             default=str,
                         ),
+                    "timing_diagnostic_version":
+                        timing["timing_diagnostic_version"],
+                    "greek_age_seconds":
+                        timing["greek_age_seconds"],
+                    "quote_greek_skew_seconds":
+                        timing["quote_greek_skew_seconds"],
+                    "underlying_greek_skew_seconds":
+                        timing["underlying_greek_skew_seconds"],
                 }
             )
 

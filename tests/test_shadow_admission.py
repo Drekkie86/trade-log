@@ -620,3 +620,18 @@ def test_admission_is_idempotent_for_same_policy(
         ).fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_requested_proposal_filter_scales_beyond_sqlite_parameter_limit(db_path):
+    from src.research.shadow_admission import _load_proposals
+
+    seeded = seed_proposal(db_path)
+    proposal_id = seeded["proposal_id"]
+    requested = [proposal_id] + list(range(100_000, 102_000))
+
+    rows = _load_proposals(
+        proposal_ids=requested,
+        db_path=db_path,
+    )
+
+    assert [int(row["id"]) for row in rows] == [proposal_id]

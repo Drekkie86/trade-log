@@ -21,6 +21,101 @@ class LivePipelineError(ValueError):
     pass
 
 
+TIMING_DIAGNOSTIC_VERSION = "THETADATA_TIMING_DIAGNOSTIC_V1"
+
+
+def _signed_seconds(
+    later: datetime,
+    earlier: datetime,
+) -> float:
+    return (later - earlier).total_seconds()
+
+
+def theta_timing_diagnostics(
+    *,
+    quote_row: Mapping[str, Any] | None,
+    greek_row: Mapping[str, Any] | None,
+    observed_at: datetime,
+) -> dict[str, Any]:
+    """
+    Measure ThetaData timestamp relationships without classifying them.
+
+    All provider option/underlying timestamps use the same verified
+    America/New_York parsing semantics as quote freshness. Skews are signed:
+    positive means the first-named observation is later than the second.
+
+    This function is observational only. It must not gate admission or alter
+    V1 scanner selection. Missing/unparseable timestamps are preserved as
+    NULL metrics plus diagnostic status tokens.
+    """
+    if observed_at.tzinfo is None:
+        raise LivePipelineError(
+            "observed_at must be timezone-aware."
+        )
+
+    result: dict[str, Any] = {
+        "timing_diagnostic_version": TIMING_DIAGNOSTIC_VERSION,
+        "greek_age_seconds": None,
+        "quote_greek_skew_seconds": None,
+        "underlying_greek_skew_seconds": None,
+        "timing_status": [],
+    }
+
+    if greek_row is None:
+        result["timing_status"].append("GREEK_ROW_ABSENT")
+        return result
+
+    greek_raw = greek_row.get("raw_timestamp")
+    if greek_raw in {None, ""}:
+        result["timing_status"].append("GREEK_TIMESTAMP_ABSENT")
+        greek_time = None
+    else:
+        try:
+            greek_time = parse_thetadata_market_timestamp(str(greek_raw))
+        except LivePipelineError:
+            greek_time = None
+            result["timing_status"].append("GREEK_TIMESTAMP_INVALID")
+
+    observed_ny = observed_at.astimezone(NEW_YORK)
+    if greek_time is not None:
+        result["greek_age_seconds"] = _signed_seconds(
+            observed_ny, greek_time
+        )
+
+    quote_raw = None if quote_row is None else quote_row.get("raw_timestamp")
+    if quote_raw in {None, ""}:
+        result["timing_status"].append("QUOTE_TIMESTAMP_ABSENT")
+    elif greek_time is not None:
+        try:
+            quote_time = parse_thetadata_market_timestamp(str(quote_raw))
+        except LivePipelineError:
+            result["timing_status"].append("QUOTE_TIMESTAMP_INVALID")
+        else:
+            result["quote_greek_skew_seconds"] = _signed_seconds(
+                greek_time, quote_time
+            )
+
+    underlying_raw = greek_row.get("underlying_timestamp")
+    if underlying_raw in {None, ""}:
+        result["timing_status"].append("UNDERLYING_TIMESTAMP_ABSENT")
+    elif greek_time is not None:
+        try:
+            underlying_time = parse_thetadata_market_timestamp(
+                str(underlying_raw)
+            )
+        except LivePipelineError:
+            result["timing_status"].append("UNDERLYING_TIMESTAMP_INVALID")
+        else:
+            result["underlying_greek_skew_seconds"] = _signed_seconds(
+                greek_time, underlying_time
+            )
+
+    if not result["timing_status"]:
+        result["timing_status"].append("COMPLETE")
+
+    return result
+
+
 @dataclass(frozen=True)
 class AdmissionDiagnostic:
     reference_contract_id: int

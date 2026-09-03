@@ -134,6 +134,26 @@ def _validate_quality(
         )
 
 
+def _provider_model_timing_columns_available(connection) -> bool:
+    if not hasattr(connection, "execute"):
+        # Lightweight test doubles may expose only executemany. Production
+        # sqlite connections always support PRAGMA introspection.
+        return True
+
+    columns = {
+        str(row["name"])
+        for row in connection.execute(
+            "PRAGMA table_info(provider_model_observations);"
+        ).fetchall()
+    }
+    return {
+        "timing_diagnostic_version",
+        "greek_age_seconds",
+        "quote_greek_skew_seconds",
+        "underlying_greek_skew_seconds",
+    }.issubset(columns)
+
+
 def create_provider_model_observation(
     *,
     option_quote_id: int,
@@ -164,6 +184,14 @@ def create_provider_model_observation(
         float | None = None,
     model_input_notes:
         str | None = None,
+    timing_diagnostic_version:
+        str | None = None,
+    greek_age_seconds:
+        float | None = None,
+    quote_greek_skew_seconds:
+        float | None = None,
+    underlying_greek_skew_seconds:
+        float | None = None,
     db_path=None,
     conn=None,
 ) -> int:
@@ -200,63 +228,47 @@ def create_provider_model_observation(
         conn=conn,
     ) as connection:
 
-        cursor = connection.execute(
-            """
-            INSERT INTO provider_model_observations (
-                option_quote_id,
-                provider,
-                ingested_at,
-                observed_at,
-                source,
-                model_name,
-                provider_request_id,
-                implied_volatility,
-                delta,
-                gamma,
-                theta,
-                vega,
-                model_underlying_price,
-                model_rate,
-                model_dividend_yield,
-                model_input_notes
+        if _provider_model_timing_columns_available(connection):
+            cursor = connection.execute(
+                """
+                INSERT INTO provider_model_observations (
+                    option_quote_id, provider, ingested_at, observed_at, source,
+                    model_name, provider_request_id, implied_volatility, delta,
+                    gamma, theta, vega, model_underlying_price, model_rate,
+                    model_dividend_yield, model_input_notes,
+                    timing_diagnostic_version, greek_age_seconds,
+                    quote_greek_skew_seconds, underlying_greek_skew_seconds
+                )
+                VALUES (?, ?, ?, ?, 'PROVIDER_DERIVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    option_quote_id, provider.strip(), ingested_at, observed_at,
+                    model_name, provider_request_id, implied_volatility, delta,
+                    gamma, theta, vega, model_underlying_price, model_rate,
+                    model_dividend_yield, model_input_notes,
+                    timing_diagnostic_version, greek_age_seconds,
+                    quote_greek_skew_seconds, underlying_greek_skew_seconds,
+                ),
             )
-            VALUES (
-                ?,
-                ?,
-                ?,
-                ?,
-                'PROVIDER_DERIVED',
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?
-            );
-            """,
-            (
-                option_quote_id,
-                provider.strip(),
-                ingested_at,
-                observed_at,
-                model_name,
-                provider_request_id,
-                implied_volatility,
-                delta,
-                gamma,
-                theta,
-                vega,
-                model_underlying_price,
-                model_rate,
-                model_dividend_yield,
-                model_input_notes,
-            ),
-        )
+        else:
+            cursor = connection.execute(
+                """
+                INSERT INTO provider_model_observations (
+                    option_quote_id, provider, ingested_at, observed_at, source,
+                    model_name, provider_request_id, implied_volatility, delta,
+                    gamma, theta, vega, model_underlying_price, model_rate,
+                    model_dividend_yield, model_input_notes
+                )
+                VALUES (?, ?, ?, ?, 'PROVIDER_DERIVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    option_quote_id, provider.strip(), ingested_at, observed_at,
+                    model_name, provider_request_id, implied_volatility, delta,
+                    gamma, theta, vega, model_underlying_price, model_rate,
+                    model_dividend_yield, model_input_notes,
+                ),
+            )
+
 
         return cursor.lastrowid
 
@@ -352,6 +364,18 @@ def create_provider_model_observations(
                 observation.get(
                     "model_input_notes"
                 ),
+                observation.get(
+                    "timing_diagnostic_version"
+                ),
+                observation.get(
+                    "greek_age_seconds"
+                ),
+                observation.get(
+                    "quote_greek_skew_seconds"
+                ),
+                observation.get(
+                    "underlying_greek_skew_seconds"
+                ),
             )
         )
 
@@ -359,47 +383,36 @@ def create_provider_model_observations(
         db_path=db_path,
         conn=conn,
     ) as connection:
-        connection.executemany(
-            """
-            INSERT INTO provider_model_observations (
-                option_quote_id,
-                provider,
-                ingested_at,
-                observed_at,
-                source,
-                model_name,
-                provider_request_id,
-                implied_volatility,
-                delta,
-                gamma,
-                theta,
-                vega,
-                model_underlying_price,
-                model_rate,
-                model_dividend_yield,
-                model_input_notes
+        if _provider_model_timing_columns_available(connection):
+            connection.executemany(
+                """
+                INSERT INTO provider_model_observations (
+                    option_quote_id, provider, ingested_at, observed_at, source,
+                    model_name, provider_request_id, implied_volatility, delta,
+                    gamma, theta, vega, model_underlying_price, model_rate,
+                    model_dividend_yield, model_input_notes,
+                    timing_diagnostic_version, greek_age_seconds,
+                    quote_greek_skew_seconds, underlying_greek_skew_seconds
+                )
+                VALUES (?, ?, ?, ?, 'PROVIDER_DERIVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                rows,
             )
-            VALUES (
-                ?,
-                ?,
-                ?,
-                ?,
-                'PROVIDER_DERIVED',
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?
-            );
-            """,
-            rows,
-        )
+        else:
+            legacy_rows = [row[:15] for row in rows]
+            connection.executemany(
+                """
+                INSERT INTO provider_model_observations (
+                    option_quote_id, provider, ingested_at, observed_at, source,
+                    model_name, provider_request_id, implied_volatility, delta,
+                    gamma, theta, vega, model_underlying_price, model_rate,
+                    model_dividend_yield, model_input_notes
+                )
+                VALUES (?, ?, ?, ?, 'PROVIDER_DERIVED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                legacy_rows,
+            )
+
 
     return len(rows)
 

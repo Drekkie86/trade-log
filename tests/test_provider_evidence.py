@@ -843,3 +843,62 @@ def test_provider_model_observation_batch_uses_one_transaction(
         "executemany": 1,
         "row_count": 1000,
     }
+
+
+def test_provider_model_observation_persists_v18_timing_fields(db_path):
+    from src.database.repository import get_connection
+
+    conn = get_connection(db_path)
+    try:
+        run_id = int(conn.execute(
+            """
+            INSERT INTO research_runs (
+                cohort_id, started_at, code_git_sha, preregistration_hash,
+                us_session_date, us_session_state, status
+            ) VALUES ('TIMING_TEST', '2026-09-03T18:00:00Z', 'sha', 'hash',
+                      '2026-09-03', 'INTRADAY', 'STARTED');
+            """
+        ).lastrowid)
+        snapshot_id = int(conn.execute(
+            """
+            INSERT INTO market_snapshots (
+                captured_at, underlying, provider, underlying_source,
+                fx_source, research_run_id, us_session_date, us_session_state
+            ) VALUES ('2026-09-03T18:00:00Z', 'AAPL', 'THETADATA', 'UNKNOWN',
+                      'UNKNOWN', ?, '2026-09-03', 'INTRADAY');
+            """,
+            (run_id,),
+        ).lastrowid)
+        quote_id = int(conn.execute(
+            """
+            INSERT INTO option_quotes (
+                snapshot_id, right, strike, expiration,
+                bid_source, ask_source, last_source, iv_source, delta_source,
+                gamma_source, theta_source, vega_source, volume_source,
+                open_interest_source
+            ) VALUES (?, 'C', 250, '2026-09-11', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN',
+                      'UNKNOWN', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN',
+                      'UNKNOWN', 'UNKNOWN');
+            """,
+            (snapshot_id,),
+        ).lastrowid)
+
+        observation_id = create_provider_model_observation(
+            option_quote_id=quote_id,
+            provider="THETADATA",
+            delta=0.5,
+            timing_diagnostic_version="THETADATA_TIMING_DIAGNOSTIC_V1",
+            greek_age_seconds=1.5,
+            quote_greek_skew_seconds=-0.25,
+            underlying_greek_skew_seconds=0.75,
+            conn=conn,
+        )
+        row = conn.execute(
+            "SELECT * FROM provider_model_observations WHERE id = ?;",
+            (observation_id,),
+        ).fetchone()
+        assert row["greek_age_seconds"] == 1.5
+        assert row["quote_greek_skew_seconds"] == -0.25
+        assert row["underlying_greek_skew_seconds"] == 0.75
+    finally:
+        conn.close()

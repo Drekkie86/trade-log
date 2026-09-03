@@ -142,13 +142,27 @@ def _load_proposals(
 
     try:
         if proposal_ids:
-            placeholders = ",".join(
-                "?"
-                for _ in proposal_ids
+            # Scale-safe requested-ID filter. A TEMP table avoids SQLite's
+            # host-parameter ceiling and keeps the query plan stable even if
+            # proposal selection eventually grows beyond today's tiny counts.
+            conn.execute(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS
+                requested_shadow_proposal_ids (
+                    id INTEGER PRIMARY KEY
+                );
+                """
+            )
+            conn.execute(
+                "DELETE FROM requested_shadow_proposal_ids;"
+            )
+            conn.executemany(
+                "INSERT INTO requested_shadow_proposal_ids (id) VALUES (?);",
+                ((int(proposal_id),) for proposal_id in proposal_ids),
             )
 
             rows = conn.execute(
-                f"""
+                """
                 SELECT
                     ssp.*,
                     hse.scanner_run_id,
@@ -163,7 +177,9 @@ def _load_proposals(
                     hsr.evaluated_at
                         AS surfaced_at,
                     pmo.model_input_notes
-                FROM shadow_structure_proposals AS ssp
+                FROM requested_shadow_proposal_ids AS requested
+                JOIN shadow_structure_proposals AS ssp
+                  ON ssp.id = requested.id
                 JOIN hypothesis_scanner_evaluations AS hse
                   ON hse.id = ssp.hypothesis_evaluation_id
                 JOIN hypothesis_scanner_runs AS hsr
@@ -172,11 +188,9 @@ def _load_proposals(
                   ON pmo.option_quote_id =
                      hse.option_quote_id
                  AND pmo.provider = 'THETADATA'
-                WHERE ssp.id IN ({placeholders})
-                  AND ssp.proposal_state = 'PROPOSED'
+                WHERE ssp.proposal_state = 'PROPOSED'
                 ORDER BY ssp.id;
-                """,
-                tuple(proposal_ids),
+                """
             ).fetchall()
         else:
             rows = conn.execute(
@@ -218,10 +232,7 @@ def _load_proposals(
                 ),
             ).fetchall()
 
-        return [
-            dict(row)
-            for row in rows
-        ]
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 
