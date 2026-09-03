@@ -120,10 +120,10 @@ def _intrinsic(
     )
 
 
-def _max_loss_minor(
+def _terminal_payoff_bounds(
     *,
     legs: tuple[StructureLeg, ...],
-) -> tuple[int, float]:
+) -> tuple[int, float, float]:
     if not legs:
         raise ValueError(
             "At least one leg is required."
@@ -201,6 +201,9 @@ def _max_loss_minor(
     worst = min(
         pnl_per_share
     )
+    best = max(
+        pnl_per_share
+    )
 
     max_loss = max(
         0.0,
@@ -216,6 +219,7 @@ def _max_loss_minor(
     return (
         minor,
         net_debit_per_share,
+        best,
     )
 
 
@@ -585,7 +589,8 @@ def _build_one(
         (
             max_loss_minor,
             net_debit_per_share,
-        ) = _max_loss_minor(
+            best_terminal_pnl_per_share,
+        ) = _terminal_payoff_bounds(
             legs=leg_tuple
         )
     except ShadowStructureBridgeError:
@@ -593,6 +598,18 @@ def _build_one(
             row,
             reason_code=
                 "LEG_MULTIPLIER_MISMATCH",
+        )
+
+    # A defined-risk structure is not economically meaningful if the
+    # conservative entry prices leave no terminal spot at which pre-cost
+    # P&L can be positive. Preserve the surfaced anomaly, but block the
+    # structure from shadow admission rather than manufacturing a
+    # guaranteed-loss research candidate.
+    if best_terminal_pnl_per_share <= 0.0:
+        return _blocked(
+            row,
+            reason_code=
+                "NON_POSITIVE_TERMINAL_UPSIDE",
         )
 
     return ShadowStructureProposal(

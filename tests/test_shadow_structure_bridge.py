@@ -21,6 +21,7 @@ def seed_surface(
     lower=95.0,
     target=100.0,
     upper=105.0,
+    prices_override=None,
 ):
     conn = get_connection(db_path)
 
@@ -103,11 +104,15 @@ def seed_surface(
 
     quote_rows = []
 
-    prices = {
-        lower: (6.9, 7.0),
-        target: (4.9, 5.0),
-        upper: (2.9, 3.0),
-    }
+    prices = (
+        {
+            lower: (6.9, 7.0),
+            target: (4.9, 5.0),
+            upper: (2.9, 3.0),
+        }
+        if prices_override is None
+        else prices_override
+    )
 
     for strike in (
         lower,
@@ -409,6 +414,11 @@ def test_cheap_local_anomaly_builds_reverse_butterfly(
     _, scanner_run_id, _ = seed_surface(
         db_path,
         direction="IV_CHEAP_LOCAL",
+        prices_override={
+            95.0: (7.1, 7.2),
+            100.0: (4.9, 5.0),
+            105.0: (3.1, 3.2),
+        },
     )
 
     result = build_shadow_structure_proposals(
@@ -439,6 +449,65 @@ def test_cheap_local_anomaly_builds_reverse_butterfly(
         is not None
     )
 
+
+
+def test_guaranteed_loss_long_butterfly_is_blocked(
+    db_path,
+):
+    _, scanner_run_id, _ = seed_surface(
+        db_path,
+        direction="IV_RICH_LOCAL",
+        lower=305.0,
+        target=306.0,
+        upper=307.0,
+        prices_override={
+            305.0: (10.77, 11.34),
+            306.0: (11.61, 13.81),
+            307.0: (12.48, 13.06),
+        },
+    )
+
+    result = build_shadow_structure_proposals(
+        hypothesis_scanner_run_id=
+            scanner_run_id,
+        persist=False,
+        db_path=db_path,
+    )
+
+    assert result.proposed_count == 0
+    assert result.blocked_count == 1
+
+    proposal = result.proposals[0]
+    assert proposal.proposal_state == "BLOCKED"
+    assert (
+        proposal.reason_code
+        == "NON_POSITIVE_TERMINAL_UPSIDE"
+    )
+    assert proposal.structure_id is None
+    assert proposal.max_theoretical_loss_minor is None
+
+
+def test_guaranteed_loss_reverse_butterfly_is_blocked(
+    db_path,
+):
+    _, scanner_run_id, _ = seed_surface(
+        db_path,
+        direction="IV_CHEAP_LOCAL",
+    )
+
+    result = build_shadow_structure_proposals(
+        hypothesis_scanner_run_id=
+            scanner_run_id,
+        persist=False,
+        db_path=db_path,
+    )
+
+    assert result.proposed_count == 0
+    assert result.blocked_count == 1
+    assert (
+        result.proposals[0].reason_code
+        == "NON_POSITIVE_TERMINAL_UPSIDE"
+    )
 
 def test_unequal_wings_are_blocked(
     db_path,

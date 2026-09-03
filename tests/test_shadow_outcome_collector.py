@@ -706,5 +706,11 @@ def test_collects_conservative_long_mark(
             ==
             "COMPLETE_UNVERIFIED_FRESHNESS"
         )
+        assert (
+            rows[0]["measurement_role"]
+            ==
+            "INDEPENDENT_LEG_LIQUIDATION_STRESS"
+        )
+        assert rows[0]["outcome_eligible"] == 0
     finally:
         conn.close()

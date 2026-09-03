@@ -6,6 +6,12 @@
       "start": "2026-08-01",
       "end": "2026-08-31",
       "description": "AAPL/XOM/JPM ThetaData historical EOD data used to shape tradability, premium, DTE, moneyness and dependence analysis. Burned for confirmation."
+    },
+    {
+      "window_id": "SEPTEMBER_2026_DAEMON_DISCOVERY_TO_2026_09_03",
+      "start": "2026-09-01",
+      "end": "2026-09-03",
+      "description": "Christiania live daemon/scanner/shadow observations through 2026-09-03 were used for hypothesis critique, reference-boundary validation, shadow-mark measurement diagnosis and future model design. Burned for confirmation."
     }
   ]
 }
