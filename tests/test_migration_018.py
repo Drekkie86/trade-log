@@ -13,7 +13,7 @@ def test_migration_018_adds_timing_columns_and_reference_gap_views(db_path):
         version = conn.execute(
             "SELECT MAX(version) AS version FROM schema_version;"
         ).fetchone()["version"]
-        assert version == 20
+        assert version == 21
 
         columns = {
             row["name"]

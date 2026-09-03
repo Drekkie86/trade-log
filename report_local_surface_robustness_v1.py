@@ -1,0 +1,14 @@
+import json
+from datetime import datetime,timezone
+from pathlib import Path
+from src.database.repository import get_connection
+if __name__=='__main__':
+ c=get_connection(); run=c.execute('SELECT * FROM local_surface_robustness_v1_runs ORDER BY id DESC LIMIT 1').fetchone(); rid=int(run['id']); episodes=[dict(x) for x in c.execute('SELECT * FROM local_surface_robustness_v1_episodes WHERE robustness_run_id=? ORDER BY peak_abs_centered_residual DESC LIMIT 50',(rid,))]; cross=[dict(x) for x in c.execute('SELECT * FROM local_surface_robustness_v1_cross_date WHERE robustness_run_id=? ORDER BY train_session_date,test_session_date,stratum_key',(rid,))]; quality=[dict(x) for x in c.execute('SELECT * FROM local_surface_robustness_v1_quality_sensitivity WHERE robustness_run_id=? ORDER BY metric_name,bucket_name',(rid,))]; c.close()
+ payload={'run':dict(run),'top_episodes':episodes,'cross_date':cross,'quality_sensitivity':quality,'guardrail':'Discovery-only; no p-values/FDR/decision/edge claim.'}; stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'); out=Path.home()/'Downloads'; jp=out/f'Christiania_Local_Surface_Robustness_V1_{stamp}.json'; mp=out/f'Christiania_Local_Surface_Robustness_V1_{stamp}.md'; jp.write_text(json.dumps(payload,indent=2),encoding='utf-8')
+ lines=['# Christiania LOCAL_SURFACE_ROBUSTNESS_V1',f"- observations: **{run['observation_count']}**",f"- dates: **{run['distinct_session_dates']}**",f"- episodes: **{run['episode_count']}**",f"- repeated episodes: **{run['repeated_episode_count']}**",f"- readiness: **{run['readiness_state']}**",'- p-values/FDR/decision: **disabled**','','## Top episodes','| underlying | expiry | strike | right | date | obs | first run | last run | peak | median |','|---|---|---:|---|---|---:|---:|---:|---:|---:|']
+ for e in episodes[:30]:lines.append(f"| {e['underlying']} | {e['expiration']} | {e['strike']} | {e['right']} | {e['session_date']} | {e['observation_count']} | {e['first_research_run_id']} | {e['last_research_run_id']} | {e['peak_abs_centered_residual']:.6f} | {e['median_centered_residual']:.6f} |")
+ lines+=['','## Cross-date transfer','| train | test | stratum | train N | test N | tail fraction |','|---|---|---|---:|---:|---:|']
+ for x in cross:lines.append(f"| {x['train_session_date']} | {x['test_session_date']} | {x['stratum_key']} | {x['train_count']} | {x['test_count']} | {x['test_tail_fraction']:.4f} |")
+ lines+=['','## Quality sensitivity','| metric | bucket | N | median abs | q95 | q99 |','|---|---|---:|---:|---:|---:|']
+ for q in quality:lines.append(f"| {q['metric_name']} | {q['bucket_name']} | {q['observation_count']} | {q['median_abs_centered_residual']:.6f} | {q['q95_abs_centered_residual']:.6f} | {q['q99_abs_centered_residual']:.6f} |")
+ mp.write_text('\n'.join(lines)+'\n',encoding='utf-8'); print(f'Markdown report: {mp}'); print(f'JSON report: {jp}')
