@@ -80,6 +80,7 @@ def run_research_cycle(
         max_spread_to_mid=max_spread_to_mid,
         residual_threshold=residual_threshold,
         persist=True,
+        structural_summary=structural,
         db_path=db_path,
     )
 

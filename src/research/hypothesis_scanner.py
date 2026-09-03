@@ -12,6 +12,7 @@ from src.database.repository import (
 )
 from src.research.deterministic_scanner import (
     ScannerObservation,
+    ScannerRunSummary,
     scan_research_run,
 )
 
@@ -718,14 +719,19 @@ def scan_local_iv_residuals(
     residual_threshold: float =
         DEFAULT_RESIDUAL_THRESHOLD,
     persist: bool = True,
+    structural_summary: ScannerRunSummary | None = None,
     db_path=None,
 ) -> HypothesisScannerResult:
-    structural = scan_research_run(
-        research_run_id=
-            research_run_id,
-        max_spread_to_mid=
-            max_spread_to_mid,
-        db_path=db_path,
+    structural = (
+        structural_summary
+        if structural_summary is not None
+        else scan_research_run(
+            research_run_id=
+                research_run_id,
+            max_spread_to_mid=
+                max_spread_to_mid,
+            db_path=db_path,
+        )
     )
 
     eligible = [
