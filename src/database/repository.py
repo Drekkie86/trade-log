@@ -8,7 +8,7 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
 
-EXPECTED_SCHEMA_VERSION = 22
+EXPECTED_SCHEMA_VERSION = 23
 
 
 PROVENANCE_VALUES = {
