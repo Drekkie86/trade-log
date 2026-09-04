@@ -4,6 +4,9 @@ __pycache__/
 
 trade_log.db
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 
 .env
 creds.txt

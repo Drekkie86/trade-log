@@ -4,9 +4,25 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
+from src.config import get_runtime_setting
+
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = BASE_DIR / "trade_log.db"
+
+
+def resolve_db_path(db_path=None) -> Path:
+    if db_path is not None:
+        return Path(db_path).expanduser()
+
+    configured = get_runtime_setting(
+        "CHRISTIANIA_DB_PATH"
+    )
+
+    if configured:
+        return Path(configured).expanduser()
+
+    return DB_PATH
 
 EXPECTED_SCHEMA_VERSION = 25
 
@@ -51,7 +67,7 @@ def to_minor(amount) -> int:
 
 
 def get_connection(db_path=None) -> sqlite3.Connection:
-    path = db_path or DB_PATH
+    path = resolve_db_path(db_path)
 
     connection = sqlite3.connect(path, timeout=30.0)
     connection.row_factory = sqlite3.Row

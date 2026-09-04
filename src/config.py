@@ -91,6 +91,28 @@ def get_optional_setting(
     return os.environ.get(name)
 
 
+def get_runtime_setting(
+    name: str,
+) -> str | None:
+    """
+    Resolve deployment/runtime configuration.
+
+    Explicit process environment wins. If it is absent,
+    fall back to the local .env file without mutating the
+    current process environment.
+
+    This is intended for host/runtime settings such as
+    CHRISTIANIA_DB_PATH and CHRISTIANIA_BACKUP_DIR.
+    """
+
+    value = os.environ.get(name)
+
+    if value:
+        return value
+
+    return _read_local_settings().get(name)
+
+
 def set_local_settings(
     values: dict[str, str],
 ) -> None:

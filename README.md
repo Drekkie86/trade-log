@@ -1,2 +1,46 @@
-# trade-log
-Personal options trade calibration and research log
+# Christiania
+
+Personal options research, calibration and shadow-trading workstation.
+
+Christiania is designed to test whether repeatable positive expectancy exists
+net realistic costs and slippage. It is research software, not a live
+autotrading system.
+
+## V1 components
+
+- repeated research daemon;
+- provider/reference evidence;
+- prospective calibration partition;
+- model governance and hypothesis registry;
+- bounded transient recovery with structured provenance;
+- defined-risk shadow structures and longitudinal marks;
+- SQLite WAL operational database;
+- verified online backups;
+- read-only Streamlit command deck.
+
+## Start locally
+
+Activate the virtual environment, start Theta Terminal, then run the research
+daemon as documented in `docs/research/RESEARCH_DAEMON_V1.md`.
+
+Launch the web command deck:
+
+`python run_christiania_app.py`
+
+Operational health:
+
+`python christiania_health.py`
+
+Verified backup:
+
+`python backup_christiania.py`
+
+Cloud-ready SQLite and command-deck operations are documented in:
+
+`docs/operations/V1_CLOUD_SQLITE_COMMAND_DECK.md`
+
+## Governance
+
+Surfaced anomalies are observational evidence, not validated edge.
+Prospective evidence remains separated from discovery evidence.
+The V1 web application contains no broker-order path.
