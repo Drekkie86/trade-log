@@ -18,3 +18,14 @@ Purpose: freeze the post-v23 discovery state before collecting additional indepe
 4. Do persistent same-sign episodes recur across independent dates?
 
 First descriptive review: 5 independent prospective dates. Preregistration review remains reserved for 20+ independent dates.
+
+
+## Recovery provenance covariate
+
+From schema v25 onward, prospective residual observations can be queried through
+`v_local_surface_v2_prospective_partition_v2`, which carries per-underlying
+recovery provenance from collection. A recovered observation is not excluded or
+reweighted automatically; recovery status is an observational covariate only.
+
+No frozen hypothesis, model role, threshold, p-value/FDR firewall, admission
+rule, or trading decision is changed by this instrumentation.

@@ -163,3 +163,20 @@ recovery requires explicit idempotency first.
 
 Default: one recovery attempt after a two-second delay. Massive's own internal
 request retries still happen before this recovery layer. No broker orders.
+
+
+## V1.0 recovery provenance visibility
+
+Migration 025 makes successful recovery analytically distinguishable from a
+clean collection. `research_run_underlyings` stores the transient
+`recovery_error_type` and `recovery_error_message` alongside `retry_count`.
+
+The prospective analytical view
+`v_local_surface_v2_prospective_partition_v2` exposes
+`underlying_collection_status`, `recovery_attempt_count`, `was_recovered`,
+`recovery_provenance_state`, `recovery_error_type`, and
+`recovery_error_message`.
+
+This permits future calibration analyses to condition on provider recovery
+rather than silently pooling recovered and clean observations. The v1
+prospective partition remains intact for reproducibility.

@@ -394,6 +394,10 @@ def test_transient_massive_failure_recovers_same_underlying(db_path):
         assert run_row["failed_underlyings"] == 0
         assert child["status"] == "SUCCESS"
         assert child["retry_count"] == 1
+        assert child["recovery_error_type"] == "MassiveNetworkError"
+        assert child["recovery_error_message"] == (
+            "Could not reach Massive after retries."
+        )
         assert "immediate recovery after MassiveNetworkError" in run_row["notes"]
         assert "recovered successfully after 1" in run_row["notes"]
         assert conn.execute(

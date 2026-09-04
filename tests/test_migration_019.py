@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 from pathlib import Path
 
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.database.repository import get_connection
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,7 @@ MIGRATION = ROOT / "migrations" / "019_local_surface_residual_v2_observational.s
 def test_migration_019_adds_observational_surface_tables_and_view(db_path):
     conn = get_connection(db_path)
     try:
-        assert conn.execute("SELECT MAX(version) FROM schema_version;").fetchone()[0] == 24
+        assert conn.execute("SELECT MAX(version) FROM schema_version;").fetchone()[0] == EXPECTED_SCHEMA_VERSION
         objects = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view','index');")}
         assert {
             "local_surface_residual_v2_runs",

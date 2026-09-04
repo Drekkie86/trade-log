@@ -1,9 +1,10 @@
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.database.repository import get_connection
 
 def test_v23_objects_exist_and_schema_is_current(db_path):
     c=get_connection(db_path)
     try:
-        assert c.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]==24
+        assert c.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]==EXPECTED_SCHEMA_VERSION
         names={r['name'] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         required={'thetadata_timestamp_semantics_v1_runs','local_surface_calibration_validity_v1_runs','local_surface_calibration_validity_v1_dte_transfer','local_surface_calibration_validity_v1_episode_transfer','local_surface_calibration_validity_v1_model_comparison','local_surface_calibration_validity_v1_quality_dte'}
         assert required<=names

@@ -342,10 +342,20 @@ def _record_underlying_recovery_attempt(
         cursor = conn.execute(
             """
             UPDATE research_run_underlyings
-            SET retry_count = retry_count + 1
-            WHERE run_id = ? AND underlying = ? AND status = 'ATTEMPTED';
+            SET
+                retry_count = retry_count + 1,
+                recovery_error_type = ?,
+                recovery_error_message = ?
+            WHERE run_id = ?
+              AND underlying = ?
+              AND status = 'ATTEMPTED';
             """,
-            (run_id, underlying),
+            (
+                type(error).__name__,
+                str(error),
+                run_id,
+                underlying,
+            ),
         )
         if cursor.rowcount != 1:
             raise IndependentResearchRunnerError(

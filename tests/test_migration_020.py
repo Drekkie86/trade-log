@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.database.repository import get_connection
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,7 @@ MIGRATION = ROOT / "migrations" / "020_local_surface_empirical_null_v1.sql"
 def test_migration_020_adds_null_model_tables_and_view(db_path):
     conn = get_connection(db_path)
     try:
-        assert conn.execute("SELECT MAX(version) FROM schema_version;").fetchone()[0] == 24
+        assert conn.execute("SELECT MAX(version) FROM schema_version;").fetchone()[0] == EXPECTED_SCHEMA_VERSION
         objects = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view','index');")}
         assert {
             "local_surface_null_v1_runs",

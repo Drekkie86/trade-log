@@ -1,10 +1,11 @@
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.database.repository import get_connection
 
 
 def test_v24_objects_and_schema(db_path):
     c=get_connection(db_path)
     try:
-        assert c.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]==24
+        assert c.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]==EXPECTED_SCHEMA_VERSION
         names={r['name'] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
         assert {'research_model_registry_v1','prospective_research_freeze_v1_runs','prospective_research_hypotheses_v1','prospective_model_dte_baseline_v1','v_local_surface_v2_prospective_partition_v1'}<=names
     finally:c.close()

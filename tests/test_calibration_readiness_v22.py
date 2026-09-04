@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.database.repository import get_connection
 from src.research.provider_timing_reconstruction_v1 import reconstruct_provider_timing_v1
 from src.research.local_surface_calibration_readiness_v1 import fit_local_surface_calibration_readiness_v1
@@ -76,7 +77,7 @@ def test_calibration_readiness_collapses_episodes_and_tracks_cross_day_contracts
 def test_v22_schema_firewall_refuses_inferential_flags(db_path):
     c=get_connection(db_path)
     try:
-        assert c.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]==24
+        assert c.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]==EXPECTED_SCHEMA_VERSION
         try:
             c.execute("INSERT INTO local_surface_calibration_readiness_v1_runs(calibration_version,source_robustness_run_id,source_null_run_id,config_hash,config_json,fitted_at,observation_count,distinct_session_dates,episode_count,cross_day_contract_count,native_timing_count,reconstructed_timing_count,unavailable_timing_count,readiness_state,p_values_enabled,fdr_enabled,decision_enabled) VALUES('x',1,1,'h','{}','x',1,1,1,0,0,0,1,'INSUFFICIENT_INDEPENDENT_DATES',1,0,0)")
             assert False

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.database.repository import get_connection
 
 
@@ -13,7 +14,7 @@ def test_migration_018_adds_timing_columns_and_reference_gap_views(db_path):
         version = conn.execute(
             "SELECT MAX(version) AS version FROM schema_version;"
         ).fetchone()["version"]
-        assert version == 24
+        assert version == EXPECTED_SCHEMA_VERSION
 
         columns = {
             row["name"]
