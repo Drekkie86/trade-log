@@ -39,6 +39,10 @@ Cloud-ready SQLite and command-deck operations are documented in:
 
 `docs/operations/V1_CLOUD_SQLITE_COMMAND_DECK.md`
 
+One-VM reliability and service-manager deployment preparation:
+
+`docs/operations/V1_ONE_VM_RELIABILITY.md`
+
 ## Governance
 
 Surfaced anomalies are observational evidence, not validated edge.

@@ -1,0 +1,19 @@
+[Unit]
+Description=Christiania Theta Terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_theta_terminal.py
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

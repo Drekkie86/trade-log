@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Christiania Runtime Health Check
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=5m
+Persistent=true
+Unit=christiania-health.service
+
+[Install]
+WantedBy=timers.target

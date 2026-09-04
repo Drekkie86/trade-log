@@ -2,3 +2,4 @@ pytest>=9,<10
 numpy
 requests
 streamlit
+exchange_calendars>=4.13,<5

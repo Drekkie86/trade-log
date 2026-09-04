@@ -1,0 +1,22 @@
+[Unit]
+Description=Christiania Research Daemon
+After=network-online.target christiania-theta.service
+Wants=network-online.target
+Requires=christiania-theta.service
+
+[Service]
+Type=simple
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_christiania_daemon.py
+Restart=always
+RestartSec=15
+TimeoutStopSec=90
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

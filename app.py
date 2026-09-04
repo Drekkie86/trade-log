@@ -146,6 +146,12 @@ prospective = snapshot[
 counts = snapshot[
     "research_counts"
 ]
+market_clock = snapshot[
+    "market_clock"
+]
+daemon_health = snapshot[
+    "daemon_health"
+]
 
 st.markdown(
     '''
@@ -213,6 +219,33 @@ if page == "Command":
             ],
             "queryable provenance",
         )
+
+    c1, c2 = st.columns(2)
+    c1.metric(
+        "Market clock",
+        _status_label(
+            market_clock["state"]
+        ),
+        market_clock.get(
+            "next_sample_at"
+        ),
+    )
+    c2.metric(
+        "Daemon health",
+        _status_label(
+            daemon_health["state"]
+        ),
+        (
+            None
+            if daemon_health.get(
+                "heartbeat_age_seconds"
+            ) is None
+            else (
+                f"heartbeat age "
+                f"{daemon_health['heartbeat_age_seconds']:.0f}s"
+            )
+        ),
+    )
 
     st.subheader(
         "Prospective calibration"
@@ -448,6 +481,16 @@ elif page == "Shadow Lab":
         )
 
 elif page == "System":
+    st.subheader(
+        "Runtime clock"
+    )
+    st.json(
+        {
+            "market_clock": market_clock,
+            "daemon_health": daemon_health,
+        }
+    )
+
     st.subheader(
         "Database health"
     )

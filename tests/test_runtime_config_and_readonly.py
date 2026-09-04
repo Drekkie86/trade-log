@@ -151,3 +151,24 @@ def test_health_cli_returns_nonzero_for_missing_database(
         assert christiania_health.main() == 2
     finally:
         sys.argv = old_argv
+
+
+def test_health_cli_strict_daemon_returns_three_without_lease(
+    db_path,
+):
+    import sys
+
+    import christiania_health
+
+    old = sys.argv
+    sys.argv = [
+        "christiania_health.py",
+        "--db",
+        str(db_path),
+        "--strict-daemon",
+    ]
+
+    try:
+        assert christiania_health.main() == 3
+    finally:
+        sys.argv = old

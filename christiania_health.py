@@ -19,10 +19,23 @@ def main() -> int:
         "--json",
         action="store_true",
     )
+    parser.add_argument(
+        "--strict-daemon",
+        action="store_true",
+        help=(
+            "Also require a live daemon lease with a recent heartbeat."
+        ),
+    )
     args = parser.parse_args()
 
     snapshot = load_command_deck(
         args.db
+    )
+
+    strict_daemon_failed = (
+        args.strict_daemon
+        and snapshot.get("ready") is True
+        and snapshot.get("daemon_health", {}).get("state") != "HEALTHY"
     )
 
     if args.json:
@@ -34,7 +47,11 @@ def main() -> int:
                 default=str,
             )
         )
-        return 0 if snapshot["ready"] else 2
+        if not snapshot["ready"]:
+            return 2
+        if strict_daemon_failed:
+            return 3
+        return 0
 
     db = snapshot["database"]
 
@@ -59,9 +76,30 @@ def main() -> int:
         f"Dashboard ready: {snapshot['ready']}"
     )
 
+    market_clock = snapshot.get("market_clock", {})
+    print(
+        "Market clock: "
+        f"{market_clock.get('state')}"
+    )
+    print(
+        "Next sample: "
+        f"{market_clock.get('next_sample_at')}"
+    )
+
     if not snapshot["ready"]:
         print(f"Reason: {snapshot['reason']}")
         return 2
+
+    daemon_health = snapshot.get(
+        "daemon_health", {}
+    )
+    print(
+        "Daemon health: "
+        f"{daemon_health.get('state')}"
+    )
+
+    if strict_daemon_failed:
+        return 3
 
     latest = snapshot["latest_iteration"]
 

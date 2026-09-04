@@ -1,0 +1,13 @@
+[Unit]
+Description=Christiania Verified SQLite Backup
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py
+NoNewPrivileges=true
+PrivateTmp=true

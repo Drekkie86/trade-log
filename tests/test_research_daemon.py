@@ -56,7 +56,7 @@ def test_next_slot_before_open_is_0945():
     )
 
 
-def test_next_slot_after_session_moves_to_next_weekday():
+def test_next_slot_after_session_skips_exchange_holiday():
     now = datetime(
         2026, 9, 4,
         16, 0,
@@ -67,7 +67,7 @@ def test_next_slot_after_session_moves_to_next_weekday():
         now
     )
 
-    assert slot.weekday() == 0
+    assert slot.date().isoformat() == "2026-09-08"
     assert (
         slot.hour,
         slot.minute,
@@ -353,3 +353,84 @@ def test_reconcile_orphaned_research_runs_terminalizes_stale_children(
         assert fresh_row["ended_at"] is None
     finally:
         conn.close()
+
+
+def test_next_slot_early_close_uses_1245_last_sample():
+    now = datetime(
+        2026, 11, 27,
+        12, 44,
+        tzinfo=NY,
+    )
+
+    slot = next_sampling_slot(now)
+
+    assert slot.date().isoformat() == "2026-11-27"
+    assert (slot.hour, slot.minute) == (12, 45)
+
+
+def test_next_slot_after_early_close_moves_to_next_session():
+    now = datetime(
+        2026, 11, 27,
+        12, 50,
+        tzinfo=NY,
+    )
+
+    slot = next_sampling_slot(now)
+
+    assert slot.date().isoformat() == "2026-11-30"
+    assert (slot.hour, slot.minute) == (9, 45)
+
+
+def test_interrupted_iteration_is_terminalized_as_orphaned(
+    db_path,
+):
+    from src.research.research_daemon import (
+        run_one_iteration,
+    )
+
+    owner = "interrupt-owner"
+    acquire_daemon_lock(
+        owner_token=owner,
+        db_path=db_path,
+    )
+
+    def interrupting_runner(**_kwargs):
+        raise KeyboardInterrupt
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_one_iteration(
+                scheduled_for=datetime(
+                    2026, 9, 1,
+                    10, 0,
+                    tzinfo=NY,
+                ),
+                owner_token=owner,
+                symbols=["AAPL"],
+                massive_client=object(),
+                theta_client=object(),
+                db_path=db_path,
+                full_cycle_runner=interrupting_runner,
+            )
+
+        conn = get_connection(db_path)
+        try:
+            row = conn.execute(
+                """
+                SELECT status, error_type, completed_at
+                FROM research_daemon_iterations
+                ORDER BY id DESC
+                LIMIT 1;
+                """
+            ).fetchone()
+
+            assert row["status"] == "ORPHANED"
+            assert row["error_type"] == "INTERRUPTED_PROCESS"
+            assert row["completed_at"] is not None
+        finally:
+            conn.close()
+    finally:
+        release_daemon_lock(
+            owner_token=owner,
+            db_path=db_path,
+        )

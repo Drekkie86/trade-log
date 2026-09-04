@@ -77,3 +77,14 @@ def test_app_command_deck_uses_short_cache_and_force_refresh():
 
     assert "@st.cache_data(ttl=30)" in app
     assert "st.cache_data.clear()" in app
+
+
+def test_command_deck_exposes_market_and_daemon_health():
+    app = (
+        ROOT / "app.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert '"Market clock"' in app
+    assert '"Daemon health"' in app

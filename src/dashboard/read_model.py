@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
+)
+from src.operations.market_calendar import (
+    market_clock_snapshot,
+)
+from src.operations.runtime_health import (
+    assess_daemon_health,
 )
 from src.operations.sqlite_runtime import (
     inspect_database,
@@ -25,13 +32,19 @@ def _rows_to_dicts(rows) -> list[dict[str, Any]]:
 
 def load_command_deck(
     db_path: str | Path | None = None,
+    *,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     path = resolve_db_path(db_path)
     health = inspect_database(path)
+    market_clock = market_clock_snapshot(
+        now=now
+    ).as_dict()
 
     if not health.exists:
         return {
             "database": health.as_dict(),
+            "market_clock": market_clock,
             "ready": False,
             "reason": "DATABASE_NOT_FOUND",
         }
@@ -42,6 +55,7 @@ def load_command_deck(
     ):
         return {
             "database": health.as_dict(),
+            "market_clock": market_clock,
             "ready": False,
             "reason": "SCHEMA_VERSION_MISMATCH",
         }
@@ -52,6 +66,7 @@ def load_command_deck(
     ):
         return {
             "database": health.as_dict(),
+            "market_clock": market_clock,
             "ready": False,
             "reason": "DATABASE_INTEGRITY_FAILURE",
         }
@@ -460,10 +475,17 @@ def load_command_deck(
     finally:
         conn.close()
 
+    daemon_health = assess_daemon_health(
+        daemon_lock,
+        now=now,
+    ).as_dict()
+
     return {
         "ready": True,
         "reason": None,
         "database": health.as_dict(),
+        "market_clock": market_clock,
+        "daemon_health": daemon_health,
         "daemon_lock": daemon_lock,
         "latest_iteration": latest_iteration,
         "latest_run": latest_run,

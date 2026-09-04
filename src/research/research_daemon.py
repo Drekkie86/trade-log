@@ -11,6 +11,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from src.database.repository import get_connection
+from src.operations.market_calendar import session_sample_bounds
 from src.providers.massive import MassiveClient
 from src.providers.thetadata import ThetaDataClient
 from src.research.full_research_cycle import (
@@ -134,27 +135,22 @@ def next_sampling_slot(
     local = now.astimezone(NY)
     date_value = local.date()
 
-    for day_offset in range(0, 8):
+    for day_offset in range(0, 15):
         candidate_date = (
             date_value
             + timedelta(days=day_offset)
         )
 
-        if candidate_date.weekday() >= 5:
+        bounds = session_sample_bounds(
+            candidate_date,
+            configured_start=session_start,
+            configured_end=session_end,
+        )
+
+        if bounds is None:
             continue
 
-        start = _slot_on_date(
-            candidate_date,
-            hour=session_start.hour,
-            minute=session_start.minute,
-        )
-
-        end = _slot_on_date(
-            candidate_date,
-            hour=session_end.hour,
-            minute=session_end.minute,
-        )
-
+        start, end = bounds
         slot = start
 
         while slot <= end:
@@ -168,7 +164,7 @@ def next_sampling_slot(
 
     raise ResearchDaemonError(
         "Could not find a sampling slot "
-        "within the next eight days."
+        "within the next fourteen days."
     )
 
 
@@ -655,6 +651,40 @@ def run_one_iteration(
         )
 
         return summary
+
+    except KeyboardInterrupt:
+        summary = DaemonIterationSummary(
+            scheduled_for=
+                _iso_utc(
+                    scheduled_for
+                ),
+            status="ORPHANED",
+            research_run_id=None,
+            hypothesis_scanner_run_id=None,
+            proposals_count=None,
+            admitted_count=None,
+            blocked_count=None,
+            outcome_mark_count=None,
+            error_type="INTERRUPTED_PROCESS",
+            error_message=(
+                "Daemon iteration interrupted by process stop."
+            ),
+        )
+
+        _complete_iteration(
+            iteration_id=iteration_id,
+            summary=summary,
+            evidence_json=json.dumps(
+                {
+                    "symbols": symbols,
+                    "interrupted": True,
+                },
+                sort_keys=True,
+            ),
+            db_path=db_path,
+        )
+
+        raise
 
     except Exception as exc:
         summary = DaemonIterationSummary(
