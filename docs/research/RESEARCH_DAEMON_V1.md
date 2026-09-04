@@ -144,3 +144,22 @@ The daemon does not place broker orders.
 Any admitted candidate retains:
 
 `CANDIDATE — NOT VALIDATED FOR LIVE EDGE TRADING`
+
+
+## V1.0 bounded transient recovery
+
+The independent research runner performs one immediate per-underlying recovery
+attempt for narrowly classified transient Massive failures: network exhaustion,
+rate-limit exhaustion, and exhausted HTTP 5xx server failures.
+
+Recovery stays inside the same research run and retries only the underlying
+that failed. Already-successful underlyings are not collected again.
+`research_run_underlyings.retry_count` records the retry and `research_runs.notes`
+records the triggering error and successful recovery.
+
+ThetaData and arbitrary application/database failures are deliberately not
+auto-retried yet because they can occur after evidence persistence. Generalized
+recovery requires explicit idempotency first.
+
+Default: one recovery attempt after a two-second delay. Massive's own internal
+request retries still happen before this recovery layer. No broker orders.

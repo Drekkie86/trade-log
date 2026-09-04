@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
+from src.providers.massive import (
+    MassiveNetworkError,
+    MassiveRateLimitError,
+    MassiveResponseError,
+)
 from src.database.provider_evidence import (
     create_provider_model_observations,
 )
@@ -42,6 +47,8 @@ UTC = ZoneInfo("UTC")
 
 RUNNER_VERSION = "INDEPENDENT_RESEARCH_RUNNER_V1"
 ADMISSION_POLICY_VERSION = "STRUCTURAL_ADMISSION_V1"
+DEFAULT_UNDERLYING_RECOVERY_RETRIES = 1
+DEFAULT_UNDERLYING_RECOVERY_DELAY_SECONDS = 2.0
 
 
 class IndependentResearchRunnerError(RuntimeError):
@@ -311,6 +318,59 @@ def _start_underlying(
             WHERE id = ?;
             """,
             (run_id,),
+        )
+        conn.commit()
+
+
+def _is_safe_transient_massive_error(exc: Exception) -> bool:
+    if isinstance(exc, (MassiveNetworkError, MassiveRateLimitError)):
+        return True
+    return (
+        isinstance(exc, MassiveResponseError)
+        and str(exc).startswith("Massive server error HTTP ")
+    )
+
+
+def _record_underlying_recovery_attempt(
+    *, run_id: int, underlying: str, error: Exception, db_path=None
+) -> None:
+    detail = (
+        f"{underlying}: immediate recovery after "
+        f"{type(error).__name__}: {error}"
+    )
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE research_run_underlyings
+            SET retry_count = retry_count + 1
+            WHERE run_id = ? AND underlying = ? AND status = 'ATTEMPTED';
+            """,
+            (run_id, underlying),
+        )
+        if cursor.rowcount != 1:
+            raise IndependentResearchRunnerError(
+                "Could not record underlying recovery attempt."
+            )
+        conn.execute(
+            "UPDATE research_runs SET notes = notes || ? WHERE id = ?;",
+            ("\n" + detail, run_id),
+        )
+        conn.commit()
+
+
+def _record_underlying_recovery_success(
+    *, run_id: int, underlying: str, retry_count: int, db_path=None
+) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE research_runs SET notes = notes || ? WHERE id = ?;",
+            (
+                "\n" + underlying
+                + ": recovered successfully after "
+                + str(retry_count)
+                + " retry attempt(s).",
+                run_id,
+            ),
         )
         conn.commit()
 
@@ -1142,10 +1202,17 @@ def run_independent_research(
     repo_root: Path | None = None,
     code_git_sha: str | None = None,
     db_path=None,
+    max_underlying_recovery_retries: int = DEFAULT_UNDERLYING_RECOVERY_RETRIES,
+    underlying_recovery_delay_seconds: float = DEFAULT_UNDERLYING_RECOVERY_DELAY_SECONDS,
 ) -> IndependentResearchRunResult:
     assert_schema_version(
         db_path
     )
+
+    if max_underlying_recovery_retries < 0:
+        raise ValueError("max_underlying_recovery_retries cannot be negative.")
+    if underlying_recovery_delay_seconds < 0:
+        raise ValueError("underlying_recovery_delay_seconds cannot be negative.")
 
     observed_at = (
         observed_at
@@ -1195,46 +1262,65 @@ def run_independent_research(
                 db_path=db_path,
             )
 
-            try:
-                summary = collect_underlying(
-                    run_id=run_id,
-                    underlying=underlying,
-                    massive_client=
-                        massive_client,
-                    theta_client=
-                        theta_client,
-                    min_dte=min_dte,
-                    max_dte=max_dte,
-                    observed_at=
-                        observed_at,
-                    observation_clock=
-                        observation_clock,
-                    db_path=db_path,
-                )
-            except Exception as exc:
-                _finish_underlying(
-                    run_id=run_id,
-                    underlying=underlying,
-                    completed_at=
-                        iso_utc_now(),
-                    succeeded=False,
-                    failure_reason=
-                        f"{type(exc).__name__}: {exc}",
-                    db_path=db_path,
-                )
-                raise
-            else:
-                summaries.append(
-                    summary
-                )
-                _finish_underlying(
-                    run_id=run_id,
-                    underlying=underlying,
-                    completed_at=
-                        iso_utc_now(),
-                    succeeded=True,
-                    db_path=db_path,
-                )
+            recovery_attempts = 0
+
+            while True:
+                try:
+                    summary = collect_underlying(
+                        run_id=run_id,
+                        underlying=underlying,
+                        massive_client=massive_client,
+                        theta_client=theta_client,
+                        min_dte=min_dte,
+                        max_dte=max_dte,
+                        observed_at=observed_at,
+                        observation_clock=observation_clock,
+                        db_path=db_path,
+                    )
+                except Exception as exc:
+                    can_recover = (
+                        recovery_attempts < max_underlying_recovery_retries
+                        and _is_safe_transient_massive_error(exc)
+                    )
+                    if can_recover:
+                        recovery_attempts += 1
+                        _record_underlying_recovery_attempt(
+                            run_id=run_id,
+                            underlying=underlying,
+                            error=exc,
+                            db_path=db_path,
+                        )
+                        if underlying_recovery_delay_seconds > 0:
+                            import time
+                            time.sleep(underlying_recovery_delay_seconds)
+                        continue
+
+                    _finish_underlying(
+                        run_id=run_id,
+                        underlying=underlying,
+                        completed_at=iso_utc_now(),
+                        succeeded=False,
+                        failure_reason=f"{type(exc).__name__}: {exc}",
+                        db_path=db_path,
+                    )
+                    raise
+                else:
+                    summaries.append(summary)
+                    _finish_underlying(
+                        run_id=run_id,
+                        underlying=underlying,
+                        completed_at=iso_utc_now(),
+                        succeeded=True,
+                        db_path=db_path,
+                    )
+                    if recovery_attempts:
+                        _record_underlying_recovery_success(
+                            run_id=run_id,
+                            underlying=underlying,
+                            retry_count=recovery_attempts,
+                            db_path=db_path,
+                        )
+                    break
 
     except Exception as exc:
         _finish_run(

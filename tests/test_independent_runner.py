@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from src.database.repository import (
     get_connection,
 )
+from src.providers.massive import MassiveNetworkError
 from src.research.independent_runner import (
     classify_us_session,
     config_hash,
@@ -352,3 +353,75 @@ def test_runner_failure_is_recorded(
         assert run["failed_underlyings"] == 1
     finally:
         conn.close()
+
+
+
+def test_transient_massive_failure_recovers_same_underlying(db_path):
+    class FlakyMassive(FakeMassive):
+        def __init__(self):
+            self.chain_calls = 0
+        def get_option_chain(self, underlying, **kwargs):
+            self.chain_calls += 1
+            if self.chain_calls == 1:
+                raise MassiveNetworkError("Could not reach Massive after retries.")
+            return super().get_option_chain(underlying, **kwargs)
+
+    massive = FlakyMassive()
+    result = run_independent_research(
+        symbols=["AAPL"],
+        massive_client=massive,
+        theta_client=FakeTheta(),
+        observed_at=datetime(2026, 9, 4, 10, 0, 5, tzinfo=NY),
+        observation_clock=lambda: datetime(2026, 9, 4, 10, 0, 5, tzinfo=NY),
+        code_git_sha="test-sha",
+        db_path=db_path,
+        underlying_recovery_delay_seconds=0,
+    )
+    assert result.status == "COMPLETED"
+    assert massive.chain_calls == 2
+
+    conn = get_connection(db_path)
+    try:
+        run_row = conn.execute(
+            "SELECT * FROM research_runs WHERE id = ?;", (result.run_id,)
+        ).fetchone()
+        child = conn.execute(
+            "SELECT * FROM research_run_underlyings WHERE run_id = ? AND underlying = 'AAPL';",
+            (result.run_id,),
+        ).fetchone()
+        assert run_row["attempted_underlyings"] == 1
+        assert run_row["succeeded_underlyings"] == 1
+        assert run_row["failed_underlyings"] == 0
+        assert child["status"] == "SUCCESS"
+        assert child["retry_count"] == 1
+        assert "immediate recovery after MassiveNetworkError" in run_row["notes"]
+        assert "recovered successfully after 1" in run_row["notes"]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM listing_reference_contracts WHERE research_run_id = ?;",
+            (result.run_id,),
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_non_transient_failure_is_not_retried(db_path):
+    class BrokenMassive(FakeMassive):
+        def __init__(self):
+            self.chain_calls = 0
+        def get_option_chain(self, underlying, **kwargs):
+            self.chain_calls += 1
+            raise RuntimeError("synthetic programming failure")
+
+    import pytest
+    massive = BrokenMassive()
+    with pytest.raises(RuntimeError, match="synthetic programming failure"):
+        run_independent_research(
+            symbols=["AAPL"],
+            massive_client=massive,
+            theta_client=FakeTheta(),
+            observed_at=datetime(2026, 9, 4, 10, 0, 5, tzinfo=NY),
+            code_git_sha="test-sha",
+            db_path=db_path,
+            underlying_recovery_delay_seconds=0,
+        )
+    assert massive.chain_calls == 1
