@@ -502,6 +502,107 @@ def load_command_deck(
             ).fetchall()
         )
 
+        failed_underlyings = _rows_to_dicts(
+            conn.execute(
+                '''
+                SELECT
+                    ru.id,
+                    ru.run_id,
+                    r.us_session_date,
+                    ru.underlying,
+                    ru.status,
+                    ru.retry_count,
+                    ru.failure_code,
+                    ru.failure_reason,
+                    ru.recovery_error_type,
+                    ru.recovery_error_message,
+                    ru.attempted_at,
+                    ru.completed_at
+                FROM research_run_underlyings AS ru
+                JOIN research_runs AS r
+                  ON r.id = ru.run_id
+                WHERE ru.status = 'FAILED'
+                ORDER BY ru.id DESC
+                LIMIT 50;
+                '''
+            ).fetchall()
+        )
+
+        iteration_quality = _row_to_dict(
+            conn.execute(
+                '''
+                SELECT
+                    COUNT(*) AS iterations,
+                    SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed,
+                    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN status = 'ORPHANED' THEN 1 ELSE 0 END) AS orphaned,
+                    SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END) AS running
+                FROM (
+                    SELECT status
+                    FROM research_daemon_iterations
+                    ORDER BY id DESC
+                    LIMIT 100
+                );
+                '''
+            ).fetchone()
+        ) or {}
+
+        underlying_quality = _row_to_dict(
+            conn.execute(
+                '''
+                SELECT
+                    COUNT(*) AS samples,
+                    SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS succeeded,
+                    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN retry_count > 0 THEN 1 ELSE 0 END) AS retried,
+                    SUM(CASE WHEN retry_count > 0 AND status = 'SUCCESS' THEN 1 ELSE 0 END) AS recovered
+                FROM research_run_underlyings;
+                '''
+            ).fetchone()
+        ) or {}
+
+        failure_types = _rows_to_dicts(
+            conn.execute(
+                '''
+                SELECT
+                    COALESCE(failure_code, recovery_error_type, 'UNCLASSIFIED') AS failure_type,
+                    COUNT(*) AS samples
+                FROM research_run_underlyings
+                WHERE status = 'FAILED' OR retry_count > 0
+                GROUP BY COALESCE(failure_code, recovery_error_type, 'UNCLASSIFIED')
+                ORDER BY samples DESC, failure_type;
+                '''
+            ).fetchall()
+        )
+
+        admission_reason_summary = _rows_to_dicts(
+            conn.execute(
+                '''
+                SELECT
+                    decision,
+                    reason_code,
+                    COUNT(*) AS decisions
+                FROM shadow_admission_decisions
+                GROUP BY decision, reason_code
+                ORDER BY decisions DESC, decision, reason_code;
+                '''
+            ).fetchall()
+        )
+
+        data_quality = {
+            "iteration_window": {
+                key: int(iteration_quality.get(key) or 0)
+                for key in ("iterations", "completed", "failed", "orphaned", "running")
+            },
+            "underlying_totals": {
+                key: int(underlying_quality.get(key) or 0)
+                for key in ("samples", "succeeded", "failed", "retried", "recovered")
+            },
+            "failure_types": failure_types,
+            "recent_failed_underlyings": failed_underlyings,
+            "admission_reason_summary": admission_reason_summary,
+        }
+
     finally:
         conn.close()
 
@@ -531,4 +632,5 @@ def load_command_deck(
         "recent_proposals": recent_proposals,
         "recent_candidates": recent_candidates,
         "recovery_summary": recovery_summary,
+        "data_quality": data_quality,
     }

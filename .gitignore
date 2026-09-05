@@ -13,3 +13,5 @@ creds.txt
 .streamlit/secrets.toml
 
 Christiania_Full_Claude_Review_*.zip
+
+audit_exports/

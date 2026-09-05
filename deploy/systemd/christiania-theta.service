@@ -1,5 +1,7 @@
 [Unit]
 Description=Christiania Theta Terminal
+StartLimitIntervalSec=300
+StartLimitBurst=5
 After=network-online.target
 Wants=network-online.target
 

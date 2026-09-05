@@ -227,3 +227,87 @@ def test_health_cli_non_strict_does_not_fail_only_for_theta(monkeypatch):
         assert christiania_health.main() == 0
     finally:
         sys.argv = old
+
+
+def test_health_cli_strict_backup_returns_five(monkeypatch):
+    import sys
+
+    import christiania_health
+
+    monkeypatch.setattr(
+        christiania_health,
+        "load_command_deck",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "theta_health": {"state": "READY"},
+            "daemon_health": {"state": "HEALTHY"},
+        },
+    )
+    monkeypatch.setattr(
+        christiania_health,
+        "inventory_backups",
+        lambda: type(
+            "Inventory",
+            (),
+            {
+                "as_dict": lambda self: {
+                    "valid_files": 0,
+                    "latest_valid_age_hours": None,
+                }
+            },
+        )(),
+    )
+
+    old = sys.argv
+    sys.argv = [
+        "christiania_health.py",
+        "--json",
+        "--strict-backup",
+    ]
+
+    try:
+        assert christiania_health.main() == 5
+    finally:
+        sys.argv = old
+
+
+def test_health_cli_strict_backup_accepts_fresh_verified_backup(monkeypatch):
+    import sys
+
+    import christiania_health
+
+    monkeypatch.setattr(
+        christiania_health,
+        "load_command_deck",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "theta_health": {"state": "READY"},
+            "daemon_health": {"state": "HEALTHY"},
+        },
+    )
+    monkeypatch.setattr(
+        christiania_health,
+        "inventory_backups",
+        lambda: type(
+            "Inventory",
+            (),
+            {
+                "as_dict": lambda self: {
+                    "valid_files": 1,
+                    "latest_valid_age_hours": 2.0,
+                }
+            },
+        )(),
+    )
+
+    old = sys.argv
+    sys.argv = [
+        "christiania_health.py",
+        "--json",
+        "--strict-backup",
+    ]
+
+    try:
+        assert christiania_health.main() == 0
+    finally:
+        sys.argv = old

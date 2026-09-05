@@ -1,0 +1,10 @@
+[Unit]
+Description=Christiania Daily Operational Audit Export
+
+[Timer]
+OnCalendar=*-*-* 23:40:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

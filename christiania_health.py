@@ -6,6 +6,12 @@ import json
 from src.dashboard.read_model import (
     load_command_deck,
 )
+from src.operations.backup_recovery import (
+    inventory_backups,
+)
+from src.operations.v1_readiness import (
+    BACKUP_MAX_AGE_HOURS,
+)
 
 
 def main() -> int:
@@ -33,6 +39,14 @@ def main() -> int:
             "Also require a live daemon lease with a recent heartbeat."
         ),
     )
+    parser.add_argument(
+        "--strict-backup",
+        action="store_true",
+        help=(
+            "Also require a verified backup no older than "
+            f"{BACKUP_MAX_AGE_HOURS:.0f} hours."
+        ),
+    )
     args = parser.parse_args()
 
     snapshot = load_command_deck(
@@ -52,6 +66,19 @@ def main() -> int:
         and snapshot.get("daemon_health", {}).get("state") != "HEALTHY"
     )
 
+    backup_inventory = inventory_backups().as_dict()
+    snapshot["backup_health"] = backup_inventory
+    backup_age = backup_inventory.get("latest_valid_age_hours")
+    strict_backup_failed = (
+        args.strict_backup
+        and snapshot.get("ready") is True
+        and (
+            backup_inventory.get("valid_files", 0) < 1
+            or backup_age is None
+            or float(backup_age) > BACKUP_MAX_AGE_HOURS
+        )
+    )
+
     if args.json:
         print(
             json.dumps(
@@ -67,6 +94,8 @@ def main() -> int:
             return 3
         if strict_theta_failed:
             return 4
+        if strict_backup_failed:
+            return 5
         return 0
 
     db = snapshot["database"]
@@ -121,11 +150,18 @@ def main() -> int:
         "Theta Terminal: "
         f"{theta_health.get('state')}"
     )
+    print(
+        "Verified backups: "
+        f"{backup_inventory.get('valid_files', 0)} valid; "
+        f"latest age {backup_inventory.get('latest_valid_age_hours')}h"
+    )
 
     if strict_daemon_failed:
         return 3
     if strict_theta_failed:
         return 4
+    if strict_backup_failed:
+        return 5
 
     latest = snapshot["latest_iteration"]
 

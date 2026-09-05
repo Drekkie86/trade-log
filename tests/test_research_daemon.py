@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -472,3 +473,116 @@ def test_run_daemon_refuses_when_theta_not_ready(db_path, monkeypatch):
             max_iterations=0,
             db_path=db_path,
         )
+
+
+def test_daemon_blocks_slot_when_theta_becomes_unready(
+    db_path,
+    monkeypatch,
+):
+    import src.research.research_daemon as module
+
+    monkeypatch.setenv("MASSIVE_API_KEY", "x")
+
+    theta_client = type(
+        "Client",
+        (),
+        {"base_url": "http://127.0.0.1:25503/v3"},
+    )()
+
+    monkeypatch.setattr(
+        module,
+        "configured_theta_client",
+        lambda: theta_client,
+    )
+
+    states = iter(
+        [
+            type(
+                "Health",
+                (),
+                {
+                    "ready": True,
+                    "state": "READY",
+                    "detail": "ok",
+                },
+            )(),
+            type(
+                "Health",
+                (),
+                {
+                    "ready": False,
+                    "state": "UNREACHABLE",
+                    "detail": "connection refused",
+                },
+            )(),
+        ]
+    )
+
+    monkeypatch.setattr(
+        module,
+        "probe_theta_terminal",
+        lambda **_kwargs: next(states),
+    )
+
+    monkeypatch.setattr(
+        module,
+        "MassiveClient",
+        lambda _key: object(),
+    )
+
+    monkeypatch.setattr(
+        module,
+        "next_sampling_slot",
+        lambda now, interval_minutes=15: now,
+    )
+
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda _seconds: None,
+    )
+
+    def forbidden_collection(**_kwargs):
+        raise AssertionError(
+            "Research collection must not start when Theta is unhealthy."
+        )
+
+    monkeypatch.setattr(
+        module,
+        "run_one_iteration",
+        forbidden_collection,
+    )
+
+    assert module.run_daemon(
+        symbols=["AAPL"],
+        max_iterations=1,
+        db_path=db_path,
+    ) == 0
+
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                status,
+                research_run_id,
+                error_type,
+                error_message,
+                evidence_json
+            FROM research_daemon_iterations
+            ORDER BY id DESC
+            LIMIT 1;
+            """
+        ).fetchone()
+
+        assert row["status"] == "FAILED"
+        assert row["research_run_id"] is None
+        assert row["error_type"] == "THETA_NOT_READY"
+        assert "UNREACHABLE" in row["error_message"]
+
+        evidence = json.loads(row["evidence_json"])
+        assert evidence["provider"] == "THETADATA"
+        assert evidence["provider_state"] == "UNREACHABLE"
+        assert evidence["collection_started"] is False
+    finally:
+        conn.close()

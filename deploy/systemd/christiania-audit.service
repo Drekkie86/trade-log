@@ -1,0 +1,13 @@
+[Unit]
+Description=Christiania Operational Audit Export
+After=christiania-app.service
+
+[Service]
+Type=oneshot
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/christiania_ops.py export
+NoNewPrivileges=true
+PrivateTmp=true

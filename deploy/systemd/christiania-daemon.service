@@ -1,5 +1,7 @@
 [Unit]
 Description=Christiania Research Daemon
+StartLimitIntervalSec=300
+StartLimitBurst=5
 After=network-online.target christiania-theta.service
 Wants=network-online.target
 Requires=christiania-theta.service

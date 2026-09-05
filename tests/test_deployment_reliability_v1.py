@@ -6,6 +6,7 @@ from run_theta_terminal import (
     theta_auth_mode,
     theta_command,
 )
+from src.operations.sqlite_runtime import create_verified_backup
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +113,13 @@ def test_deploy_preflight_passes_for_complete_runtime(
 
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir()
+    create_verified_backup(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        retention=3,
+    )
     theta = tmp_path / "ThetaTerminalv3.jar"
     theta.write_bytes(b"jar")
 
@@ -122,6 +130,10 @@ def test_deploy_preflight_passes_for_complete_runtime(
     monkeypatch.setenv(
         "CHRISTIANIA_BACKUP_DIR",
         str(backup_dir.resolve()),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_AUDIT_DIR",
+        str(audit_dir.resolve()),
     )
     monkeypatch.setenv(
         "CHRISTIANIA_THETA_JAR",
@@ -238,3 +250,19 @@ def test_theta_auth_mode_refuses_missing_credentials(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="authentication is not configured"):
         theta_auth_mode()
+
+
+def test_systemd_theta_and_daemon_have_explicit_restart_limits():
+    for name in (
+        "christiania-theta.service",
+        "christiania-daemon.service",
+    ):
+        unit = (
+            ROOT
+            / "deploy/systemd"
+            / name
+        ).read_text(encoding="utf-8")
+
+        assert "StartLimitIntervalSec=300" in unit
+        assert "StartLimitBurst=5" in unit
+        assert "RestartSec=15" in unit

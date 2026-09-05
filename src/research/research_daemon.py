@@ -850,21 +850,74 @@ def run_daemon(
                 )
 
             print()
-            print(
-                "Running scheduled sample "
-                f"{slot.isoformat()}..."
+
+            theta_health = probe_theta_terminal(
+                base_url=theta_client.base_url,
             )
 
-            summary = run_one_iteration(
-                scheduled_for=slot,
-                owner_token=owner_token,
-                symbols=symbols,
-                massive_client=
-                    massive_client,
-                theta_client=
-                    theta_client,
-                db_path=db_path,
-            )
+            if not theta_health.ready:
+                detail = (
+                    "Theta Terminal blocked scheduled sample: "
+                    f"{theta_health.state}: {theta_health.detail}"
+                )
+
+                print(detail)
+
+                iteration_id = _start_iteration(
+                    owner_token=owner_token,
+                    scheduled_for=slot,
+                    db_path=db_path,
+                )
+
+                summary = DaemonIterationSummary(
+                    scheduled_for=_iso_utc(slot),
+                    status="FAILED",
+                    research_run_id=None,
+                    hypothesis_scanner_run_id=None,
+                    proposals_count=None,
+                    admitted_count=None,
+                    blocked_count=None,
+                    outcome_mark_count=None,
+                    error_type="THETA_NOT_READY",
+                    error_message=detail,
+                )
+
+                _complete_iteration(
+                    iteration_id=iteration_id,
+                    summary=summary,
+                    evidence_json=json.dumps(
+                        {
+                            "provider": "THETADATA",
+                            "provider_state": theta_health.state,
+                            "provider_detail": theta_health.detail,
+                            "collection_started": False,
+                            "symbols": symbols,
+                        },
+                        sort_keys=True,
+                    ),
+                    db_path=db_path,
+                )
+
+                heartbeat_daemon_lock(
+                    owner_token=owner_token,
+                    db_path=db_path,
+                )
+            else:
+                print(
+                    "Running scheduled sample "
+                    f"{slot.isoformat()}..."
+                )
+
+                summary = run_one_iteration(
+                    scheduled_for=slot,
+                    owner_token=owner_token,
+                    symbols=symbols,
+                    massive_client=
+                        massive_client,
+                    theta_client=
+                        theta_client,
+                    db_path=db_path,
+                )
 
             print(
                 f"Iteration status: "

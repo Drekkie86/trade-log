@@ -5,6 +5,12 @@ import streamlit as st
 from src.dashboard.read_model import (
     load_command_deck,
 )
+from src.operations.backup_recovery import (
+    inventory_backups,
+)
+from src.operations.v1_readiness import (
+    assess_v1_readiness,
+)
 
 
 st.set_page_config(
@@ -107,6 +113,7 @@ with st.sidebar:
             "Prospective",
             "Observations",
             "Shadow Lab",
+            "Readiness",
             "System",
         ],
         label_visibility="collapsed",
@@ -158,6 +165,17 @@ theta_health = snapshot.get(
     "theta_health",
     {"state": "NOT_PROBED"},
 )
+
+@st.cache_data(ttl=30)
+def _load_backup_inventory():
+    return inventory_backups().as_dict()
+
+
+backup_inventory = _load_backup_inventory()
+readiness = assess_v1_readiness(
+    snapshot,
+    backup_inventory,
+).as_dict()
 
 st.markdown(
     '''
@@ -497,6 +515,65 @@ elif page == "Shadow Lab":
             "No shadow candidates recorded."
         )
 
+elif page == "Readiness":
+    st.subheader("V1 Copenhagen readiness")
+    st.caption(
+        "Operational/product readiness is deliberately separate from "
+        "scientific evidence maturity. A green product state is not a "
+        "claim of validated trading edge."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "Product state",
+        _status_label(readiness["product_state"]),
+    )
+    c2.metric(
+        "Scientific state",
+        _status_label(readiness["scientific_state"]),
+        f"{readiness['independent_prospective_dates']} prospective date(s)",
+    )
+    c3.metric(
+        "Latest verified backup",
+        (
+            "None"
+            if backup_inventory["latest_valid_age_hours"] is None
+            else f"{backup_inventory['latest_valid_age_hours']:.1f}h ago"
+        ),
+        f"{backup_inventory['valid_files']} valid / {backup_inventory['invalid_files']} invalid",
+    )
+
+    st.subheader("Readiness checks")
+    st.dataframe(
+        readiness["checks"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Data-quality pulse")
+    quality = snapshot.get("data_quality", {})
+    q1, q2, q3, q4 = st.columns(4)
+    iterations = quality.get("iteration_window", {})
+    underlyings = quality.get("underlying_totals", {})
+    q1.metric("Recent completed iterations", iterations.get("completed", 0))
+    q2.metric("Recent failed/orphaned", int(iterations.get("failed", 0)) + int(iterations.get("orphaned", 0)))
+    q3.metric("Underlying failures", underlyings.get("failed", 0))
+    q4.metric("Recovered underlyings", underlyings.get("recovered", 0))
+
+    if quality.get("failure_types"):
+        st.markdown("**Provider/failure classes**")
+        st.dataframe(quality["failure_types"], use_container_width=True, hide_index=True)
+
+    if quality.get("recent_failed_underlyings"):
+        st.markdown("**Recent failed underlying samples**")
+        st.dataframe(quality["recent_failed_underlyings"], use_container_width=True, hide_index=True)
+
+    st.subheader("Backup inventory")
+    if backup_inventory["entries"]:
+        st.dataframe(backup_inventory["entries"], use_container_width=True, hide_index=True)
+    else:
+        st.warning("No verified backup files have been created yet.")
+
 elif page == "System":
     st.subheader(
         "Runtime clock"
@@ -592,6 +669,9 @@ elif page == "System":
           integrity-checked before publication.
         - No database, API secret or broker credential is
           committed to Git.
+        - Backup inventory and restore drills are read-only with respect to the live DB.
+        - Operational readiness is distinct from scientific evidence maturity.
+        - Audit exports contain secret-presence booleans, never secret values.
         - No live broker-order path is present in this app.
         '''
     )

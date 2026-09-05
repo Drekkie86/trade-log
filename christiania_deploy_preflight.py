@@ -25,6 +25,12 @@ from src.operations.sqlite_runtime import (
     inspect_database,
     resolve_backup_dir,
 )
+from src.operations.audit_export import (
+    resolve_audit_dir,
+)
+from src.operations.backup_recovery import (
+    inventory_backups,
+)
 
 
 @dataclass(frozen=True)
@@ -146,6 +152,30 @@ def run_preflight(*, require_theta_live: bool = False) -> list[PreflightCheck]:
                 "Backup directory is the live DB directory. Use a "
                 "separate persistent location for recovery resilience."
             ),
+        )
+    )
+
+    audit_setting = get_runtime_setting(
+        "CHRISTIANIA_AUDIT_DIR"
+    )
+    audit_dir = resolve_audit_dir()
+    checks.append(
+        _check(
+            "persistent-audit-path",
+            bool(audit_setting)
+            and Path(audit_setting).expanduser().is_absolute(),
+            f"Configured audit path: {audit_dir}",
+            "CHRISTIANIA_AUDIT_DIR must be configured as an absolute persistent path.",
+        )
+    )
+
+    backup_inventory = inventory_backups(backup_dir)
+    checks.append(
+        _check(
+            "verified-backup-available",
+            backup_inventory.valid_files > 0,
+            f"{backup_inventory.valid_files} verified backup(s) available.",
+            "No verified Christiania backup is available yet.",
         )
     )
 
