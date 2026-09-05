@@ -33,3 +33,8 @@ Scientific maturity is deliberately independent from product maturity. Prospecti
 - architecture changes driven by real multi-writer contention;
 - granting challenger models decision/admission authority without new prospective governance;
 - scientific claims of repeatable positive expectancy before evidence supports them.
+
+
+## Package 9 interface
+
+Package 9: branded V1 product interface. The official Christiania logo, nautical product theme, research-first information architecture, quant bench, isolated Casino / 0DTE Lab, readiness and release views are integrated into the browser UI. Scientific maturity remains deliberately independent from product readiness.

@@ -62,3 +62,8 @@ Frozen primary/prospective hypotheses remain frozen. Challengers are research in
 V1.0 can be declared when the clean-VM acceptance gate passes. Scientific maturity is shown separately and may still be `PROSPECTIVE_CALIBRATION_ACCUMULATING`.
 
 Post-V1 decisions about live broker execution require a separate explicit architecture/safety project and are not implied by V1.0.
+
+
+## Package 9 — V1 Product Interface
+
+Branded browser interface using the official Christiania logo, with clear separation of core research, Shadow Lab, Casino / 0DTE Lab, readiness and release status.
