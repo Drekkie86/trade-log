@@ -19,7 +19,6 @@ from src.ui import (
     card,
     hero,
     inject_christiania_theme,
-    observation_banner,
     section_heading,
     status_dot,
     chart_note,

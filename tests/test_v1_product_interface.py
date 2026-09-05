@@ -161,3 +161,54 @@ def test_dataframe_humanizer_uses_real_dict_not_set_literal():
 
     assert "labels = {{" not in app
     assert "labels = {" in app
+
+
+def test_ui_exports_and_app_imports_resolve_structurally():
+    import ast
+
+    components_tree = ast.parse(
+        (ROOT / "src" / "ui" / "components.py").read_text(encoding="utf-8")
+    )
+    component_symbols = {
+        node.name
+        for node in components_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+    init_tree = ast.parse(
+        (ROOT / "src" / "ui" / "__init__.py").read_text(encoding="utf-8")
+    )
+    component_exports = set()
+    ui_exports = set()
+    for node in init_tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "components":
+            component_exports.update(alias.asname or alias.name for alias in node.names)
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    if isinstance(node.value, (ast.List, ast.Tuple)):
+                        ui_exports.update(
+                            elt.value
+                            for elt in node.value.elts
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                        )
+
+    assert component_exports <= component_symbols
+
+    app_tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
+    app_ui_imports = set()
+    for node in app_tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "src.ui":
+            app_ui_imports.update(alias.asname or alias.name for alias in node.names)
+
+    # __all__ is only part of the export surface; additionally account for semantics imports.
+    bound_names = set()
+    for node in init_tree.body:
+        if isinstance(node, ast.ImportFrom):
+            bound_names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound_names.add(node.name)
+
+    assert app_ui_imports <= bound_names
+    assert "observation_banner" not in app_ui_imports
+    assert "observation_banner" not in component_exports
