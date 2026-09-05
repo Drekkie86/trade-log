@@ -101,7 +101,7 @@ def test_ui_polish_keeps_navigation_fast_and_explanatory():
     assert "RUNTIME_REFRESH_SECONDS = 180" in app
     assert "chart_note(" in app
     assert "chr-chart-note" in theme
-    assert "padding-top: 4.75rem" in theme
+    assert "padding-top: 5.75rem" in theme
 
 
 def test_sidebar_uses_new_motto_and_removes_old_quote():
@@ -126,9 +126,38 @@ def test_shadow_lab_exposes_followup_and_measurement_semantics():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     read_model = (ROOT / "src/dashboard/read_model.py").read_text(encoding="utf-8")
 
-    assert "Candidate tracking over time" in app
+    assert "Candidate lifecycle" in app
     assert "Validated outcomes" in app
     assert "liquidation stress marks" in app
     assert "shadow_mark_history" in read_model
     assert "shadow_candidate_followup" in read_model
     assert "outcome_eligible" in read_model
+
+
+def test_global_header_copy_is_minimal_and_not_patronizing():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    components = (ROOT / "src/ui/components.py").read_text(encoding="utf-8")
+
+    assert "V1 Research Workstation" not in components
+    assert "one disciplined deck" not in app
+    assert "Surfaced anomalies and model disagreement are not trade signals" not in components
+    assert "<div class=\"chr-hero-title\">CHRISTIANIA</div>" in components
+
+
+def test_shadow_lab_separates_thesis_and_validated_trade_result():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    read_model = (ROOT / "src/dashboard/read_model.py").read_text(encoding="utf-8")
+
+    assert "Thesis assessment" in app
+    assert "Validated trade result" in app
+    assert "Christiania does not infer thesis correctness from a profitable mark" in app
+    assert "validated_trade_result" in read_model
+    assert "thesis_assessment" in read_model
+    assert "outcome_eligible = 1" in read_model
+
+
+def test_dataframe_humanizer_uses_real_dict_not_set_literal():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "labels = {{" not in app
+    assert "labels = {" in app

@@ -79,7 +79,7 @@ html, body, [data-testid="stAppViewContainer"] {
 .block-container,
 [data-testid="stMainBlockContainer"] {
   max-width: 1680px;
-  padding-top: 4.75rem !important;
+  padding-top: 5.75rem !important;
   padding-bottom: 3rem;
 }
 
@@ -145,7 +145,7 @@ h1, h2, h3 {
 .chr-hero {
   border: 1px solid rgba(217,168,78,0.45);
   border-radius: 14px;
-  padding: 1.1rem 1.25rem;
+  padding: 0.75rem 1.25rem;
   margin-bottom: 0.75rem;
   background:
     radial-gradient(circle at 90% 20%, rgba(46,196,214,0.10), transparent 28%),

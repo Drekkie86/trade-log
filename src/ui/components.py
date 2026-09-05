@@ -32,25 +32,11 @@ def status_dot(state: str | None) -> str:
     return f'<span class="chr-dot" style="color:{color};background:{color}"></span>'
 
 
-def hero(*, version: str, subtitle: str) -> None:
-    st.markdown(
-        f"""
-        <div class="chr-hero">
-          <div class="chr-hero-kicker">V1 Research Workstation · {escape(version)}</div>
-          <div class="chr-hero-title">CHRISTIANIA</div>
-          <div class="chr-hero-subtitle">{escape(subtitle)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def observation_banner() -> None:
+def hero() -> None:
     st.markdown(
         """
-        <div class="chr-observation">
-          <strong>⚓ OBSERVATIONAL ONLY</strong>
-          <span>Surfaced anomalies and model disagreement are not trade signals. No broker-order path. Research and calibration only.</span>
+        <div class="chr-hero">
+          <div class="chr-hero-title">CHRISTIANIA</div>
         </div>
         """,
         unsafe_allow_html=True,

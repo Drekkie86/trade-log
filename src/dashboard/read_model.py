@@ -537,12 +537,35 @@ def load_command_deck(
                     FROM shadow_mark_observations
                     GROUP BY candidate_id
                 )
+                , latest_state AS (
+                    SELECT
+                        se.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY se.candidate_id
+                            ORDER BY se.id DESC
+                        ) AS state_rank
+                    FROM shadow_state_events AS se
+                ), validated_mark AS (
+                    SELECT
+                        smo.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY smo.candidate_id
+                            ORDER BY smo.observed_at DESC, smo.id DESC
+                        ) AS validated_rank
+                    FROM shadow_mark_observations AS smo
+                    WHERE smo.outcome_eligible = 1
+                )
                 SELECT
                     sc.id AS candidate_id,
                     sc.underlying,
                     sc.surfaced_at,
+                    sc.scanner_family_id,
+                    sc.scanner_version,
+                    sc.hypothesis_family,
+                    sc.hypothesis_version,
                     sc.structure_id,
                     sc.admission_label,
+                    ssp.anomaly_direction,
                     COALESCE(mc.mark_count, 0) AS mark_count,
                     rm.observed_at AS latest_mark_at,
                     rm.estimated_net_pnl_eur_minor
@@ -550,13 +573,39 @@ def load_command_deck(
                     rm.quality_state AS latest_quality_state,
                     rm.measurement_role AS latest_measurement_role,
                     rm.outcome_eligible AS latest_outcome_eligible,
-                    COALESCE(mc.validated_outcomes, 0) AS validated_outcomes
+                    COALESCE(mc.validated_outcomes, 0) AS validated_outcomes,
+                    ls.to_state AS current_state,
+                    ls.reason_code AS latest_state_reason_code,
+                    ls.note AS latest_state_note,
+                    vm.estimated_net_pnl_eur_minor AS validated_net_pnl_eur_minor,
+                    CASE
+                        WHEN ls.to_state = 'SCORED'
+                            THEN 'SCORED — REVIEW RECORDED EVIDENCE'
+                        ELSE 'NOT YET SCORED'
+                    END AS thesis_assessment,
+                    CASE
+                        WHEN vm.id IS NULL THEN 'NOT YET VALIDATED'
+                        WHEN vm.estimated_net_pnl_eur_minor > 0 THEN 'PROFITABLE'
+                        WHEN vm.estimated_net_pnl_eur_minor < 0 THEN 'UNPROFITABLE'
+                        ELSE 'FLAT'
+                    END AS validated_trade_result
                 FROM shadow_candidates AS sc
+                LEFT JOIN shadow_admission_decisions AS sad
+                  ON sad.candidate_id = sc.id
+                 AND sad.decision = 'ADMITTED'
+                LEFT JOIN shadow_structure_proposals AS ssp
+                  ON ssp.id = sad.proposal_id
                 LEFT JOIN mark_counts AS mc
                   ON mc.candidate_id = sc.id
                 LEFT JOIN ranked_marks AS rm
                   ON rm.candidate_id = sc.id
                  AND rm.mark_rank = 1
+                LEFT JOIN latest_state AS ls
+                  ON ls.candidate_id = sc.id
+                 AND ls.state_rank = 1
+                LEFT JOIN validated_mark AS vm
+                  ON vm.candidate_id = sc.id
+                 AND vm.validated_rank = 1
                 ORDER BY sc.id DESC
                 LIMIT 100;
                 '''

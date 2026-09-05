@@ -143,10 +143,10 @@ def _humanize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
     if "provider" in frame.columns:
         frame["provider"] = frame["provider"].map(provider_label)
 
-    labels = {{
+    labels = {
         name: _human_column_name(str(name))
         for name in frame.columns
-    }}
+    }
     labels["hypothesis_display_name"] = "Hypothesis"
     labels["model_display_name"] = "Model"
     return frame.rename(columns=labels)
@@ -273,16 +273,9 @@ with st.sidebar:
         _load_runtime_state(force=True)
         st.rerun()
 
-    st.caption(f"Christiania {CHRISTIANIA_VERSION} · research preview · No broker-order path.")
+    st.caption(f"Christiania {CHRISTIANIA_VERSION}")
 
-hero(
-    version=CHRISTIANIA_VERSION,
-    subtitle=(
-        "Prospective options research, calibration, model disagreement, "
-        "shadow structures and operational control — one disciplined deck."
-    ),
-)
-observation_banner()
+hero()
 
 if not snapshot["ready"]:
     st.error(
@@ -488,7 +481,7 @@ elif page == "Calibration":
     )
 
 elif page == "Observations":
-    section_heading("Surfaced observations", "OBSERVATIONAL ONLY — not validated edge and not trade signals.")
+    section_heading("Surfaced observations", "OBSERVATIONAL ONLY — not validated edge and not trade signals. No broker-order path.")
     if snapshot.get("recent_anomalies"):
         df = pd.DataFrame(snapshot["recent_anomalies"])
         _show_table(df)
@@ -504,72 +497,115 @@ elif page == "Observations":
 elif page == "Shadow Lab":
     section_heading(
         "Shadow Lab",
-        "Alternative ideas, same discipline. Candidates are followed through time without live execution.",
+        "Candidate follow-up: inception, subsequent marks, validated outcomes, and current evidence state.",
     )
     tracking = snapshot.get("shadow_tracking", {})
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Proposals", counts["proposals_total"], f"{counts['proposals_blocked']} builder-blocked")
     c2.metric("Admitted shadows", counts["admitted_total"], f"{counts['admission_blocked']} blocked")
-    c3.metric("Shadow marks", counts["shadow_marks"], f"{tracking.get('marked_candidates', 0)} candidate(s) marked")
-    c4.metric("Validated outcomes", tracking.get("validated_outcomes", 0), "separate from stress marks")
+    c3.metric("Recorded marks", counts["shadow_marks"], f"{tracking.get('marked_candidates', 0)} candidate(s)")
+    c4.metric("Validated outcomes", tracking.get("validated_outcomes", 0), "outcome-eligible only")
 
-    section_heading(
-        "Candidate tracking over time",
-        "The system does track admitted shadow candidates after admission. "
-        "Most current marks are conservative liquidation-stress measurements, not yet validated outcome evidence.",
-    )
-    mark_rows = snapshot.get("shadow_mark_history", [])
-    if mark_rows:
-        marks = pd.DataFrame(mark_rows)
-        marks["Observed"] = pd.to_datetime(marks["observed_at"], errors="coerce")
-        marks["Candidate"] = (
-            "#" + marks["candidate_id"].astype(str) + " · " + marks["underlying"].astype(str)
+    followup = snapshot.get("shadow_candidate_followup", [])
+    if followup:
+        choices = {
+            f"#{row['candidate_id']} · {row['underlying']} · {hypothesis_label(row.get('hypothesis_family'))}": row
+            for row in followup
+        }
+        selected_label = st.selectbox(
+            "Shadow candidate",
+            list(choices),
+            key="shadow_candidate_selector",
         )
-        marks["Estimated net P&L (€)"] = (
-            pd.to_numeric(marks["estimated_net_pnl_eur_minor"], errors="coerce") / 100.0
-        )
-        plot = (
-            marks.dropna(subset=["Observed", "Estimated net P&L (€)"])
-            .pivot_table(
-                index="Observed",
-                columns="Candidate",
-                values="Estimated net P&L (€)",
-                aggfunc="last",
-            )
-            .sort_index()
-        )
-        if not plot.empty:
-            st.line_chart(plot, height=300)
-            chart_note(
-                "Estimated net EUR P&L of recorded shadow marks through time. "
-                "Unless a row is explicitly outcome-eligible, these are conservative independent-leg "
-                "liquidation stress marks and must not be interpreted as proof that the thesis was right."
-            )
+        selected = choices[selected_label]
+        candidate_id = int(selected["candidate_id"])
+
+        section_heading("Candidate lifecycle")
+        a, b, c, d = st.columns(4)
+        a.metric("Underlying", selected.get("underlying") or "—")
+        b.metric("Current state", _status_label(selected.get("current_state")))
+        c.metric("Thesis assessment", selected.get("thesis_assessment") or "NOT YET SCORED")
+        d.metric("Validated trade result", selected.get("validated_trade_result") or "NOT YET VALIDATED")
+
+        details = pd.DataFrame([selected])
         _show_table(
-            mark_rows,
+            details.to_dict("records"),
             columns=[
                 "candidate_id",
                 "underlying",
                 "surfaced_at",
-                "observed_at",
-                "estimated_net_pnl_eur_minor",
-                "quality_state",
-                "measurement_role",
-                "outcome_eligible",
+                "hypothesis_family",
+                "hypothesis_version",
+                "scanner_family_id",
+                "scanner_version",
+                "structure_id",
+                "anomaly_direction",
+                "admission_label",
+                "current_state",
+                "mark_count",
+                "validated_outcomes",
+                "latest_mark_at",
+                "latest_estimated_net_pnl_eur_minor",
+                "validated_net_pnl_eur_minor",
+                "thesis_assessment",
+                "validated_trade_result",
+            ],
+        )
+
+        candidate_marks = [
+            row for row in snapshot.get("shadow_mark_history", [])
+            if int(row.get("candidate_id")) == candidate_id
+        ]
+        if candidate_marks:
+            marks = pd.DataFrame(candidate_marks)
+            marks["Observed"] = pd.to_datetime(marks["observed_at"], errors="coerce")
+            marks["Estimated net P&L (€)"] = (
+                pd.to_numeric(marks["estimated_net_pnl_eur_minor"], errors="coerce") / 100.0
+            )
+            plot = marks.dropna(subset=["Observed", "Estimated net P&L (€)"]).set_index("Observed")[["Estimated net P&L (€)"]].sort_index()
+            if not plot.empty:
+                st.line_chart(plot, height=300)
+                chart_note(
+                    "Recorded estimated net EUR P&L for this candidate through time. "
+                    "Only outcome-eligible marks count as validated trade outcomes; stress marks remain diagnostics."
+                )
+            _show_table(
+                candidate_marks,
+                columns=[
+                    "observed_at",
+                    "provider",
+                    "estimated_net_pnl_eur_minor",
+                    "quality_state",
+                    "measurement_role",
+                    "outcome_eligible",
+                ],
+            )
+        else:
+            st.info("This candidate has no follow-up marks yet.")
+
+        st.caption(
+            "Thesis assessment and validated trade profitability are deliberately separate. "
+            "Christiania does not infer thesis correctness from a profitable mark. "
+            "Historical non-outcome marks remain independent-leg liquidation stress marks."
+        )
+
+        section_heading("All candidate follow-up")
+        _show_table(
+            followup,
+            columns=[
+                "candidate_id",
+                "underlying",
+                "hypothesis_family",
+                "current_state",
+                "mark_count",
+                "validated_outcomes",
+                "thesis_assessment",
+                "validated_trade_result",
+                "latest_mark_at",
             ],
         )
     else:
-        st.info(
-            "No shadow mark observations have been recorded yet. "
-            "Once the daemon marks admitted candidates, their trajectory will appear here."
-        )
-
-    section_heading("Candidate follow-up summary")
-    followup = snapshot.get("shadow_candidate_followup", [])
-    if followup:
-        _show_table(followup)
-    else:
-        st.info("No admitted candidate has follow-up marks yet.")
+        st.info("No admitted shadow candidate has follow-up data yet.")
 
     section_heading("Recent structure proposals")
     if snapshot.get("recent_proposals"):

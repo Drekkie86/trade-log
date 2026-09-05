@@ -66,3 +66,15 @@ V1 therefore enforces these interface rules:
 - no dashboard metric exists to provide an aspirational target count.
 
 The governing rule is: fun in presentation, deadly serious in numbers.
+
+
+## Package 9.3 — semantic follow-up
+
+The global hero is intentionally minimal: logo/sidebar plus the Christiania name.
+Research warnings are shown where they are relevant rather than as repetitive global copy.
+
+Shadow Lab exposes a candidate-level lifecycle and keeps two outcomes separate:
+- thesis assessment, which remains `NOT YET SCORED` until explicit scoring evidence exists;
+- validated trade result, which is derived only from `outcome_eligible = 1` marks.
+
+A profitable stress mark is never treated as proof that the thesis was correct.
