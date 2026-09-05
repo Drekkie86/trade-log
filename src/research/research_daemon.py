@@ -13,7 +13,10 @@ from zoneinfo import ZoneInfo
 from src.database.repository import get_connection
 from src.operations.market_calendar import session_sample_bounds
 from src.providers.massive import MassiveClient
-from src.providers.thetadata import ThetaDataClient
+from src.providers.thetadata_control import (
+    configured_theta_client,
+    probe_theta_terminal,
+)
 from src.research.full_research_cycle import (
     run_full_research_cycle,
 )
@@ -745,6 +748,23 @@ def run_daemon(
             "MASSIVE_API_KEY is missing."
         )
 
+    try:
+        theta_client = configured_theta_client()
+    except ValueError as exc:
+        raise ResearchDaemonError(
+            f"Theta Terminal configuration is invalid: {exc}"
+        ) from exc
+
+    theta_health = probe_theta_terminal(
+        base_url=theta_client.base_url,
+    )
+
+    if not theta_health.ready:
+        raise ResearchDaemonError(
+            "Theta Terminal is not ready: "
+            f"{theta_health.state}: {theta_health.detail}"
+        )
+
     owner_token = str(
         uuid.uuid4()
     )
@@ -775,7 +795,6 @@ def run_daemon(
     massive_client = MassiveClient(
         massive_key
     )
-    theta_client = ThetaDataClient()
 
     completed = 0
 

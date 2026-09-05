@@ -88,3 +88,14 @@ def test_command_deck_exposes_market_and_daemon_health():
 
     assert '"Market clock"' in app
     assert '"Daemon health"' in app
+
+
+def test_theta_provider_health_is_operational_not_trading():
+    app = (ROOT / "app.py").read_text(encoding="utf-8").lower()
+    control = (
+        ROOT / "src/providers/thetadata_control.py"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "theta terminal" in app
+    assert "place_order" not in control
+    assert "submit_order" not in control

@@ -14,6 +14,7 @@ from src.operations.market_calendar import (
 from src.operations.runtime_health import (
     assess_daemon_health,
 )
+from src.providers.thetadata_control import probe_theta_terminal
 from src.operations.sqlite_runtime import (
     inspect_database,
     open_readonly_connection,
@@ -34,17 +35,24 @@ def load_command_deck(
     db_path: str | Path | None = None,
     *,
     now: datetime | None = None,
+    include_provider_health: bool = False,
 ) -> dict[str, Any]:
     path = resolve_db_path(db_path)
     health = inspect_database(path)
     market_clock = market_clock_snapshot(
         now=now
     ).as_dict()
+    theta_health: dict[str, Any] = {
+        "state": "NOT_PROBED",
+        "ready": None,
+        "detail": "Provider probe not requested.",
+    }
 
     if not health.exists:
         return {
             "database": health.as_dict(),
             "market_clock": market_clock,
+            "theta_health": theta_health,
             "ready": False,
             "reason": "DATABASE_NOT_FOUND",
         }
@@ -56,6 +64,7 @@ def load_command_deck(
         return {
             "database": health.as_dict(),
             "market_clock": market_clock,
+            "theta_health": theta_health,
             "ready": False,
             "reason": "SCHEMA_VERSION_MISMATCH",
         }
@@ -67,9 +76,13 @@ def load_command_deck(
         return {
             "database": health.as_dict(),
             "market_clock": market_clock,
+            "theta_health": theta_health,
             "ready": False,
             "reason": "DATABASE_INTEGRITY_FAILURE",
         }
+
+    if include_provider_health:
+        theta_health = probe_theta_terminal().as_dict()
 
     conn = open_readonly_connection(
         path
@@ -362,6 +375,23 @@ def load_command_deck(
             ).fetchall()
         )
 
+        theta_timestamp_semantics = _row_to_dict(
+            conn.execute(
+                """
+                SELECT
+                    id,
+                    semantics_version,
+                    validated_at,
+                    live_probe_state,
+                    confidence_state,
+                    decision_enabled
+                FROM thetadata_timestamp_semantics_v1_runs
+                ORDER BY id DESC
+                LIMIT 1;
+                """
+            ).fetchone()
+        )
+
         recent_iterations = _rows_to_dicts(
             conn.execute(
                 '''
@@ -486,6 +516,8 @@ def load_command_deck(
         "database": health.as_dict(),
         "market_clock": market_clock,
         "daemon_health": daemon_health,
+        "theta_health": theta_health,
+        "theta_timestamp_semantics": theta_timestamp_semantics,
         "daemon_lock": daemon_lock,
         "latest_iteration": latest_iteration,
         "latest_run": latest_run,

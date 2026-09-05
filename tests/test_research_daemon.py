@@ -434,3 +434,41 @@ def test_interrupted_iteration_is_terminalized_as_orphaned(
             owner_token=owner,
             db_path=db_path,
         )
+
+
+def test_run_daemon_refuses_when_theta_not_ready(db_path, monkeypatch):
+    import src.research.research_daemon as module
+
+    monkeypatch.setenv("MASSIVE_API_KEY", "x")
+    monkeypatch.setattr(
+        module,
+        "configured_theta_client",
+        lambda: type(
+            "Client",
+            (),
+            {"base_url": "http://127.0.0.1:25503/v3"},
+        )(),
+    )
+    monkeypatch.setattr(
+        module,
+        "probe_theta_terminal",
+        lambda **_kwargs: type(
+            "Health",
+            (),
+            {
+                "ready": False,
+                "state": "UNREACHABLE",
+                "detail": "refused",
+            },
+        )(),
+    )
+
+    with pytest.raises(
+        module.ResearchDaemonError,
+        match="Theta Terminal is not ready",
+    ):
+        module.run_daemon(
+            symbols=["AAPL"],
+            max_iterations=0,
+            db_path=db_path,
+        )

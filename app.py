@@ -90,7 +90,9 @@ st.markdown(
 
 @st.cache_data(ttl=30)
 def _load_snapshot():
-    return load_command_deck()
+    return load_command_deck(
+        include_provider_health=True
+    )
 
 
 snapshot = _load_snapshot()
@@ -152,6 +154,10 @@ market_clock = snapshot[
 daemon_health = snapshot[
     "daemon_health"
 ]
+theta_health = snapshot.get(
+    "theta_health",
+    {"state": "NOT_PROBED"},
+)
 
 st.markdown(
     '''
@@ -220,7 +226,7 @@ if page == "Command":
             "queryable provenance",
         )
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     c1.metric(
         "Market clock",
         _status_label(
@@ -244,6 +250,17 @@ if page == "Command":
                 f"heartbeat age "
                 f"{daemon_health['heartbeat_age_seconds']:.0f}s"
             )
+        ),
+    )
+    c3.metric(
+        "Theta Terminal",
+        _status_label(
+            theta_health.get("state")
+        ),
+        (
+            None
+            if theta_health.get("latency_ms") is None
+            else f"{theta_health['latency_ms']:.0f} ms"
         ),
     )
 
@@ -488,6 +505,10 @@ elif page == "System":
         {
             "market_clock": market_clock,
             "daemon_health": daemon_health,
+            "theta_health": theta_health,
+            "theta_timestamp_semantics": snapshot.get(
+                "theta_timestamp_semantics"
+            ),
         }
     )
 

@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from run_theta_terminal import theta_command
+from run_theta_terminal import (
+    theta_auth_mode,
+    theta_command,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,6 +132,10 @@ def test_deploy_preflight_passes_for_complete_runtime(
         "test-secret",
     )
     monkeypatch.setenv(
+        "THETADATA_API_KEY",
+        "theta-test-secret",
+    )
+    monkeypatch.setenv(
         "CHRISTIANIA_SYMBOLS",
         "AAPL,SPY",
     )
@@ -196,3 +203,38 @@ def test_deploy_preflight_rejects_backup_in_live_db_directory(
         checks["backup-separation"].state
         == "FAIL"
     )
+
+
+def test_theta_auth_mode_prefers_environment_api_key(monkeypatch, tmp_path):
+    jar = tmp_path / "ThetaTerminalv3.jar"
+    jar.write_bytes(b"jar")
+
+    monkeypatch.setenv("CHRISTIANIA_THETA_JAR", str(jar))
+    monkeypatch.setenv("THETADATA_API_KEY", "secret")
+
+    assert theta_auth_mode() == "API_KEY_ENV"
+
+
+def test_theta_auth_mode_accepts_creds_beside_jar(monkeypatch, tmp_path):
+    jar = tmp_path / "ThetaTerminalv3.jar"
+    jar.write_bytes(b"jar")
+    (tmp_path / "creds.txt").write_text(
+        "user@example.com\npassword\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("CHRISTIANIA_THETA_JAR", str(jar))
+    monkeypatch.delenv("THETADATA_API_KEY", raising=False)
+
+    assert theta_auth_mode() == "CREDS_FILE"
+
+
+def test_theta_auth_mode_refuses_missing_credentials(monkeypatch, tmp_path):
+    jar = tmp_path / "ThetaTerminalv3.jar"
+    jar.write_bytes(b"jar")
+
+    monkeypatch.setenv("CHRISTIANIA_THETA_JAR", str(jar))
+    monkeypatch.delenv("THETADATA_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="authentication is not configured"):
+        theta_auth_mode()

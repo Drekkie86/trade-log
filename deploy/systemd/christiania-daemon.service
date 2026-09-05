@@ -10,6 +10,7 @@ User=christiania
 Group=christiania
 WorkingDirectory=/opt/christiania
 EnvironmentFile=/etc/christiania/christiania.env
+ExecStartPre=/opt/christiania/.venv/bin/python /opt/christiania/run_theta_probe.py --wait-seconds 180
 ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_christiania_daemon.py
 Restart=always
 RestartSec=15

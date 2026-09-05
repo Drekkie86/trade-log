@@ -20,6 +20,13 @@ def main() -> int:
         action="store_true",
     )
     parser.add_argument(
+        "--strict-theta",
+        action="store_true",
+        help=(
+            "Also require the local Theta Terminal v3 API to be ready."
+        ),
+    )
+    parser.add_argument(
         "--strict-daemon",
         action="store_true",
         help=(
@@ -29,7 +36,14 @@ def main() -> int:
     args = parser.parse_args()
 
     snapshot = load_command_deck(
-        args.db
+        args.db,
+        include_provider_health=True,
+    )
+
+    strict_theta_failed = (
+        args.strict_theta
+        and snapshot.get("ready") is True
+        and snapshot.get("theta_health", {}).get("state") != "READY"
     )
 
     strict_daemon_failed = (
@@ -51,6 +65,8 @@ def main() -> int:
             return 2
         if strict_daemon_failed:
             return 3
+        if strict_theta_failed:
+            return 4
         return 0
 
     db = snapshot["database"]
@@ -98,8 +114,18 @@ def main() -> int:
         f"{daemon_health.get('state')}"
     )
 
+    theta_health = snapshot.get(
+        "theta_health", {}
+    )
+    print(
+        "Theta Terminal: "
+        f"{theta_health.get('state')}"
+    )
+
     if strict_daemon_failed:
         return 3
+    if strict_theta_failed:
+        return 4
 
     latest = snapshot["latest_iteration"]
 

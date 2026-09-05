@@ -187,3 +187,47 @@ def test_command_deck_refuses_foreign_key_violation(
         snapshot["reason"]
         == "DATABASE_INTEGRITY_FAILURE"
     )
+
+
+def test_command_deck_provider_probe_is_opt_in(db_path, monkeypatch):
+    import src.dashboard.read_model as module
+
+    called = []
+    monkeypatch.setattr(
+        module,
+        "probe_theta_terminal",
+        lambda: called.append(True),
+    )
+
+    snapshot = module.load_command_deck(db_path)
+
+    assert snapshot["theta_health"]["state"] == "NOT_PROBED"
+    assert called == []
+
+
+def test_command_deck_can_include_theta_health(db_path, monkeypatch):
+    import src.dashboard.read_model as module
+
+    health = type(
+        "Health",
+        (),
+        {
+            "as_dict": lambda self: {
+                "state": "READY",
+                "ready": True,
+                "latency_ms": 12.0,
+            }
+        },
+    )()
+    monkeypatch.setattr(
+        module,
+        "probe_theta_terminal",
+        lambda: health,
+    )
+
+    snapshot = module.load_command_deck(
+        db_path,
+        include_provider_health=True,
+    )
+
+    assert snapshot["theta_health"]["state"] == "READY"

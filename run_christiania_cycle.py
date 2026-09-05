@@ -6,7 +6,10 @@ from collections import Counter
 from pathlib import Path
 
 from src.providers.massive import MassiveClient
-from src.providers.thetadata import ThetaDataClient
+from src.providers.thetadata_control import (
+    configured_theta_client,
+    probe_theta_terminal,
+)
 from src.research.research_cycle import (
     run_research_cycle,
 )
@@ -126,6 +129,25 @@ def main() -> int:
     )
     print()
 
+    try:
+        theta_client = configured_theta_client()
+    except ValueError as exc:
+        print(
+            "REFUSED: Theta Terminal configuration is invalid: "
+            f"{exc}"
+        )
+        return 2
+
+    theta_health = probe_theta_terminal(
+        base_url=theta_client.base_url
+    )
+    if not theta_health.ready:
+        print(
+            "REFUSED: Theta Terminal is not ready: "
+            f"{theta_health.state}: {theta_health.detail}"
+        )
+        return 2
+
     result = run_research_cycle(
         symbols=args.symbols,
         massive_client=
@@ -133,7 +155,7 @@ def main() -> int:
                 massive_key
             ),
         theta_client=
-            ThetaDataClient(),
+            theta_client,
         min_dte=args.min_dte,
         max_dte=args.max_dte,
         max_spread_to_mid=

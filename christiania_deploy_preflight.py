@@ -10,10 +10,16 @@ from pathlib import Path
 
 import exchange_calendars as xcals
 
+from run_theta_terminal import theta_auth_mode
+
 from src.config import get_runtime_setting
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
+)
+from src.providers.thetadata_control import (
+    configured_theta_base_url,
+    probe_theta_terminal,
 )
 from src.operations.sqlite_runtime import (
     inspect_database,
@@ -52,7 +58,7 @@ def _check(
     )
 
 
-def run_preflight() -> list[PreflightCheck]:
+def run_preflight(*, require_theta_live: bool = False) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
     checks.append(
@@ -185,6 +191,49 @@ def run_preflight() -> list[PreflightCheck]:
     )
 
     try:
+        auth_mode = theta_auth_mode()
+        auth_ok = True
+    except RuntimeError as exc:
+        auth_mode = str(exc)
+        auth_ok = False
+
+    checks.append(
+        _check(
+            "theta-authentication",
+            auth_ok,
+            f"Theta authentication mode: {auth_mode}.",
+            auth_mode,
+        )
+    )
+
+    try:
+        theta_base_url = configured_theta_base_url()
+        theta_url_ok = True
+    except ValueError as exc:
+        theta_base_url = str(exc)
+        theta_url_ok = False
+
+    checks.append(
+        _check(
+            "theta-local-endpoint",
+            theta_url_ok,
+            f"Theta API endpoint is local-only: {theta_base_url}",
+            f"Invalid Theta API endpoint: {theta_base_url}",
+        )
+    )
+
+    if require_theta_live:
+        theta_health = probe_theta_terminal()
+        checks.append(
+            _check(
+                "theta-live-readiness",
+                theta_health.ready,
+                theta_health.detail,
+                f"{theta_health.state}: {theta_health.detail}",
+            )
+        )
+
+    try:
         calendar = xcals.get_calendar(
             "XNYS"
         )
@@ -254,9 +303,16 @@ def main() -> int:
         "--json",
         action="store_true",
     )
+    parser.add_argument(
+        "--require-theta-live",
+        action="store_true",
+        help="Also require a successful live Theta v3 readiness probe.",
+    )
     args = parser.parse_args()
 
-    checks = run_preflight()
+    checks = run_preflight(
+        require_theta_live=args.require_theta_live
+    )
     failed = [
         check
         for check in checks

@@ -172,3 +172,58 @@ def test_health_cli_strict_daemon_returns_three_without_lease(
         assert christiania_health.main() == 3
     finally:
         sys.argv = old
+
+
+def test_health_cli_strict_theta_returns_four(monkeypatch):
+    import sys
+
+    import christiania_health
+
+    monkeypatch.setattr(
+        christiania_health,
+        "load_command_deck",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "theta_health": {"state": "UNREACHABLE"},
+            "daemon_health": {"state": "HEALTHY"},
+        },
+    )
+
+    old = sys.argv
+    sys.argv = [
+        "christiania_health.py",
+        "--json",
+        "--strict-theta",
+    ]
+
+    try:
+        assert christiania_health.main() == 4
+    finally:
+        sys.argv = old
+
+
+def test_health_cli_non_strict_does_not_fail_only_for_theta(monkeypatch):
+    import sys
+
+    import christiania_health
+
+    monkeypatch.setattr(
+        christiania_health,
+        "load_command_deck",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "theta_health": {"state": "UNREACHABLE"},
+            "daemon_health": {"state": "HEALTHY"},
+        },
+    )
+
+    old = sys.argv
+    sys.argv = [
+        "christiania_health.py",
+        "--json",
+    ]
+
+    try:
+        assert christiania_health.main() == 0
+    finally:
+        sys.argv = old

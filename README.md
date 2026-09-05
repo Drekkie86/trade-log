@@ -48,3 +48,7 @@ One-VM reliability and service-manager deployment preparation:
 Surfaced anomalies are observational evidence, not validated edge.
 Prospective evidence remains separated from discovery evidence.
 The V1 web application contains no broker-order path.
+
+## Theta control plane
+
+Theta Terminal remains a separate local provider process, while Christiania treats its v3 HTTP API as a first-class operational dependency. `python run_theta_probe.py` performs a read-only localhost readiness probe. Scheduled daemon sampling refuses to start unless Theta is ready, and `python christiania_health.py --strict-theta` makes the same dependency machine-checkable.
