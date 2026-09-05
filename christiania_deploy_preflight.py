@@ -12,7 +12,7 @@ import exchange_calendars as xcals
 
 from run_theta_terminal import theta_auth_mode
 
-from src.config import get_runtime_setting
+from src.config import get_runtime_setting, load_runtime_env_file
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
@@ -64,7 +64,11 @@ def _check(
     )
 
 
-def run_preflight(*, require_theta_live: bool = False) -> list[PreflightCheck]:
+def run_preflight(
+    *,
+    require_theta_live: bool = False,
+    require_secure_edge: bool = False,
+) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
     checks.append(
@@ -307,6 +311,22 @@ def run_preflight(*, require_theta_live: bool = False) -> list[PreflightCheck]:
         )
     )
 
+    if require_secure_edge:
+        from src.operations.secure_edge import inspect_secure_edge_configuration
+
+        edge = inspect_secure_edge_configuration()
+        checks.append(
+            _check(
+                "secure-web-edge",
+                edge.ready,
+                (
+                    f"Secure web edge configured for {edge.public_host}; "
+                    f"{edge.authorized_email_count} explicit authorized identity(s)."
+                ),
+                "Secure web edge configuration is incomplete or invalid.",
+            )
+        )
+
     symbols = get_runtime_setting(
         "CHRISTIANIA_SYMBOLS"
     )
@@ -334,14 +354,31 @@ def main() -> int:
         action="store_true",
     )
     parser.add_argument(
+        "--env-file",
+        action="append",
+        default=[],
+        help="Load a deployment KEY=VALUE file without shell evaluation; may be repeated.",
+    )
+    parser.add_argument(
         "--require-theta-live",
         action="store_true",
         help="Also require a successful live Theta v3 readiness probe.",
     )
+    parser.add_argument(
+        "--require-secure-edge",
+        action="store_true",
+        help="Also require production HTTPS/OIDC edge configuration.",
+    )
     args = parser.parse_args()
 
+    for env_file in args.env_file:
+        loaded = load_runtime_env_file(env_file, overwrite=False)
+        if not loaded:
+            raise SystemExit(f"Environment file missing or empty: {env_file}")
+
     checks = run_preflight(
-        require_theta_live=args.require_theta_live
+        require_theta_live=args.require_theta_live,
+        require_secure_edge=args.require_secure_edge,
     )
     failed = [
         check

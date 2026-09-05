@@ -1,252 +1,63 @@
-# Christiania Immediate Roadmap
+# Christiania V1.0 Roadmap — authoritative current plan
 
-## Core architecture
+Status baseline: Package 5 (`57fd733`) completed the Copenhagen operations/recovery layer.
+This document supersedes the earlier pre-Cohort implementation roadmap. Historical documents remain useful evidence but are not current implementation instructions.
 
-Christiania remains provider-extensible.
+## V1 goal
 
-Providers collect evidence; they do not produce the final trade decision directly.
+Christiania V1.0 is an operationally complete quantitative options-research workstation that can run unattended on one Linux VM, expose a securely authenticated browser UI, preserve evidence/provenance/recovery, and host a serious versioned mathematical model library.
 
-Provider-specific APIs live behind adapters such as:
+V1.0 does **not** claim a proven trading edge and contains no broker-order path.
 
-- `src/providers/massive.py`
-- `src/providers/saxo.py`
-- future `src/providers/unusual_whales.py`
+## Completed
 
-Research and model code should consume normalized evidence with explicit provenance rather than calling provider APIs directly.
+- Packages 1–5: recovery provenance, SQLite WAL/read-only UI, verified backup/restore, XNYS scheduling, one-VM systemd runtime, Theta control plane, per-slot Theta gating, audit exports, operational readiness and Copenhagen recovery tooling.
+- Frozen prospective-science governance remains observational-only.
 
-A future provider does not have to pretend to be Massive or Saxo. If its semantics differ, it gets an appropriate normalized evidence family.
+## Package 6 — Secure Web Edge & Documentation Consolidation
 
-Examples:
+- Caddy automatic HTTPS reverse proxy.
+- oauth2-proxy generic OIDC authentication gateway.
+- explicit per-user email allowlist; no Christiania password database.
+- Streamlit remains loopback-only.
+- bounded app/auth-gateway restart behavior and service sandbox hardening.
+- secure-edge/deployment preflights with explicit env-file loading.
+- recursive audit-export secret redaction.
+- migration 021–025 governance audit converted into regression contracts.
+- authoritative V1 architecture/status documentation and stale-doc cleanup.
 
-- option-chain / quote data -> quote evidence
-- provider-derived IV / Greeks -> provider model observations
-- broker quote / execution data -> broker observations
-- options-flow / alternative data -> flow or event evidence
-- historical underlying data -> time-series evidence
+## Package 7 — Advanced Quantitative Model Library & Research Bench
 
-Conceptual rule:
+Build serious mathematical infrastructure without promoting unvalidated challengers into trading decisions:
 
-`provider API -> provider adapter -> normalized evidence -> Christiania models -> candidate evaluation`
+- production-grade BSM/implied-vol/Greeks foundations;
+- numerical cross-checks and higher-order Greeks;
+- arbitrage-aware volatility-surface diagnostics;
+- binomial/trinomial and finite-difference cross-validation;
+- Heston/stochastic-vol challenger infrastructure;
+- local-vol and jump-diffusion research models;
+- Monte Carlo/scenario engine with convergence diagnostics;
+- realized-volatility estimators and EWMA/GARCH-family baselines;
+- model calibration quality/stability metrics;
+- explicit transaction-cost/slippage EV layer;
+- model-disagreement research surface.
 
-not:
+Frozen primary/prospective hypotheses remain frozen. Challengers are research instruments, not automatic BUY/SELL authorities.
 
-`provider API -> trade score`
+## Package 8 — Clean-VM Release Candidate / Copenhagen acceptance
 
-This keeps the final decision provider-independent and auditable.
+- provision a clean Linux VM;
+- deploy Christiania + Theta JAR + persistent SQLite;
+- configure DNS, HTTPS and OIDC identity;
+- demonstrate unattended reboot recovery;
+- demonstrate Theta readiness and scheduled collection;
+- verify browser login from a remote location;
+- verify backup, restore drill, audit export and timers;
+- run multi-day burn-in and fix only evidence-backed reliability defects;
+- execute final migration/security/deployment review.
 
----
+## V1.0 release condition
 
-## Immediate pre-Cohort 001 work
+V1.0 can be declared when the clean-VM acceptance gate passes. Scientific maturity is shown separately and may still be `PROSPECTIVE_CALIBRATION_ACCUMULATING`.
 
-### Gate 1 — Selection-universe integrity
-
-Fix Claude blocker B1.
-
-Required reconciliations:
-
-`raw = normalized + normalization drops`
-
-and:
-
-`normalized = selection eligible + selection exclusions`
-
-No normalized contract may silently disappear before stratification.
-
-Missing delta, missing model evidence, invalid delta, and contracts outside the preregistered delta range must be explicitly counted and retained as selection-stage evidence.
-
-Sampling rule becomes:
-
-`BASELINE_STRATIFIED_SAMPLE_V2`
-
-Tie-breaking becomes a total order by appending immutable `option_quote_id`.
-
-### Gate 2 — Saxo authentication truthfulness
-
-Fix Claude blocker B2.
-
-Saxo requests must obtain a current access token through a token provider rather than relying on one static token for the full run.
-
-Authentication expiry must never be measured as broker resolution failure.
-
-### Gate 3 — Typed failure taxonomy
-
-Fix Claude blocker B3.
-
-Replace exception-name substring guessing with typed provider failures and HTTP-status-aware classification.
-
-Persistence failures must abort or invalidate a run rather than becoming broker evidence.
-
-Retry counts must reflect truth; unknown is not the same as zero.
-
-### Gate 4 — Independent underlying observation
-
-Fix Claude blocker B4.
-
-Collect one deliberately timed, independent Saxo underlying observation outside the randomized option-resolution loop.
-
-Persist its attempt, outcome, timestamps, retry information, and failure reason.
-
-### Gate 5 — Adversarial tests and run semantics
-
-Add or strengthen tests for:
-
-- missing delta
-- all 30 strata empty
-- all Saxo resolutions failing
-- token expiry mid-run
-- token refresh mid-run
-- persistence failure during resolution
-- duplicate provider identities
-- process interruption after selection freeze
-- abandoned-run invalidation
-- second active run for the same cohort/session
-- exact delta boundaries
-- fully tied candidates
-- provider retry accounting
-- underlying-observation failure
-
-Define defensible terminal states before first live collection.
-
-### Gate A — Re-review
-
-Run the full suite and send the revised package for another hostile review.
-
-Only then run Cohort 001.
-
----
-
-## Immediate post-plumbing roadmap: multi-model trade evaluation
-
-### Christiania model persistence
-
-Add a new canonical layer such as:
-
-`christiania_model_observations`
-
-and a package:
-
-`src/models/`
-
-Each model observation should carry:
-
-- model family
-- model name
-- model version
-- exact input-evidence references
-- estimate / prediction
-- uncertainty
-- timestamp
-- calibration version where applicable
-
-Christiania models never overwrite provider evidence.
-
-### Evaluation dimensions
-
-A potential trade should be evaluated separately on:
-
-1. Opportunity
-2. Tradability
-3. Robustness
-4. Counter-case
-5. Final decision
-
-The system must not use naive model majority voting.
-
-Agreement is more valuable when it comes from genuinely independent evidence families.
-
-Shared inputs and correlated models must reduce the value of apparent consensus.
-
-### Mandatory counter-voice
-
-Every proposed trade must include a quantitative hostile case.
-
-It should state:
-
-- what must be true for the trade to be attractive;
-- what evidence says those assumptions may be false;
-- which models share inputs or assumptions;
-- where the apparent edge disappears;
-- how spread, fees, slippage, uncertainty, and applicable verified taxes can erase the edge;
-- what future observation would falsify the thesis.
-
-The counter-voice is not merely another red/green vote.
-
----
-
-## Planned model families
-
-### 1. Execution / cost model
-
-Build first.
-
-It establishes how much apparent edge is required before a trade becomes actionable.
-
-Potential inputs:
-
-- spread
-- displayed size
-- commission
-- exchange / regulatory charges
-- FX
-- slippage assumptions
-- applicable verified tax treatment
-
-Tax treatment stays configurable until explicitly verified.
-
-### 2. Independent option pricer
-
-Use an American-option-capable model.
-
-Output independent valuation / implied-volatility comparisons with versioned inputs.
-
-### 3. Volatility model family
-
-Examples may include:
-
-- realized volatility
-- EWMA
-- GARCH-family forecasts
-- implied-versus-realized relationships
-- regime-conditioned volatility
-
-Multiple volatility models are not automatically independent votes.
-
-### 4. Scenario / Monte Carlo payoff model
-
-Produce:
-
-- payoff distribution
-- P(profit)
-- expected value
-- tail outcomes
-- sensitivity
-- uncertainty bands
-
-### 5. Bayesian evidence combination
-
-Bayesian reasoning is primarily an evidence-combination and calibration framework, not simply another BUY/SELL model.
-
-It should preserve which evidence moved the belief.
-
-### 6. Surface / relative-value model
-
-Build after quote-quality, cost, and independent-pricing foundations are reliable.
-
----
-
-## Outcome tracking
-
-Outcome tracking is built alongside the model layer.
-
-Where applicable retain:
-
-- terminal payoff
-- realized P/L under defined execution assumptions
-- MFE
-- MAE
-- realized volatility
-- forecast error
-- calibration bucket
-- model version
-
-Without outcomes, multiple models are only versioned opinions.
+Post-V1 decisions about live broker execution require a separate explicit architecture/safety project and are not implied by V1.0.

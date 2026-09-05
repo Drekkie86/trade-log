@@ -47,5 +47,5 @@ systemctl daemon-reload
 
 echo "Installed Christiania runtime files."
 echo "Next: populate ${ENV_DIR}/christiania.env, place ThetaTerminalv3.jar, copy/restore the database, then run:"
-echo "  sudo -u ${SERVICE_USER} ${APP_DIR}/.venv/bin/python ${APP_DIR}/christiania_deploy_preflight.py --require-theta-live"
+echo "  sudo -u ${SERVICE_USER} ${APP_DIR}/.venv/bin/python ${APP_DIR}/christiania_deploy_preflight.py --env-file ${ENV_DIR}/christiania.env --require-theta-live"
 echo "No services were enabled automatically."

@@ -9,6 +9,7 @@ from src.operations.audit_export import export_audit_snapshot
 from src.operations.backup_recovery import inventory_backups, resolve_latest_valid_backup, run_restore_drill
 from src.operations.sqlite_runtime import create_verified_backup
 from src.operations.v1_readiness import assess_v1_readiness
+from src.operations.secure_edge import inspect_secure_edge_configuration
 
 
 def _print_json(value) -> None:
@@ -43,6 +44,9 @@ def main() -> int:
 
     export = sub.add_parser("export")
     export.add_argument("--theta", action="store_true")
+
+    edge = sub.add_parser("secure-edge")
+    edge.add_argument("--json", action="store_true")
 
     copenhagen = sub.add_parser("copenhagen")
     copenhagen.add_argument("--json", action="store_true")
@@ -112,6 +116,17 @@ def main() -> int:
         path = export_audit_snapshot(include_provider_health=args.theta)
         print(path)
         return 0
+
+    if args.command == "secure-edge":
+        edge = inspect_secure_edge_configuration()
+        if args.json:
+            _print_json(edge.as_dict())
+        else:
+            print("Christiania secure web edge")
+            print("---------------------------")
+            for check in edge.checks:
+                print(f"[{check.state}] {check.name}: {check.detail}")
+        return 0 if edge.ready else 2
 
     if args.command == "copenhagen":
         deck = _deck(True)

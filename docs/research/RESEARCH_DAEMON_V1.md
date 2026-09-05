@@ -5,26 +5,14 @@ repeated market-sampling process.
 
 ## Default cadence
 
-The daemon samples every **15 minutes** on weekdays from:
+The daemon samples every **15 minutes** on XNYS trading sessions.
 
-- 09:45 America/New_York
-- through 15:45 America/New_York
+- Regular session: 09:45 through 15:45 America/New_York.
+- Official early close: sampling stops 15 minutes before the exchange close.
+- Weekends and XNYS holidays are skipped by the maintained `exchange_calendars` XNYS calendar.
 
-That is 25 samples per normal full trading day.
-
-The first 15 minutes after the regular open are deliberately excluded in v1.
-
-### Important calendar limitation
-
-v1 is weekday/session-clock aware, but it is **not yet exchange-holiday
-calendar aware**.
-
-On a US market holiday it may wake up and execute a research cycle. Existing
-freshness and structural gates should prevent stale evidence from becoming a
-candidate, and the iteration remains useful operational evidence.
-
-We should add an authoritative exchange calendar later rather than pretending
-a hand-maintained holiday list is reliable.
+The first and last 15 minutes of each actual exchange session remain excluded.
+Package 3 replaced the earlier weekday-only limitation; Labor Day 2026 and early-close behavior are regression-tested.
 
 ## Single-daemon lease
 

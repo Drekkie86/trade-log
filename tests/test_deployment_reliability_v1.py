@@ -266,3 +266,16 @@ def test_systemd_theta_and_daemon_have_explicit_restart_limits():
         assert "StartLimitIntervalSec=300" in unit
         assert "StartLimitBurst=5" in unit
         assert "RestartSec=15" in unit
+
+
+
+def test_one_vm_installer_uses_explicit_env_file_for_manual_preflight():
+    script = (ROOT / "deploy/install_one_vm.sh").read_text(encoding="utf-8")
+    assert "christiania_deploy_preflight.py --env-file ${ENV_DIR}/christiania.env --require-theta-live" in script
+
+
+def test_systemd_app_has_explicit_restart_limits():
+    unit = (ROOT / "deploy/systemd/christiania-app.service").read_text(encoding="utf-8")
+    assert "StartLimitIntervalSec=300" in unit
+    assert "StartLimitBurst=5" in unit
+    assert "Restart=on-failure" in unit

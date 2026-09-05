@@ -1,0 +1,3 @@
+# One explicitly authorized identity-provider email address per line.
+# Never use '*' here.
+you@example.com

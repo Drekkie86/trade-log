@@ -24,6 +24,8 @@ SAFE_CONFIGURATION_KEYS = (
 SECRET_PRESENCE_KEYS = (
     "MASSIVE_API_KEY",
     "THETADATA_API_KEY",
+    "OAUTH2_PROXY_CLIENT_SECRET",
+    "OAUTH2_PROXY_COOKIE_SECRET",
 )
 
 
@@ -48,13 +50,37 @@ def _git_metadata() -> dict[str, object]:
     }
 
 
+def _secret_values() -> tuple[str, ...]:
+    values = []
+    for key in SECRET_PRESENCE_KEYS:
+        value = os.environ.get(key) or get_runtime_setting(key)
+        if value:
+            values.append(value)
+    return tuple(sorted(set(values), key=len, reverse=True))
+
+
+def _redact(value, secrets: tuple[str, ...]):
+    if isinstance(value, str):
+        result = value
+        for secret in secrets:
+            result = result.replace(secret, "[REDACTED_SECRET]")
+        return result
+    if isinstance(value, dict):
+        return {key: _redact(item, secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact(item, secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact(item, secrets) for item in value)
+    return value
+
+
 def build_audit_snapshot(*, include_provider_health: bool = False) -> dict[str, object]:
     deck = load_command_deck(include_provider_health=include_provider_health)
     backups = inventory_backups().as_dict()
     readiness = assess_v1_readiness(deck, backups).as_dict()
     safe_config = {key: get_runtime_setting(key) for key in SAFE_CONFIGURATION_KEYS}
     secret_presence = {key: bool(os.environ.get(key) or get_runtime_setting(key)) for key in SECRET_PRESENCE_KEYS}
-    return {
+    payload = {
         "artifact": "CHRISTIANIA_V1_OPERATIONAL_AUDIT",
         "generated_at": datetime.now(UTC).isoformat(),
         "git": _git_metadata(),
@@ -65,6 +91,7 @@ def build_audit_snapshot(*, include_provider_health: bool = False) -> dict[str, 
         "command_deck": deck,
         "disclaimer": "Operational/research audit only. No live-order capability or trading-readiness claim.",
     }
+    return _redact(payload, _secret_values())
 
 
 def export_audit_snapshot(

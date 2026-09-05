@@ -11,13 +11,16 @@ PROJECT_ROOT = (
 ENV_FILE = PROJECT_ROOT / ".env"
 
 
-def _read_local_settings() -> dict[str, str]:
+def read_env_file(path: str | Path) -> dict[str, str]:
+    """Parse Christiania KEY=VALUE configuration without shell evaluation."""
+
+    env_path = Path(path).expanduser()
     settings: dict[str, str] = {}
 
-    if not ENV_FILE.exists():
+    if not env_path.exists():
         return settings
 
-    for raw_line in ENV_FILE.read_text(
+    for raw_line in env_path.read_text(
         encoding="utf-8"
     ).splitlines():
 
@@ -50,6 +53,24 @@ def _read_local_settings() -> dict[str, str]:
         settings[key] = value
 
     return settings
+
+
+def _read_local_settings() -> dict[str, str]:
+    return read_env_file(ENV_FILE)
+
+
+def load_runtime_env_file(
+    path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> dict[str, str]:
+    """Load an explicit deployment env file without invoking a shell."""
+
+    values = read_env_file(path)
+    for key, value in values.items():
+        if overwrite or key not in os.environ:
+            os.environ[key] = value
+    return values
 
 
 def load_local_env() -> None:

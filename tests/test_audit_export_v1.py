@@ -40,3 +40,37 @@ def test_audit_export_is_atomic_json_artifact(db_path, tmp_path, monkeypatch):
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["artifact"] == "CHRISTIANIA_V1_OPERATIONAL_AUDIT"
     assert not list(audit_dir.glob("*.tmp"))
+
+
+
+def test_audit_snapshot_redacts_secret_if_nested_diagnostic_contains_it(
+    db_path, tmp_path, monkeypatch
+):
+    import src.operations.audit_export as audit
+
+    backup_dir = tmp_path / "backups"
+    create_verified_backup(db_path=db_path, backup_dir=backup_dir, retention=3)
+    monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db_path))
+    monkeypatch.setenv("CHRISTIANIA_BACKUP_DIR", str(backup_dir))
+    monkeypatch.setenv("MASSIVE_API_KEY", "VERY_SECRET_KEY")
+    monkeypatch.setenv("OAUTH2_PROXY_CLIENT_SECRET", "OIDC_SECRET")
+
+    monkeypatch.setattr(
+        audit,
+        "load_command_deck",
+        lambda **kwargs: {
+            "ready": True,
+            "nested": {
+                "provider_error": "request failed ?apiKey=VERY_SECRET_KEY",
+                "auth_error": "bad client secret OIDC_SECRET",
+            },
+        },
+    )
+    monkeypatch.setattr(audit, "inventory_backups", lambda: type("X", (), {"as_dict": lambda self: {"valid_files": 1, "latest_valid_age_hours": 0}})())
+    monkeypatch.setattr(audit, "assess_v1_readiness", lambda *args, **kwargs: type("R", (), {"as_dict": lambda self: {"product_ready": True}})())
+
+    payload = audit.build_audit_snapshot()
+    encoded = json.dumps(payload)
+    assert "VERY_SECRET_KEY" not in encoded
+    assert "OIDC_SECRET" not in encoded
+    assert "[REDACTED_SECRET]" in encoded
