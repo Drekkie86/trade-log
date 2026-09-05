@@ -4,11 +4,12 @@
 
 - Packages 1–6: complete and validated.
 - Package 7: advanced quantitative model library/research bench — complete in this package.
-- Package 8: clean-VM deployment, remote-login/reboot acceptance and unattended burn-in.
+- Package 8: V1 release-candidate acceptance harness, release manifest, reboot proof and unattended burn-in — implemented in this package.
+- Remaining V1 work: execute the acceptance harness on the clean production VM and close the live Theta timestamp-validation gate.
 
 ## Operational state
 
-The local workstation has completed the V1 research/operations/security construction layers. The clean production VM has not yet been accepted; therefore V1.0 is not yet a release candidate.
+The local workstation has completed the V1 research/operations/security/quant/release-engineering construction layers. The clean production VM has not yet passed the Package 8 acceptance gates; therefore V1.0 is not yet promoted from release-candidate code to released V1.0.
 
 ## Quantitative state
 

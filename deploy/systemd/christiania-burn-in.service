@@ -1,0 +1,16 @@
+[Unit]
+Description=Christiania V1 burn-in health snapshot
+After=christiania-daemon.service christiania-theta.service
+
+[Service]
+Type=oneshot
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/christiania_release.py burn-in-sample
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/christiania/audit

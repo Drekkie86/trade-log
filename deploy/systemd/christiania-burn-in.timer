@@ -1,0 +1,11 @@
+[Unit]
+Description=Record Christiania V1 burn-in health every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

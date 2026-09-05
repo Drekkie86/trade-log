@@ -40,3 +40,7 @@ The frozen primary model and prospective hypotheses remain observational. Challe
 ## Trading boundary
 
 V1 contains no broker-order path. Broker/provider adapters may support reference, quote, identity and research evidence, but V1 does not submit orders.
+
+## Release-candidate boundary
+
+Package 8 adds a side-effect-light release harness. Release manifests fingerprint Git/schema/migrations/quant-registry/runtime dependencies; burn-in snapshots live in the audit path; Linux boot IDs prove a genuine reboot. These mechanisms do not alter research models, database schema, candidate admission or broker behavior.

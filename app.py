@@ -11,6 +11,9 @@ from src.operations.backup_recovery import (
 from src.operations.v1_readiness import (
     assess_v1_readiness,
 )
+from src.operations.burn_in import read_burn_in_samples, summarize_burn_in
+from src.operations.release_manifest import build_release_manifest
+from src.version import CHRISTIANIA_VERSION
 from src.quant.bench import run_vanilla_bench
 from src.quant.registry import catalog as quant_model_catalog
 from src.quant.types import QuantInputError, VanillaOption
@@ -118,6 +121,7 @@ with st.sidebar:
             "Shadow Lab",
             "Quant Bench",
             "Readiness",
+            "Release",
             "System",
         ],
         label_visibility="collapsed",
@@ -650,6 +654,27 @@ elif page == "Readiness":
         st.dataframe(backup_inventory["entries"], use_container_width=True, hide_index=True)
     else:
         st.warning("No verified backup files have been created yet.")
+
+elif page == "Release":
+    st.subheader("V1.0 release candidate")
+    st.caption(
+        "Release engineering readiness is separate from scientific edge validation. "
+        "The production VM must pass reboot, secure-edge and unattended burn-in gates."
+    )
+    manifest = build_release_manifest().as_dict()
+    burn = summarize_burn_in(read_burn_in_samples()).as_dict()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Version", CHRISTIANIA_VERSION)
+    c2.metric("Git state", "Clean" if manifest["git_clean"] else "Dirty / unavailable")
+    c3.metric("Burn-in", _status_label(burn["state"]), f"{burn['duration_hours']:.1f}h")
+    st.markdown("**Release fingerprint**")
+    st.json(manifest)
+    st.markdown("**Burn-in report**")
+    st.json(burn)
+    st.info(
+        "Final V1.0 promotion requires a real clean-VM deployment, HTTPS/OIDC edge, "
+        "verified reboot/autostart, 72h unattended burn-in, and independent live Theta timestamp validation."
+    )
 
 elif page == "System":
     st.subheader(
