@@ -136,3 +136,14 @@ The Decision Desk runs the full research model suite only for the selected candi
 ### Research rank versus recommendation
 
 The review board orders candidates for investigation using transparent stored evidence (cash-settlement eligibility, shadow admission, model-input completeness, validated outcomes, mark count and anomaly magnitude). This is a **research-review order**, not a probability-of-profit score and not a live-trade leaderboard.
+
+## Package 11 — Decision Desk V2
+
+The Decision Desk is now the synthesis surface rather than a simple candidate safety card. It brings together exact persisted structure, cash-settlement contract identity, market-quality freshness/spread, collection/recovery provenance, candidate-specific governance, prospective similar-candidate evidence, shadow loss monitoring, benchmark/stress model separation, Greeks and deterministic scenarios.
+
+The three operator-facing outcomes are:
+- `NO TRADE`: at least one hard safety gate fails;
+- `CONTINUE SHADOW`: useful research remains, but evidence/operational decision gates are incomplete;
+- `ELIGIBLE FOR MANUAL TRADE REVIEW`: reserved for a future state in which every explicit gate is satisfied. It is still not an order.
+
+Christiania does not fabricate calibrated EV. Until probability calibration, realistic cost/slippage integration, event context and exact timestamp semantics are available, the UI states those gaps directly.

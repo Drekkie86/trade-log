@@ -72,3 +72,15 @@ A candidate can rank first and still have the final disposition `NO TRADE`.
 ## Governance
 
 A candidate cannot clear the Decision Desk while scientific decision governance remains disabled. No UI interaction changes database evidence, enables a model, promotes a hypothesis or creates a broker order path.
+
+## Package 11 — Decision Desk V2 synthesis
+
+Decision Desk V2 keeps the Package 10 safety dossier and adds candidate-specific synthesis. No global enabled model or unrelated hypothesis can grant permission to a candidate. `LOCAL_IV_RESIDUAL_V1` resolves explicitly to the frozen local-surface governance family; unknown scanner families fail closed.
+
+Manual-review eligibility now requires all of the following to be true at the same time: exact cash-settlement policy plus persisted contract identity/multiplier, admitted shadow state, explicit bounded risk controls, candidate-specific governance permission, fresh/tight quote quality, clean collection state, exact expiration timestamp semantics, integrated event-risk context, and calibrated net EV. Missing evidence is a blocker rather than a guessed default.
+
+The current system intentionally cannot satisfy every manual-review gate. Exact expiration timestamps, event/jump calendar integration, calibrated probability-weighted net EV, and live-probed SPX/XSP provider compatibility remain explicit gaps. The expected V1 result is therefore often `NO TRADE` or `CONTINUE SHADOW`.
+
+The model dossier no longer presents an indiscriminate arithmetic consensus. BSM/CRR/finite-difference/GBM Monte Carlo are benchmark diagnostics; Heston and Merton are uncalibrated stress models unless calibrated parameters are explicitly supplied. Scenario rows are deterministic stress cases with no probabilities and therefore are not expected value.
+
+The cash-settled research universe is explicitly SPX/XSP, but live collection is not enabled until provider compatibility is actually probed end to end. Existing equity/ETF candidates remain valid shadow research while being blocked from live/manual eligibility because of physical-delivery/assignment risk.

@@ -535,6 +535,11 @@ def load_command_deck(
                     oq.vega AS target_vega,
                     oq.quote_at AS target_quote_at,
                     ms.underlying_price,
+                    ru.status AS collection_status,
+                    ru.retry_count,
+                    CASE WHEN ru.retry_count > 0 AND ru.status = 'SUCCESS' THEN 1 ELSE 0 END AS was_recovered,
+                    ru.failure_code AS collection_failure_code,
+                    ru.recovery_error_type,
                     COALESCE(mc.mark_count, 0) AS mark_count,
                     COALESCE(mc.validated_outcomes, 0) AS validated_outcomes,
                     rm.observed_at AS latest_mark_at,
@@ -554,6 +559,9 @@ def load_command_deck(
                   ON ms.id = oq.snapshot_id
                 LEFT JOIN listing_reference_contracts AS lrc
                   ON lrc.id = sc.reference_contract_id
+                LEFT JOIN research_run_underlyings AS ru
+                  ON ru.run_id = sc.research_run_id
+                 AND ru.underlying = sc.underlying
                 LEFT JOIN (
                     SELECT
                         candidate_id,
@@ -698,6 +706,42 @@ def load_command_deck(
                 )
             )
             candidate["model_input_complete"] = bool(required)
+
+        similar_evidence_rows = _rows_to_dicts(
+            conn.execute(
+                """
+                SELECT
+                    sc.hypothesis_family,
+                    COUNT(DISTINCT sc.id) AS candidate_count,
+                    COUNT(DISTINCT r.us_session_date) AS independent_dates,
+                    SUM(CASE WHEN smo.outcome_eligible = 1 THEN 1 ELSE 0 END) AS validated_outcomes,
+                    SUM(CASE WHEN smo.outcome_eligible = 1 AND smo.estimated_net_pnl_eur_minor > 0 THEN 1 ELSE 0 END) AS profitable_outcomes,
+                    SUM(CASE WHEN smo.outcome_eligible = 1 AND smo.estimated_net_pnl_eur_minor < 0 THEN 1 ELSE 0 END) AS unprofitable_outcomes,
+                    AVG(CASE WHEN smo.outcome_eligible = 1 THEN smo.estimated_net_pnl_eur_minor END) AS mean_net_pnl_eur_minor
+                FROM shadow_candidates AS sc
+                JOIN research_runs AS r ON r.id = sc.research_run_id
+                LEFT JOIN shadow_mark_observations AS smo ON smo.candidate_id = sc.id
+                WHERE r.us_session_date >= (
+                    SELECT prospective_start_session_date
+                    FROM prospective_research_freeze_v1_runs
+                    ORDER BY id DESC LIMIT 1
+                )
+                GROUP BY sc.hypothesis_family;
+                """
+            ).fetchall()
+        )
+        similar_evidence_map = {
+            str(row.get("hypothesis_family") or ""): row
+            for row in similar_evidence_rows
+        }
+        for candidate in decision_desk_candidates:
+            evidence = similar_evidence_map.get(str(candidate.get("hypothesis_family") or ""), {})
+            candidate["similar_candidate_count"] = int(evidence.get("candidate_count") or 0)
+            candidate["similar_independent_dates"] = int(evidence.get("independent_dates") or 0)
+            candidate["similar_validated_outcomes"] = int(evidence.get("validated_outcomes") or 0)
+            candidate["similar_profitable_outcomes"] = int(evidence.get("profitable_outcomes") or 0)
+            candidate["similar_unprofitable_outcomes"] = int(evidence.get("unprofitable_outcomes") or 0)
+            candidate["similar_mean_net_pnl_eur_minor"] = evidence.get("mean_net_pnl_eur_minor")
 
         shadow_mark_history = _rows_to_dicts(
             conn.execute(

@@ -377,3 +377,30 @@ def test_cash_settlement_policy_is_explicit_not_inferred():
     assert '"XSP"' in policy
     assert "FAIL_CLOSED" in policy
     assert "BLOCKED_UNVERIFIED_SETTLEMENT" in policy
+
+
+
+def test_decision_desk_v2_surfaces_candidate_specific_synthesis_and_missing_evidence():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "Decision Desk V2" in app
+    assert "CONTINUE SHADOW" in app
+    assert "Candidate-specific scientific governance" in app
+    assert "Prospective evidence from similar candidates" in app
+    assert "Scenario stress" in app
+    assert "Arguments for / against" in app
+    assert "EVENT_RISK_CONTEXT_NOT_INTEGRATED" not in app  # blocker comes from decision module, not decorative UI copy
+    assert "Net calibrated EV is intentionally not fabricated" in app
+
+
+def test_decision_desk_v2_keeps_no_order_boundary():
+    files = [
+        ROOT / "src/decision/desk.py",
+        ROOT / "src/decision/governance.py",
+        ROOT / "src/decision/market_quality.py",
+        ROOT / "src/decision/evidence.py",
+        ROOT / "src/decision/scenarios.py",
+    ]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in files)
+    assert "submit_order" not in text
+    assert "place_order" not in text
+    assert "broker_order" not in text
