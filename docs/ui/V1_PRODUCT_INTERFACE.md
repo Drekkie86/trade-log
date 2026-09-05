@@ -104,3 +104,12 @@ one-off wording patches.
 - Theta latency is rounded for operator display while the underlying health contract is
   unchanged.
 - Streamlit width calls use the current `width="stretch"` API.
+
+## Package 9.5 — interaction and readability
+
+- Human-facing counts use Belgian-style grouping (`12.345`) and decimals use a comma (`12,4`) where decimals are meaningful. IDs, strikes and exact stored scientific values are not reformatted merely for decoration.
+- Major metrics, charts and tables carry small explanatory notes that state what the visual means and, where important, what must not be inferred from it.
+- Research-facing selection is view-only. Selecting a row or chart mark never changes admission, decision, evidence or stored research state.
+- Surfaced Observations supports Power-BI-style cross-filtering: a row or residual bar selection filters the other observation visuals by the selected underlying/direction/right, with an explicit active-filter strip and Clear filters action.
+- Research Runs supports row selection and narrows run-specific failure diagnostics when a matching research run exists.
+- Interactive chart selection uses Streamlit's Vega-Lite selection contract; no extra JavaScript or external chart runtime is added.

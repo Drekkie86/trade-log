@@ -223,11 +223,15 @@ def test_table_helper_omits_none_height_and_uses_streamlit_width_contract():
     assert 'use_container_width=True' not in helper
 
 
-def test_table_helper_has_single_central_dataframe_call():
+def test_table_helpers_keep_static_and_selectable_dataframe_calls_separate():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
-    helper = app.split("def _show_table(", 1)[1].split("st.set_page_config", 1)[0]
-    assert helper.count("st.dataframe(") == 1
-    assert "st.dataframe(frame, **dataframe_kwargs)" in helper
+    static_helper = app.split("def _show_table(", 1)[1].split("def _show_selectable_table(", 1)[0]
+    selectable_helper = app.split("def _show_selectable_table(", 1)[1].split("st.set_page_config", 1)[0]
+    assert static_helper.count("st.dataframe(") == 1
+    assert "st.dataframe(frame, **dataframe_kwargs)" in static_helper
+    assert selectable_helper.count("st.dataframe(") == 1
+    assert '"on_select": "rerun"' in selectable_helper
+    assert '"selection_mode": "single-row"' in selectable_helper
 
 
 def test_dashboard_market_clock_uses_real_backend_contract_keys():
@@ -276,11 +280,11 @@ def test_ops_failure_counts_have_warning_semantics():
     assert 'badge_tone="warn" if underlying_failures else "good"' in app
 
 
-def test_theta_latency_is_rounded_for_operator_display():
+def test_theta_latency_is_rounded_and_localized_for_operator_display():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
 
     assert "def _fmt_latency_ms" in app
-    assert 'f"{float(value):.1f} ms"' in app
+    assert '_fmt_number(float(value), decimals=1)' in app
     assert 'round(float(theta_display["latency_ms"]), 1)' in app
 
 
@@ -296,3 +300,48 @@ def test_streamlit_width_api_is_current():
 
     assert "use_container_width" not in app
     assert 'width="stretch"' in app
+
+
+def test_human_number_formatting_uses_belgian_readability_contract():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "def _fmt_number" in app
+    assert 'replace(",", "§").replace(".", ",").replace("§", ".")' in app
+    assert '_fmt_count(prospective["observation_rows"])' in app
+    assert '_fmt_number(theta_health.get("latency_ms")' not in app  # latency delegates centrally
+
+
+def test_research_visuals_have_explanatory_microcopy():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "How much evidence Christiania has collected" in app
+    assert "A surfaced observation is a question to investigate" in app
+    assert "Thesis assessment asks whether the original market idea was right" in app
+    assert "This is the pre-flight checklist for the product" in app
+
+
+def test_observations_support_view_only_cross_filtering():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "_chr_observation_filters" in app
+    assert "_show_observation_filter_strip" in app
+    assert 'key="observations_selectable_table"' in app
+    assert "st.vega_lite_chart(" in app
+    assert '"name": "observation_pick"' in app
+    assert 'on_select="rerun"' in app
+    assert 'selection_mode="observation_pick"' in app
+    assert "Clear filters" in app
+
+
+def test_research_run_selection_can_focus_failure_diagnostics():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert 'key="research_runs_selectable"' in app
+    assert 'selected_run.get("research_run_id")' in app
+    assert "Filtered to research run" in app
+
+
+def test_interaction_layer_has_no_external_javascript_or_trade_mutation_words():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    block = app.split('elif page == "Observations":', 1)[1].split('elif page == "Shadow Lab":', 1)[0]
+    assert "javascript" not in block.lower()
+    assert "submit_order" not in block
+    assert "place_order" not in block
+    assert "admission_enabled =" not in block
+    assert "decision_enabled =" not in block

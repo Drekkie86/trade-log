@@ -155,9 +155,98 @@ def _fmt_latency_ms(value) -> str:
     if value is None:
         return "—"
     try:
-        return f"{float(value):.1f} ms"
+        return f"{_fmt_number(float(value), decimals=1)} ms"
     except (TypeError, ValueError):
         return "—"
+
+
+def _fmt_number(value, *, decimals: int | None = None) -> str:
+    """Human-readable Belgian-style number formatting for UI display only."""
+    if value is None:
+        return "—"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    if decimals is None:
+        decimals = 0 if numeric.is_integer() else 2
+
+    rendered = f"{numeric:,.{decimals}f}"
+    # Python emits 12,345.67. Christiania displays 12.345,67.
+    return rendered.replace(",", "§").replace(".", ",").replace("§", ".")
+
+
+def _fmt_count(value) -> str:
+    return _fmt_number(int(value or 0), decimals=0)
+
+
+def _visual_note(text: str) -> None:
+    chart_note(text)
+
+
+def _selection_rows(event) -> list[int]:
+    if event is None:
+        return []
+    try:
+        selection = event.get("selection", {})
+        rows = selection.get("rows", [])
+        return [int(row) for row in rows]
+    except (AttributeError, TypeError, ValueError):
+        return []
+
+
+def _vega_selected_points(event, name: str) -> list[dict]:
+    if event is None:
+        return []
+    try:
+        selection = event.get("selection", {})
+        points = selection.get(name, [])
+        return [dict(point) for point in points if isinstance(point, dict)]
+    except (AttributeError, TypeError):
+        return []
+
+
+def _observation_filter_context() -> dict[str, str]:
+    return dict(st.session_state.get("_chr_observation_filters", {}))
+
+
+def _set_observation_filters(row: dict) -> bool:
+    desired = {}
+    for field in ("underlying", "surfaced_direction", "right"):
+        value = row.get(field)
+        if value not in (None, ""):
+            desired[field] = str(value)
+    if desired == _observation_filter_context():
+        return False
+    st.session_state["_chr_observation_filters"] = desired
+    return True
+
+
+def _clear_observation_filters() -> None:
+    st.session_state["_chr_observation_filters"] = {}
+
+
+def _filter_observations(frame: pd.DataFrame, filters: dict[str, str]) -> pd.DataFrame:
+    filtered = frame.copy()
+    for field, value in filters.items():
+        if field in filtered.columns:
+            filtered = filtered[filtered[field].astype(str) == str(value)]
+    return filtered
+
+
+def _show_observation_filter_strip(filters: dict[str, str]) -> None:
+    if not filters:
+        st.caption("Click a table row or chart bar to cross-filter this research view.")
+        return
+    labels = []
+    for field, value in filters.items():
+        labels.append(f"{_human_column_name(field)}: {value}")
+    left, right = st.columns([5, 1])
+    left.caption("Active filters · " + " · ".join(labels))
+    if right.button("Clear filters", key="clear_observation_filters", width="stretch"):
+        _clear_observation_filters()
+        st.rerun()
 
 
 def _show_full_text_details(frame: pd.DataFrame) -> None:
@@ -224,6 +313,39 @@ def _show_table(
     st.dataframe(frame, **dataframe_kwargs)
     _show_full_text_details(frame)
 
+
+def _show_selectable_table(
+    rows,
+    *,
+    key: str,
+    height: int | None = None,
+    columns: list[str] | None = None,
+):
+    """Render a single-row selectable table while preserving source-row order."""
+    source = pd.DataFrame(rows).reset_index(drop=True)
+    display = source.copy()
+    if columns:
+        available = [name for name in columns if name in display.columns]
+        display = display[available]
+    display = _humanize_dataframe(display)
+    kwargs = {
+        "width": "stretch",
+        "hide_index": True,
+        "key": key,
+        "on_select": "rerun",
+        "selection_mode": "single-row",
+    }
+    if height is not None:
+        kwargs["height"] = height
+    event = st.dataframe(display, **kwargs)
+    _show_full_text_details(display)
+    rows_selected = _selection_rows(event)
+    if not rows_selected:
+        return None
+    index = rows_selected[0]
+    if index < 0 or index >= len(source):
+        return None
+    return source.iloc[index].to_dict()
 
 
 st.set_page_config(
@@ -364,7 +486,7 @@ if page == "Dashboard":
                 [
                     ("Research daemon", _status_label(daemon_health.get("state")), daemon_health.get("state")),
                     ("Latest cycle", _status_label(latest_iteration.get("status") if latest_iteration else None), latest_iteration.get("status") if latest_iteration else None),
-                    ("Storage & backups", f"{backup_inventory.get('valid_files', 0)} verified", "READY" if backup_inventory.get("valid_files") else "WARN"),
+                    ("Storage & backups", f"{_fmt_count(backup_inventory.get('valid_files', 0))} verified", "READY" if backup_inventory.get("valid_files") else "WARN"),
                 ]
             ),
             badge_label="Healthy" if daemon_health.get("state") in {"HEALTHY", "NO_DAEMON_LEASE"} else daemon_health.get("state", "Unknown"),
@@ -402,8 +524,8 @@ if page == "Dashboard":
                 [
                     ("Run", str(latest_run.get("id") if latest_run else "—"), latest_run.get("status") if latest_run else None),
                     ("Status", _status_label(latest_run.get("status") if latest_run else None), latest_run.get("status") if latest_run else None),
-                    ("Succeeded", str(latest_run.get("succeeded_underlyings", 0) if latest_run else 0), "SUCCESS"),
-                    ("Failed", str(latest_run.get("failed_underlyings", 0) if latest_run else 0), "FAIL" if latest_run and latest_run.get("failed_underlyings") else "SUCCESS"),
+                    ("Succeeded", _fmt_count(latest_run.get("succeeded_underlyings", 0) if latest_run else 0), "SUCCESS"),
+                    ("Failed", _fmt_count(latest_run.get("failed_underlyings", 0) if latest_run else 0), "FAIL" if latest_run and latest_run.get("failed_underlyings") else "SUCCESS"),
                 ]
             ),
             badge_label="Latest",
@@ -412,11 +534,15 @@ if page == "Dashboard":
 
     section_heading("Research pulse", "Prospective evidence grows independently from product readiness.")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Prospective dates", prospective["independent_dates"], "first review at 5")
-    m2.metric("Observation rows", prospective["observation_rows"])
-    m3.metric("Surfaced observations", counts["surfaced_total"])
-    m4.metric("Shadow candidates", counts["shadow_candidates"])
-    m5.metric("Recovered samples", prospective["recovered_samples"], "provenance retained")
+    m1.metric("Prospective dates", _fmt_count(prospective["independent_dates"]), "first review at 5")
+    m2.metric("Observation rows", _fmt_count(prospective["observation_rows"]))
+    m3.metric("Surfaced observations", _fmt_count(counts["surfaced_total"]))
+    m4.metric("Shadow candidates", _fmt_count(counts["shadow_candidates"]))
+    m5.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "provenance retained")
+    _visual_note(
+        "How much evidence Christiania has collected. Prospective dates matter more than raw row count: "
+        "many observations from one day are still only one independent market date."
+    )
 
     chart_left, chart_right = st.columns([1, 1.35])
     with chart_left:
@@ -442,6 +568,10 @@ if page == "Dashboard":
                 ["id", "scheduled_for", "status", "research_run_id", "proposals_count", "blocked_count", "outcome_mark_count", "error_type"]
             ]
             _show_table(table, height=275)
+            _visual_note(
+                "One row is one daemon cycle: when it ran, whether it completed, and how many proposals, "
+                "blocks and shadow follow-up marks that cycle produced."
+            )
         else:
             st.info("No research runs recorded.")
 
@@ -468,7 +598,7 @@ if page == "Dashboard":
         section_heading("Quant model governance")
         registry = quant_model_catalog()
         enabled = sum(1 for row in registry if row.get("decision_enabled"))
-        st.metric("Registered models", len(registry), f"{enabled} decision-enabled")
+        st.metric("Registered models", _fmt_count(len(registry)), f"{_fmt_count(enabled)} decision-enabled")
         st.caption("Models are maps, not territory. All V1 challengers remain research-only.")
 
     with lower3:
@@ -476,8 +606,8 @@ if page == "Dashboard":
         latest_age = backup_inventory.get("latest_valid_age_hours")
         st.metric(
             "Valid backups",
-            backup_inventory.get("valid_files", 0),
-            "—" if latest_age is None else f"latest {latest_age:.1f}h ago",
+            _fmt_count(backup_inventory.get("valid_files", 0)),
+            "—" if latest_age is None else f"latest {_fmt_number(latest_age, decimals=1)}h ago",
         )
         if backup_inventory.get("invalid_files"):
             st.error(f"{backup_inventory['invalid_files']} invalid backup(s)")
@@ -486,10 +616,24 @@ if page == "Dashboard":
 
 elif page == "Research Runs":
     section_heading("Research runs", "Collection cadence, provider outcomes, proposals and marks.")
+    selected_run = None
     if snapshot.get("recent_iterations"):
-        _show_table(snapshot["recent_iterations"])
+        selected_run = _show_selectable_table(
+            snapshot["recent_iterations"],
+            key="research_runs_selectable",
+        )
+        _visual_note(
+            "One row is one scheduled research cycle. Select a row to focus the run-specific diagnostics below; "
+            "selection changes only the view, never the stored research state."
+        )
     else:
         st.info("No daemon iterations recorded.")
+
+    if selected_run:
+        st.caption(
+            f"Selected cycle {_fmt_count(selected_run.get('id'))} · research run "
+            f"{_safe(selected_run.get('research_run_id'))} · {_status_label(selected_run.get('status'))}"
+        )
 
     c1, c2 = st.columns(2)
     with c1:
@@ -501,7 +645,18 @@ elif page == "Research Runs":
 
     if quality.get("recent_failed_underlyings"):
         section_heading("Recent failed underlying samples", "Failure reasons remain explicit and queryable.")
-        _show_table(quality["recent_failed_underlyings"])
+        failed_rows = quality["recent_failed_underlyings"]
+        if selected_run and selected_run.get("research_run_id") is not None:
+            run_id = selected_run.get("research_run_id")
+            narrowed = [row for row in failed_rows if row.get("run_id") == run_id]
+            if narrowed:
+                failed_rows = narrowed
+                st.caption(f"Filtered to research run {run_id} from the selected cycle.")
+        _show_table(failed_rows)
+        _visual_note(
+            "These are individual underlying collections that failed. They stay visible so a completed cycle cannot "
+            "silently look cleaner than the data it actually collected."
+        )
 
 elif page == "Calibration":
     section_heading("Calibration", "Evidence accumulation and frozen prospective governance.")
@@ -514,9 +669,13 @@ elif page == "Calibration":
         "Decision and admission flags remain authoritative."
     )
     c1, c2, c3 = st.columns(3)
-    c1.metric("Independent dates", prospective["independent_dates"], "first descriptive review at 5")
-    c2.metric("Prospective rows", prospective["observation_rows"])
-    c3.metric("Recovered samples", prospective["recovered_samples"], "visible covariate")
+    c1.metric("Independent dates", _fmt_count(prospective["independent_dates"]), "first descriptive review at 5")
+    c2.metric("Prospective rows", _fmt_count(prospective["observation_rows"]))
+    c3.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "visible covariate")
+    _visual_note(
+        "This is evidence maturity, not a trading score. Independent dates are the main clock because repeated rows "
+        "inside one market day are not independent new days."
+    )
 
     st.progress(_pct(prospective["independent_dates"], 20), text=f"{prospective['independent_dates']}/20 dates toward preregistration review")
 
@@ -535,14 +694,93 @@ elif page == "Calibration":
 elif page == "Observations":
     section_heading("Surfaced observations", "OBSERVATIONAL ONLY — not validated edge and not trade signals. No broker-order path.")
     if snapshot.get("recent_anomalies"):
-        df = pd.DataFrame(snapshot["recent_anomalies"])
-        _show_table(df)
-        if "abs_iv_residual" in df:
-            st.bar_chart(df[["abs_iv_residual"]].head(25), height=260)
-            chart_note(
-                "Absolute IV residual for the most recently surfaced observations. "
-                "Larger bars mean larger model-versus-observation disagreement, not stronger trade conviction."
+        source_df = pd.DataFrame(snapshot["recent_anomalies"]).reset_index(drop=True)
+        source_df["observation_row"] = source_df.index.astype(int)
+        filters = _observation_filter_context()
+        _show_observation_filter_strip(filters)
+        filtered_df = _filter_observations(source_df, filters).reset_index(drop=True)
+
+        table_pick = _show_selectable_table(
+            filtered_df.drop(columns=["observation_row"], errors="ignore"),
+            key="observations_selectable_table",
+        )
+        if table_pick and _set_observation_filters(table_pick):
+            st.rerun()
+        _visual_note(
+            "Each row is an anomaly Christiania surfaced for investigation. Click a row to cross-filter this page. "
+            "A surfaced observation is a question to investigate, not a recommendation to trade."
+        )
+
+        if "abs_iv_residual" in filtered_df.columns and not filtered_df.empty:
+            chart_df = filtered_df.head(25).copy()
+            chart_df["abs_iv_residual"] = pd.to_numeric(
+                chart_df["abs_iv_residual"], errors="coerce"
             )
+            chart_df = chart_df.dropna(subset=["abs_iv_residual"])
+            if not chart_df.empty:
+                spec = {
+                    "mark": {"type": "bar", "tooltip": True},
+                    "params": [
+                        {
+                            "name": "observation_pick",
+                            "select": {
+                                "type": "point",
+                                "fields": ["observation_row", "underlying", "surfaced_direction", "right"],
+                                "on": "click",
+                                "clear": False,
+                            },
+                        }
+                    ],
+                    "encoding": {
+                        "x": {
+                            "field": "underlying",
+                            "type": "nominal",
+                            "title": "Underlying",
+                            "sort": None,
+                        },
+                        "y": {
+                            "field": "abs_iv_residual",
+                            "type": "quantitative",
+                            "title": "Absolute IV residual",
+                        },
+                        "opacity": {
+                            "condition": {"param": "observation_pick", "value": 1.0},
+                            "value": 0.45,
+                        },
+                        "tooltip": [
+                            {"field": "underlying", "type": "nominal", "title": "Underlying"},
+                            {"field": "expiration", "type": "nominal", "title": "Expiration"},
+                            {"field": "strike", "type": "quantitative", "title": "Strike"},
+                            {"field": "right", "type": "nominal", "title": "Right"},
+                            {"field": "abs_iv_residual", "type": "quantitative", "title": "Absolute IV residual"},
+                            {"field": "surfaced_direction", "type": "nominal", "title": "Direction"},
+                        ],
+                    },
+                }
+                chart_event = st.vega_lite_chart(
+                    chart_df,
+                    spec,
+                    width="stretch",
+                    height=280,
+                    key="observations_residual_chart",
+                    on_select="rerun",
+                    selection_mode="observation_pick",
+                )
+                selected_points = _vega_selected_points(chart_event, "observation_pick")
+                if selected_points:
+                    point = selected_points[0]
+                    row_id = point.get("observation_row")
+                    if row_id is not None:
+                        matches = source_df[source_df["observation_row"] == int(row_id)]
+                        if not matches.empty and _set_observation_filters(matches.iloc[0].to_dict()):
+                            st.rerun()
+                _visual_note(
+                    "Shows how far observed IV differs from the local model. Larger bars mean more disagreement, "
+                    "not stronger trade conviction. Click a bar to cross-filter the table and chart; use Clear filters to restore the full view."
+                )
+        st.caption(
+            f"Showing {_fmt_count(len(filtered_df))} of {_fmt_count(len(source_df))} recent surfaced observations."
+        )
     else:
         st.info("No surfaced observations recorded.")
 
@@ -553,10 +791,14 @@ elif page == "Shadow Lab":
     )
     tracking = snapshot.get("shadow_tracking", {})
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Proposals", counts["proposals_total"], f"{counts['proposals_blocked']} builder-blocked")
-    c2.metric("Admitted shadows", counts["admitted_total"], f"{counts['admission_blocked']} blocked")
-    c3.metric("Recorded marks", counts["shadow_marks"], f"{tracking.get('marked_candidates', 0)} candidate(s)")
-    c4.metric("Validated outcomes", tracking.get("validated_outcomes", 0), "outcome-eligible only")
+    c1.metric("Proposals", _fmt_count(counts["proposals_total"]), f"{_fmt_count(counts['proposals_blocked'])} builder-blocked")
+    c2.metric("Admitted shadows", _fmt_count(counts["admitted_total"]), f"{_fmt_count(counts['admission_blocked'])} blocked")
+    c3.metric("Recorded marks", _fmt_count(counts["shadow_marks"]), f"{_fmt_count(tracking.get('marked_candidates', 0))} candidate(s)")
+    c4.metric("Validated outcomes", _fmt_count(tracking.get("validated_outcomes", 0)), "outcome-eligible only")
+    _visual_note(
+        "This is the follow-up laboratory: proposals are ideas, admitted shadows are hypothetical experiments we track, "
+        "marks are later valuations, and only outcome-eligible marks may become validated outcomes."
+    )
 
     followup = snapshot.get("shadow_candidate_followup", [])
     if followup:
@@ -578,6 +820,10 @@ elif page == "Shadow Lab":
         b.metric("Current state", _status_label(selected.get("current_state")))
         c.metric("Thesis assessment", selected.get("thesis_assessment") or "NOT YET SCORED")
         d.metric("Validated trade result", selected.get("validated_trade_result") or "NOT YET VALIDATED")
+        _visual_note(
+            "Thesis assessment asks whether the original market idea was right. Validated trade result asks whether the "
+            "hypothetical structure made money after the allowed outcome rules. Those are deliberately different questions."
+        )
 
         details = pd.DataFrame([selected])
         _show_table(
@@ -679,6 +925,9 @@ elif page == "Quant Models":
     )
 
     _show_table(quant_model_catalog())
+    _visual_note(
+        "These are research tools that can price and disagree. A model appearing here does not give it permission to admit a candidate or make a trading decision."
+    )
 
     with st.form("quant-vanilla-bench"):
         c1, c2, c3, c4 = st.columns(4)
@@ -725,11 +974,11 @@ elif page == "Quant Models":
                 )
             with right_col:
                 disagreement = result["disagreement"]
-                st.metric("Model range", f"{disagreement['absolute_range']:.4f}")
-                st.metric("Consensus mean", f"{disagreement['mean']:.4f}")
+                st.metric("Model range", _fmt_number(disagreement["absolute_range"], decimals=4))
+                st.metric("Consensus mean", _fmt_number(disagreement["mean"], decimals=4))
                 st.metric(
                     "Market − consensus",
-                    "—" if disagreement["market_minus_consensus"] is None else f"{disagreement['market_minus_consensus']:.4f}",
+                    "—" if disagreement["market_minus_consensus"] is None else _fmt_number(disagreement["market_minus_consensus"], decimals=4),
                 )
             section_heading("Analytic Greeks")
             _show_table([result["greeks"]])
@@ -792,17 +1041,20 @@ elif page == "Ops":
         c2.metric(
             "Scientific state",
             _status_label(readiness["scientific_state"]),
-            f"{readiness['independent_prospective_dates']} prospective date(s)",
+            f"{_fmt_count(readiness['independent_prospective_dates'])} prospective date(s)",
         )
         c3.metric(
             "Latest verified backup",
             "None"
             if backup_inventory["latest_valid_age_hours"] is None
-            else f"{backup_inventory['latest_valid_age_hours']:.1f}h ago",
-            f"{backup_inventory['valid_files']} valid / {backup_inventory['invalid_files']} invalid",
+            else f"{_fmt_number(backup_inventory['latest_valid_age_hours'], decimals=1)}h ago",
+            f"{_fmt_count(backup_inventory['valid_files'])} valid / {_fmt_count(backup_inventory['invalid_files'])} invalid",
         )
 
         _show_table(readiness["checks"])
+        _visual_note(
+            "This is the pre-flight checklist for the product. Passing operational checks does not promote the science or enable trading decisions."
+        )
 
         section_heading("Data-quality pulse")
         iterations = quality.get("iteration_window", {})
@@ -814,14 +1066,14 @@ elif page == "Ops":
         with q1:
             card(
                 "Recent completed",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{int(iterations.get("completed", 0) or 0)}</div>',
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(iterations.get('completed', 0))}</div>',
                 badge_label="Operational",
                 badge_tone="info",
             )
         with q2:
             card(
                 "Failed / orphaned",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{failed_or_orphaned}</div>'
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(failed_or_orphaned)}</div>'
                 '<div style="margin-top:.35rem;color:#C6D2D9">Recent daemon iterations requiring review.</div>',
                 badge_label="Review" if failed_or_orphaned else "None",
                 badge_tone="warn" if failed_or_orphaned else "good",
@@ -829,7 +1081,7 @@ elif page == "Ops":
         with q3:
             card(
                 "Underlying failures",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{underlying_failures}</div>'
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(underlying_failures)}</div>'
                 '<div style="margin-top:.35rem;color:#C6D2D9">Failed underlying collections in the quality window.</div>',
                 badge_label="Review" if underlying_failures else "None",
                 badge_tone="warn" if underlying_failures else "good",
@@ -837,11 +1089,14 @@ elif page == "Ops":
         with q4:
             card(
                 "Recovered underlyings",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{int(underlyings.get("recovered", 0) or 0)}</div>'
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(underlyings.get('recovered', 0))}</div>'
                 '<div style="margin-top:.35rem;color:#C6D2D9">Recovery provenance remains retained.</div>',
                 badge_label="Provenance",
                 badge_tone="info",
             )
+        _visual_note(
+            "Failures are warnings, not hidden noise. Recovered samples stay labelled so later analysis can test whether recovery status changes their behaviour."
+        )
 
         if quality.get("failure_types"):
             _show_table(quality["failure_types"])
@@ -862,7 +1117,7 @@ elif page == "Ops":
         c1, c2, c3 = st.columns(3)
         c1.metric("Version", CHRISTIANIA_VERSION)
         c2.metric("Git state", "Clean" if manifest["git_clean"] else "Dirty / unavailable")
-        c3.metric("Burn-in", _status_label(burn["state"]), f"{burn['duration_hours']:.1f}h")
+        c3.metric("Burn-in", _status_label(burn["state"]), f"{_fmt_number(burn['duration_hours'], decimals=1)}h")
         section_heading("Release fingerprint")
         st.json(manifest)
         section_heading("Burn-in report")
@@ -878,7 +1133,7 @@ elif page == "Ops":
         c1.metric("Schema", f"v{database['schema_version']}")
         c2.metric("Journal", str(database["journal_mode"]).upper())
         c3.metric("Quick check", _status_label(database["quick_check"]))
-        c4.metric("FK violations", database["foreign_key_violation_count"])
+        c4.metric("FK violations", _fmt_count(database["foreign_key_violation_count"]))
 
         theta_display = dict(theta_health)
         if theta_display.get("latency_ms") is not None:
