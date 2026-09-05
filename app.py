@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pandas as pd
 import streamlit as st
@@ -21,12 +22,123 @@ from src.ui import (
     observation_banner,
     section_heading,
     status_dot,
+    chart_note,
 )
 from src.version import CHRISTIANIA_VERSION
 
 ROOT = Path(__file__).resolve().parent
 LOGO_PATH = ROOT / "assets" / "christiania_logo.png"
 QUANT_BENCH_LEGACY_LABEL = "Quant Bench"  # retained for V1 compatibility contracts
+
+COLUMN_LABELS = {
+    "id": "ID",
+    "scheduled_for": "Scheduled for",
+    "started_at": "Started at",
+    "completed_at": "Completed at",
+    "status": "Status",
+    "research_run_id": "Research run ID",
+    "proposals_count": "Proposals",
+    "admitted_count": "Admitted",
+    "blocked_count": "Blocked",
+    "outcome_mark_count": "Shadow marks",
+    "error_type": "Error type",
+    "model_key": "Model",
+    "model_version": "Version",
+    "model_family": "Model family",
+    "governance_role": "Governance role",
+    "evidence_use_enabled": "Evidence use enabled",
+    "admission_enabled": "Admission enabled",
+    "decision_enabled": "Decision enabled",
+    "hypothesis_key": "Hypothesis",
+    "primary_unit": "Primary unit",
+    "primary_metric": "Primary metric",
+    "minimum_independent_dates": "Minimum independent dates",
+    "hypothesis_state": "Hypothesis state",
+    "us_session_date": "Session date",
+    "underlying": "Underlying",
+    "expiration": "Expiration",
+    "strike": "Strike",
+    "right": "Right",
+    "iv_residual": "IV residual",
+    "abs_iv_residual": "Absolute IV residual",
+    "surfaced_direction": "Surfaced direction",
+    "scanner_version": "Scanner version",
+    "target_strike": "Target strike",
+    "anomaly_direction": "Anomaly direction",
+    "proposal_state": "Proposal state",
+    "reason_code": "Reason",
+    "structure_id": "Structure",
+    "max_theoretical_loss_minor": "Max theoretical loss (minor units)",
+    "risk_currency": "Risk currency",
+    "created_at": "Created at",
+    "surfaced_at": "Surfaced at",
+    "universe_status": "Universe status",
+    "structure_version": "Structure version",
+    "admission_label": "Admission label",
+    "candidate_id": "Candidate ID",
+    "observed_at": "Observed at",
+    "provider": "Provider",
+    "structure_mark_usd_minor": "Structure mark (USD cents)",
+    "gross_pnl_usd_minor": "Gross P&L (USD cents)",
+    "estimated_net_pnl_usd_minor": "Estimated net P&L (USD cents)",
+    "gross_pnl_eur_minor": "Gross P&L (EUR cents)",
+    "estimated_net_pnl_eur_minor": "Estimated net P&L (EUR cents)",
+    "quality_state": "Mark quality",
+    "measurement_role": "Measurement role",
+    "outcome_eligible": "Outcome eligible",
+    "mark_count": "Mark count",
+    "latest_mark_at": "Latest mark",
+    "latest_estimated_net_pnl_eur_minor": "Latest est. net P&L (EUR cents)",
+    "latest_measurement_role": "Latest measurement role",
+    "latest_outcome_eligible": "Latest outcome eligible",
+    "failure_type": "Failure type",
+    "samples": "Samples",
+    "blocking": "Blocking",
+    "category": "Category",
+    "detail": "Detail",
+    "name": "Check",
+    "state": "State",
+    "path": "Path",
+    "size_bytes": "Size (bytes)",
+    "schema_version": "Schema version",
+    "integrity": "Integrity",
+    "fk_violation_count": "FK violations",
+    "age_hours": "Age (hours)",
+    "valid": "Valid",
+    "model_id": "Model",
+    "family": "Family",
+    "role": "Role",
+    "notes": "Notes",
+}
+
+
+def _human_column_name(name: str) -> str:
+    return COLUMN_LABELS.get(name, name.replace("_", " ").strip().title())
+
+
+def _humanize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    return frame.rename(columns={name: _human_column_name(str(name)) for name in frame.columns})
+
+
+def _show_table(
+    rows,
+    *,
+    height: int | None = None,
+    columns: list[str] | None = None,
+) -> None:
+    frame = pd.DataFrame(rows)
+    if columns:
+        available = [name for name in columns if name in frame.columns]
+        frame = frame[available]
+    frame = _humanize_dataframe(frame)
+    st.dataframe(
+        frame,
+        use_container_width=True,
+        hide_index=True,
+        height=height,
+    )
+
+
 
 st.set_page_config(
     page_title="Christiania",
@@ -73,24 +185,35 @@ def _html_rows(items: list[tuple[str, str, str | None]]) -> str:
     return "".join(rows)
 
 
-@st.cache_data(ttl=30)
-def _load_snapshot():
-    return load_command_deck(include_provider_health=True)
+RUNTIME_REFRESH_SECONDS = 180
 
 
-@st.cache_data(ttl=30)
-def _load_backup_inventory():
-    return inventory_backups().as_dict()
+def _load_runtime_state(*, force: bool = False):
+    now = time.monotonic()
+    loaded_at = st.session_state.get("_chr_runtime_loaded_at", 0.0)
+    stale = (now - loaded_at) >= RUNTIME_REFRESH_SECONDS
+
+    if force or "_chr_snapshot" not in st.session_state or stale:
+        with st.spinner("Refreshing Christiania research state…"):
+            st.session_state["_chr_snapshot"] = load_command_deck(
+                include_provider_health=True
+            )
+            st.session_state["_chr_backup_inventory"] = inventory_backups().as_dict()
+            st.session_state["_chr_runtime_loaded_at"] = now
+
+    return (
+        st.session_state["_chr_snapshot"],
+        st.session_state["_chr_backup_inventory"],
+    )
 
 
-snapshot = _load_snapshot()
-backup_inventory = _load_backup_inventory()
+snapshot, backup_inventory = _load_runtime_state()
 
 with st.sidebar:
     if LOGO_PATH.exists():
         st.image(str(LOGO_PATH), use_container_width=True)
     st.markdown(
-        '<div class="chr-side-caption">DISCIPLINED RESEARCH FOR UNCERTAIN SEAS</div>',
+        '<div class="chr-side-caption">NO CRYING IN THE CASINO</div>',
         unsafe_allow_html=True,
     )
     st.divider()
@@ -98,29 +221,26 @@ with st.sidebar:
     page = st.radio(
         "Navigation",
         [
-            "Dashboard",
-            "Research Runs",
-            "Calibration",
-            "Observations",
-            "Shadow Lab",
-            "Quant Models",
-            "Casino / 0DTE Lab",
-            "Readiness",
-            "Release Status",
-            "System",
+            "⚓ Dashboard",
+            "📜 Research Runs",
+            "⚙ Calibration",
+            "◉ Observations",
+            "⚗ Shadow Lab",
+            "∑ Quant Models",
+            "🎲 Casino / 0DTE Lab",
+            "✓ Readiness",
+            "◆ Release Status",
+            "⚙ System",
         ],
         label_visibility="collapsed",
     )
+    page = page.split(" ", 1)[1]
 
     st.divider()
     if st.button("↻ Refresh deck", use_container_width=True):
-        st.cache_data.clear()
+        _load_runtime_state(force=True)
         st.rerun()
 
-    st.markdown(
-        '<div class="chr-side-quote">“BETTER QUESTIONS<br>LEAD TO CALMER SEAS.”</div>',
-        unsafe_allow_html=True,
-    )
     st.caption(f"Christiania {CHRISTIANIA_VERSION} · research preview · No broker-order path.")
 
 hero(
@@ -225,6 +345,10 @@ if page == "Dashboard":
             df["cycle"] = range(1, len(df) + 1)
             chart_df = df.set_index("cycle")[["proposals_count", "blocked_count", "outcome_mark_count"]].fillna(0)
             st.line_chart(chart_df, height=275)
+            chart_note(
+                "Shows proposal, block and shadow-mark counts across the most recent daemon cycles; "
+                "it is operational activity, not performance."
+            )
         else:
             st.info("No daemon iterations recorded.")
 
@@ -235,7 +359,7 @@ if page == "Dashboard":
             table = pd.DataFrame(rows)[
                 ["id", "scheduled_for", "status", "research_run_id", "proposals_count", "blocked_count", "outcome_mark_count", "error_type"]
             ]
-            st.dataframe(table, use_container_width=True, hide_index=True, height=275)
+            _show_table(table, height=275)
         else:
             st.info("No research runs recorded.")
 
@@ -276,7 +400,7 @@ if page == "Dashboard":
 elif page == "Research Runs":
     section_heading("Research runs", "Collection cadence, provider outcomes, proposals and marks.")
     if snapshot.get("recent_iterations"):
-        st.dataframe(pd.DataFrame(snapshot["recent_iterations"]), use_container_width=True, hide_index=True)
+        _show_table(snapshot["recent_iterations"])
     else:
         st.info("No daemon iterations recorded.")
 
@@ -290,7 +414,7 @@ elif page == "Research Runs":
 
     if quality.get("recent_failed_underlyings"):
         section_heading("Recent failed underlying samples", "Failure reasons remain explicit and queryable.")
-        st.dataframe(pd.DataFrame(quality["recent_failed_underlyings"]), use_container_width=True, hide_index=True)
+        _show_table(quality["recent_failed_underlyings"])
 
 elif page == "Calibration":
     section_heading("Calibration", "Evidence accumulation and frozen prospective governance.")
@@ -302,37 +426,104 @@ elif page == "Calibration":
     st.progress(_pct(prospective["independent_dates"], 20), text=f"{prospective['independent_dates']}/20 dates toward preregistration review")
 
     section_heading("Frozen hypotheses")
-    st.dataframe(pd.DataFrame(snapshot.get("hypotheses", [])), use_container_width=True, hide_index=True)
+    _show_table(snapshot.get("hypotheses", []))
 
     section_heading("Research model registry")
-    st.dataframe(pd.DataFrame(snapshot.get("models", [])), use_container_width=True, hide_index=True)
+    _show_table(snapshot.get("models", []))
 
 elif page == "Observations":
     section_heading("Surfaced observations", "OBSERVATIONAL ONLY — not validated edge and not trade signals.")
     if snapshot.get("recent_anomalies"):
         df = pd.DataFrame(snapshot["recent_anomalies"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        _show_table(df)
         if "abs_iv_residual" in df:
             st.bar_chart(df[["abs_iv_residual"]].head(25), height=260)
+            chart_note(
+                "Absolute IV residual for the most recently surfaced observations. "
+                "Larger bars mean larger model-versus-observation disagreement, not stronger trade conviction."
+            )
     else:
         st.info("No surfaced observations recorded.")
 
 elif page == "Shadow Lab":
-    section_heading("Shadow Lab", "Alternative ideas, same discipline. No live execution.")
-    c1, c2, c3 = st.columns(3)
+    section_heading(
+        "Shadow Lab",
+        "Alternative ideas, same discipline. Candidates are followed through time without live execution.",
+    )
+    tracking = snapshot.get("shadow_tracking", {})
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Proposals", counts["proposals_total"], f"{counts['proposals_blocked']} builder-blocked")
     c2.metric("Admitted shadows", counts["admitted_total"], f"{counts['admission_blocked']} blocked")
-    c3.metric("Shadow marks", counts["shadow_marks"])
+    c3.metric("Shadow marks", counts["shadow_marks"], f"{tracking.get('marked_candidates', 0)} candidate(s) marked")
+    c4.metric("Validated outcomes", tracking.get("validated_outcomes", 0), "separate from stress marks")
+
+    section_heading(
+        "Candidate tracking over time",
+        "The system does track admitted shadow candidates after admission. "
+        "Most current marks are conservative liquidation-stress measurements, not yet validated outcome evidence.",
+    )
+    mark_rows = snapshot.get("shadow_mark_history", [])
+    if mark_rows:
+        marks = pd.DataFrame(mark_rows)
+        marks["Observed"] = pd.to_datetime(marks["observed_at"], errors="coerce")
+        marks["Candidate"] = (
+            "#" + marks["candidate_id"].astype(str) + " · " + marks["underlying"].astype(str)
+        )
+        marks["Estimated net P&L (€)"] = (
+            pd.to_numeric(marks["estimated_net_pnl_eur_minor"], errors="coerce") / 100.0
+        )
+        plot = (
+            marks.dropna(subset=["Observed", "Estimated net P&L (€)"])
+            .pivot_table(
+                index="Observed",
+                columns="Candidate",
+                values="Estimated net P&L (€)",
+                aggfunc="last",
+            )
+            .sort_index()
+        )
+        if not plot.empty:
+            st.line_chart(plot, height=300)
+            chart_note(
+                "Estimated net EUR P&L of recorded shadow marks through time. "
+                "Unless a row is explicitly outcome-eligible, these are conservative independent-leg "
+                "liquidation stress marks and must not be interpreted as proof that the thesis was right."
+            )
+        _show_table(
+            mark_rows,
+            columns=[
+                "candidate_id",
+                "underlying",
+                "surfaced_at",
+                "observed_at",
+                "estimated_net_pnl_eur_minor",
+                "quality_state",
+                "measurement_role",
+                "outcome_eligible",
+            ],
+        )
+    else:
+        st.info(
+            "No shadow mark observations have been recorded yet. "
+            "Once the daemon marks admitted candidates, their trajectory will appear here."
+        )
+
+    section_heading("Candidate follow-up summary")
+    followup = snapshot.get("shadow_candidate_followup", [])
+    if followup:
+        _show_table(followup)
+    else:
+        st.info("No admitted candidate has follow-up marks yet.")
 
     section_heading("Recent structure proposals")
     if snapshot.get("recent_proposals"):
-        st.dataframe(pd.DataFrame(snapshot["recent_proposals"]), use_container_width=True, hide_index=True)
+        _show_table(snapshot["recent_proposals"])
     else:
         st.info("No structure proposals recorded.")
 
     section_heading("Recent shadow candidates")
     if snapshot.get("recent_candidates"):
-        st.dataframe(pd.DataFrame(snapshot["recent_candidates"]), use_container_width=True, hide_index=True)
+        _show_table(snapshot["recent_candidates"])
     else:
         st.info("No shadow candidates recorded.")
 
@@ -343,7 +534,7 @@ elif page == "Quant Models":
         "No model on this page can admit a candidate or submit an order."
     )
 
-    st.dataframe(pd.DataFrame(quant_model_catalog()), use_container_width=True, hide_index=True)
+    _show_table(quant_model_catalog())
 
     with st.form("quant-vanilla-bench"):
         c1, c2, c3, c4 = st.columns(4)
@@ -384,6 +575,10 @@ elif page == "Quant Models":
             left, right_col = st.columns([1.15, 0.85])
             with left:
                 st.bar_chart(prices, height=330)
+                chart_note(
+                    "Compares research-only model prices for the same option inputs. "
+                    "Dispersion is a diagnostic of model disagreement, not a trading signal."
+                )
             with right_col:
                 disagreement = result["disagreement"]
                 st.metric("Model range", f"{disagreement['absolute_range']:.4f}")
@@ -393,7 +588,7 @@ elif page == "Quant Models":
                     "—" if disagreement["market_minus_consensus"] is None else f"{disagreement['market_minus_consensus']:.4f}",
                 )
             section_heading("Analytic Greeks")
-            st.dataframe(pd.DataFrame([result["greeks"]]), use_container_width=True, hide_index=True)
+            _show_table([result["greeks"]])
             with st.expander("Model diagnostics"):
                 st.json(
                     {
@@ -445,7 +640,7 @@ elif page == "Readiness":
         f"{backup_inventory['valid_files']} valid / {backup_inventory['invalid_files']} invalid",
     )
 
-    st.dataframe(pd.DataFrame(readiness["checks"]), use_container_width=True, hide_index=True)
+    _show_table(readiness["checks"])
 
     section_heading("Data-quality pulse")
     q1, q2, q3, q4 = st.columns(4)
@@ -457,11 +652,11 @@ elif page == "Readiness":
     q4.metric("Recovered underlyings", underlyings.get("recovered", 0))
 
     if quality.get("failure_types"):
-        st.dataframe(pd.DataFrame(quality["failure_types"]), use_container_width=True, hide_index=True)
+        _show_table(quality["failure_types"])
 
     section_heading("Backup inventory")
     if backup_inventory["entries"]:
-        st.dataframe(pd.DataFrame(backup_inventory["entries"]), use_container_width=True, hide_index=True)
+        _show_table(backup_inventory["entries"])
     else:
         st.warning("No verified backup files have been created yet.")
 

@@ -68,15 +68,16 @@ def test_sqlite_runtime_sidecars_are_ignored():
     assert "*.db-journal" in ignore
 
 
-def test_app_command_deck_uses_short_cache_and_force_refresh():
+def test_app_command_deck_uses_session_cache_and_force_refresh():
     app = (
         ROOT / "app.py"
     ).read_text(
         encoding="utf-8"
     )
 
-    assert "@st.cache_data(ttl=30)" in app
-    assert "st.cache_data.clear()" in app
+    assert "RUNTIME_REFRESH_SECONDS = 180" in app
+    assert 'st.session_state["_chr_snapshot"]' in app
+    assert "_load_runtime_state(force=True)" in app
 
 
 def test_command_deck_exposes_market_and_daemon_health():

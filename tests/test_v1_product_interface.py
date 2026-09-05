@@ -90,3 +90,45 @@ def test_streamlit_theme_matches_product_palette():
     assert 'primaryColor = "#D9A84E"' in text
     assert 'backgroundColor = "#031522"' in text
     assert 'secondaryBackgroundColor = "#08283E"' in text
+
+
+def test_ui_polish_keeps_navigation_fast_and_explanatory():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    components = (ROOT / "src/ui/components.py").read_text(encoding="utf-8")
+    theme = (ROOT / "src/ui/theme.py").read_text(encoding="utf-8")
+
+    assert "st.session_state" in app
+    assert "RUNTIME_REFRESH_SECONDS = 180" in app
+    assert "chart_note(" in app
+    assert "chr-chart-note" in theme
+    assert "padding-top: 4.75rem" in theme
+
+
+def test_sidebar_uses_new_motto_and_removes_old_quote():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "NO CRYING IN THE CASINO" in app
+    assert "BETTER QUESTIONS" not in app
+    assert "LEAD TO CALMER SEAS" not in app
+
+
+def test_tables_use_human_readable_column_labels():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert '"scheduled_for": "Scheduled for"' in app
+    assert '"research_run_id": "Research run ID"' in app
+    assert '"outcome_mark_count": "Shadow marks"' in app
+    assert "_humanize_dataframe" in app
+    assert "_show_table(" in app
+
+
+def test_shadow_lab_exposes_followup_and_measurement_semantics():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    read_model = (ROOT / "src/dashboard/read_model.py").read_text(encoding="utf-8")
+
+    assert "Candidate tracking over time" in app
+    assert "Validated outcomes" in app
+    assert "liquidation stress marks" in app
+    assert "shadow_mark_history" in read_model
+    assert "shadow_candidate_followup" in read_model
+    assert "outcome_eligible" in read_model

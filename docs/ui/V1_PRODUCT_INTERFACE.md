@@ -33,3 +33,20 @@ The V1 product information architecture is:
 The V1 palette is deep navy, Copenhagen blue/teal, brass/gold, warm ivory, green for healthy states, amber for caution and red only for failure or the isolated Casino boundary.
 
 The interface uses the logo and restrained nautical ornamentation to establish identity without compromising data density or readability.
+
+
+## Package 9.1 usability refinement
+
+The V1 interface now keeps the runtime snapshot in the Streamlit session so navigation
+does not repeatedly invoke provider/database collection on every page selection. The
+operator can refresh explicitly, and a bounded three-minute refresh window prevents a
+long-lived session from remaining indefinitely stale.
+
+All research tables translate database field names into human-readable labels. Charts
+carry explanatory footnotes that state what is being measured and, where relevant,
+what must not be inferred from the visualization.
+
+The Shadow Lab exposes candidate follow-up marks over time. Current independent-leg
+liquidation stress marks remain explicitly distinct from validated package outcomes;
+`outcome_eligible` is surfaced rather than silently treating every mark as proof that a
+candidate thesis was right.

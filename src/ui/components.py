@@ -65,6 +65,15 @@ def section_heading(title: str, caption: str | None = None) -> None:
     )
 
 
+
+def chart_note(text: str) -> None:
+    """Render a compact explanatory footnote below a chart."""
+    st.markdown(
+        f'<div class="chr-chart-note">↳ {escape(text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def card(title: str, body_html: str, *, badge_label: str | None = None, badge_tone: str | None = None) -> None:
     badge_html = badge(badge_label, tone=badge_tone) if badge_label else ""
     st.markdown(

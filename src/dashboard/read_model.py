@@ -488,6 +488,104 @@ def load_command_deck(
             ).fetchall()
         )
 
+        shadow_mark_history = _rows_to_dicts(
+            conn.execute(
+                '''
+                SELECT
+                    smo.id,
+                    smo.candidate_id,
+                    sc.underlying,
+                    sc.surfaced_at,
+                    smo.observed_at,
+                    smo.research_run_id,
+                    smo.provider,
+                    smo.structure_mark_usd_minor,
+                    smo.gross_pnl_usd_minor,
+                    smo.estimated_net_pnl_usd_minor,
+                    smo.gross_pnl_eur_minor,
+                    smo.estimated_net_pnl_eur_minor,
+                    smo.quality_state,
+                    smo.measurement_role,
+                    smo.outcome_eligible
+                FROM shadow_mark_observations AS smo
+                JOIN shadow_candidates AS sc
+                  ON sc.id = smo.candidate_id
+                ORDER BY smo.observed_at DESC, smo.id DESC
+                LIMIT 250;
+                '''
+            ).fetchall()
+        )
+
+        shadow_candidate_followup = _rows_to_dicts(
+            conn.execute(
+                '''
+                WITH ranked_marks AS (
+                    SELECT
+                        smo.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY smo.candidate_id
+                            ORDER BY smo.observed_at DESC, smo.id DESC
+                        ) AS mark_rank
+                    FROM shadow_mark_observations AS smo
+                ),
+                mark_counts AS (
+                    SELECT
+                        candidate_id,
+                        COUNT(*) AS mark_count,
+                        SUM(CASE WHEN outcome_eligible = 1 THEN 1 ELSE 0 END)
+                            AS validated_outcomes
+                    FROM shadow_mark_observations
+                    GROUP BY candidate_id
+                )
+                SELECT
+                    sc.id AS candidate_id,
+                    sc.underlying,
+                    sc.surfaced_at,
+                    sc.structure_id,
+                    sc.admission_label,
+                    COALESCE(mc.mark_count, 0) AS mark_count,
+                    rm.observed_at AS latest_mark_at,
+                    rm.estimated_net_pnl_eur_minor
+                        AS latest_estimated_net_pnl_eur_minor,
+                    rm.quality_state AS latest_quality_state,
+                    rm.measurement_role AS latest_measurement_role,
+                    rm.outcome_eligible AS latest_outcome_eligible,
+                    COALESCE(mc.validated_outcomes, 0) AS validated_outcomes
+                FROM shadow_candidates AS sc
+                LEFT JOIN mark_counts AS mc
+                  ON mc.candidate_id = sc.id
+                LEFT JOIN ranked_marks AS rm
+                  ON rm.candidate_id = sc.id
+                 AND rm.mark_rank = 1
+                ORDER BY sc.id DESC
+                LIMIT 100;
+                '''
+            ).fetchall()
+        )
+
+        shadow_tracking_row = conn.execute(
+            '''
+            SELECT
+                COUNT(*) AS mark_observations,
+                COUNT(DISTINCT candidate_id) AS marked_candidates,
+                SUM(CASE WHEN outcome_eligible = 1 THEN 1 ELSE 0 END)
+                    AS validated_outcomes
+            FROM shadow_mark_observations;
+            '''
+        ).fetchone()
+
+        shadow_tracking = {
+            "mark_observations": int(
+                shadow_tracking_row["mark_observations"] or 0
+            ),
+            "marked_candidates": int(
+                shadow_tracking_row["marked_candidates"] or 0
+            ),
+            "validated_outcomes": int(
+                shadow_tracking_row["validated_outcomes"] or 0
+            ),
+        }
+
         recovery_summary = _rows_to_dicts(
             conn.execute(
                 '''
@@ -631,6 +729,9 @@ def load_command_deck(
         "recent_anomalies": recent_anomalies,
         "recent_proposals": recent_proposals,
         "recent_candidates": recent_candidates,
+        "shadow_mark_history": shadow_mark_history,
+        "shadow_candidate_followup": shadow_candidate_followup,
+        "shadow_tracking": shadow_tracking,
         "recovery_summary": recovery_summary,
         "data_quality": data_quality,
     }

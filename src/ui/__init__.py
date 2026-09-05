@@ -3,6 +3,7 @@
 from .theme import BRAND_COLORS, inject_christiania_theme
 from .components import (
     badge,
+    chart_note,
     card,
     hero,
     observation_banner,
@@ -14,6 +15,7 @@ __all__ = [
     "BRAND_COLORS",
     "inject_christiania_theme",
     "badge",
+    "chart_note",
     "card",
     "hero",
     "observation_banner",

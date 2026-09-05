@@ -76,10 +76,19 @@ html, body, [data-testid="stAppViewContainer"] {
   border-left: 3px solid var(--chr-gold);
 }
 
-.block-container {
+.block-container,
+[data-testid="stMainBlockContainer"] {
   max-width: 1680px;
-  padding-top: 1.3rem;
+  padding-top: 4.75rem !important;
   padding-bottom: 3rem;
+}
+
+[data-testid="stSidebar"] {
+  min-width: 18rem;
+}
+
+[data-testid="stSidebarContent"] {
+  padding-top: 0.75rem;
 }
 
 h1, h2, h3, .chr-serif {
@@ -281,6 +290,17 @@ h1, h2, h3 {
   letter-spacing: 0.14em;
   font-size: 0.68rem;
   margin-top: 0.35rem;
+}
+
+.chr-chart-note {
+  margin: -0.1rem 0 0.8rem;
+  color: var(--chr-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  border-left: 2px solid rgba(217,168,78,0.38);
+  padding: 0.38rem 0.65rem;
+  background: rgba(3,21,34,0.34);
+  border-radius: 0 6px 6px 0;
 }
 
 .chr-side-quote {
