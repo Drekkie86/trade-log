@@ -212,3 +212,21 @@ def test_ui_exports_and_app_imports_resolve_structurally():
     assert app_ui_imports <= bound_names
     assert "observation_banner" not in app_ui_imports
     assert "observation_banner" not in component_exports
+
+
+def test_table_helper_omits_none_height_and_uses_streamlit_width_contract():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert 'dataframe_kwargs = {' in app
+    assert '"width": "stretch"' in app
+    assert 'if height is not None:' in app
+    assert 'dataframe_kwargs["height"] = height' in app
+    assert 'height=height' not in app
+    helper = app.split("def _show_table(", 1)[1].split("st.set_page_config", 1)[0]
+    assert 'use_container_width=True' not in helper
+
+
+def test_table_helper_has_single_central_dataframe_call():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    helper = app.split("def _show_table(", 1)[1].split("st.set_page_config", 1)[0]
+    assert helper.count("st.dataframe(") == 1
+    assert "st.dataframe(frame, **dataframe_kwargs)" in helper

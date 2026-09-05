@@ -162,12 +162,13 @@ def _show_table(
         available = [name for name in columns if name in frame.columns]
         frame = frame[available]
     frame = _humanize_dataframe(frame)
-    st.dataframe(
-        frame,
-        use_container_width=True,
-        hide_index=True,
-        height=height,
-    )
+    dataframe_kwargs = {
+        "width": "stretch",
+        "hide_index": True,
+    }
+    if height is not None:
+        dataframe_kwargs["height"] = height
+    st.dataframe(frame, **dataframe_kwargs)
 
 
 
