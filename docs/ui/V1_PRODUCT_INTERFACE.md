@@ -7,8 +7,8 @@ Package 9 turns the existing Streamlit command deck into the branded Christiania
 - The updated Christiania nautical/Copenhagen/Lovecraftian emblem in `assets/christiania_logo.png` is the authoritative product logo.
 - The UI is a research workstation, not a broker terminal.
 - `OBSERVATIONAL ONLY` and `not trade signals` remain visible product-level warnings.
-- The main engine, Shadow Lab and Casino / 0DTE Lab remain visually and architecturally distinct.
-- The Casino / 0DTE Lab is experimental, tiny/capped-risk, defined-risk and explicitly not part of the core engine.
+- The main engine, Shadow Lab and Storm Cellar / 0DTE Lab remain visually and architecturally distinct.
+- The Storm Cellar / 0DTE Lab is experimental, tiny/capped-risk, defined-risk and explicitly not part of the core engine.
 - Quantitative challenger models remain research-only and decision/admission disabled.
 - Product readiness and scientific maturity are shown separately.
 - No external font, CSS or JavaScript CDN is required for the V1 theme.
@@ -23,14 +23,15 @@ The V1 product information architecture is:
 4. Observations
 5. Shadow Lab
 6. Quant Models
-7. Casino / 0DTE Lab
-8. Readiness
-9. Release Status
-10. System
+7. Storm Cellar / 0DTE Lab
+8. Ops
+   - Readiness
+   - Release
+   - System
 
 ## Branding
 
-The V1 palette is deep navy, Copenhagen blue/teal, brass/gold, warm ivory, green for healthy states, amber for caution and red only for failure or the isolated Casino boundary.
+The V1 palette is deep navy, Copenhagen blue/teal, brass/gold, warm ivory, green for healthy states, amber for caution and red only for failure or the isolated speculative-lab boundary.
 
 The interface uses the logo and restrained nautical ornamentation to establish identity without compromising data density or readability.
 
@@ -78,3 +79,28 @@ Shadow Lab exposes a candidate-level lifecycle and keeps two outcomes separate:
 - validated trade result, which is derived only from `outcome_eligible = 1` marks.
 
 A profitable stress mark is never treated as proof that the thesis was correct.
+
+
+## Package 9.4 — critical interface review corrections
+
+Package 9.4 turns the external UI review into standing product contracts rather than
+one-off wording patches.
+
+- The dashboard reads the actual market-clock contract: `next_sample_at` and the nested
+  `session.session_date`. Missing data is no longer caused by stale UI key names.
+- Research-run `outcome_mark_count` is labeled **Marks this cycle**, reflecting that it is
+  the number of outcome marks written by that daemon iteration rather than an unlabeled
+  running total.
+- Compact dataframes expose a **Full text / identifiers** expansion whenever long values,
+  hashes, paths, notes, details or admission labels may be visually shortened. Safety
+  language must remain recoverable in full.
+- Readiness, release and system diagnostics are consolidated under **Ops**, reducing
+  top-level navigation while preserving distinct operator views.
+- Failure/orphan and underlying-failure counts receive warning semantics rather than
+  neutral metric treatment. Decorative up-arrows are not used to imply positive movement.
+- The speculative wing is named **Storm Cellar / 0DTE Lab**. The sidebar motto
+  `NO CRYING IN THE CASINO` remains branding; the high-risk research surface itself is
+  not branded as a casino.
+- Theta latency is rounded for operator display while the underlying health contract is
+  unchanged.
+- Streamlit width calls use the current `width="stretch"` API.

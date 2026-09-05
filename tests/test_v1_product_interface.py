@@ -22,10 +22,8 @@ def test_product_interface_information_architecture_is_explicit():
         '"Observations"',
         '"Shadow Lab"',
         '"Quant Models"',
-        '"Casino / 0DTE Lab"',
-        '"Readiness"',
-        '"Release Status"',
-        '"System"',
+        '"Storm Cellar / 0DTE Lab"',
+        '"Ops"',
     ]:
         assert label in app
 
@@ -45,7 +43,7 @@ def test_casino_is_visually_and_textually_separate():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     theme = (ROOT / "src/ui/theme.py").read_text(encoding="utf-8")
 
-    assert "Casino in spirit, quant in discipline" in app
+    assert "Speculative by charter, quantitative by discipline" in app
     assert "TINY / CAPPED" in app
     assert "defined risk" in app
     assert ".chr-casino" in theme
@@ -80,7 +78,7 @@ def test_ui_helpers_compile_as_standalone_modules():
 def test_product_interface_doc_tracks_current_navigation():
     doc = (ROOT / "docs/ui/V1_PRODUCT_INTERFACE.md").read_text(encoding="utf-8")
     assert "Package 9" in doc
-    assert "Casino / 0DTE Lab" in doc
+    assert "Storm Cellar / 0DTE Lab" in doc
     assert "Product readiness and scientific maturity" in doc
     assert "authoritative product logo" in doc
 
@@ -117,7 +115,7 @@ def test_tables_use_human_readable_column_labels():
 
     assert '"scheduled_for": "Scheduled for"' in app
     assert '"research_run_id": "Research run ID"' in app
-    assert '"outcome_mark_count": "Shadow marks"' in app
+    assert '"outcome_mark_count": "Marks this cycle"' in app
     assert "_humanize_dataframe" in app
     assert "_show_table(" in app
 
@@ -230,3 +228,71 @@ def test_table_helper_has_single_central_dataframe_call():
     helper = app.split("def _show_table(", 1)[1].split("st.set_page_config", 1)[0]
     assert helper.count("st.dataframe(") == 1
     assert "st.dataframe(frame, **dataframe_kwargs)" in helper
+
+
+def test_dashboard_market_clock_uses_real_backend_contract_keys():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert 'market_clock.get("next_sample_at")' in app
+    assert '(market_clock.get("session") or {}).get("session_date")' in app
+    assert 'market_clock.get("next_sample")' not in app
+    assert 'market_clock.get("session_date")' not in app
+
+
+def test_compact_tables_expose_full_long_text():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "_show_full_text_details" in app
+    assert "Full text / identifiers" in app
+    assert "complete stored values" in app
+    assert '"Admission label"' in app
+
+
+def test_ops_navigation_is_consolidated():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert '"⚙ Ops"' in app
+    assert '["Readiness", "Release", "System"]' in app
+    assert '"✓ Readiness"' not in app
+    assert '"◆ Release Status"' not in app
+
+
+def test_speculative_lab_name_does_not_brand_feature_as_casino():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "Storm Cellar / 0DTE Lab" in app
+    assert "<h3>🎲 Casino / 0DTE Lab" not in app
+    assert "Casino in spirit, quant in discipline" not in app
+    # The intentionally retained sidebar motto is branding, not the feature name.
+    assert "NO CRYING IN THE CASINO" in app
+
+
+def test_ops_failure_counts_have_warning_semantics():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert '"Failed / orphaned"' in app
+    assert '"Underlying failures"' in app
+    assert 'badge_tone="warn" if failed_or_orphaned else "good"' in app
+    assert 'badge_tone="warn" if underlying_failures else "good"' in app
+
+
+def test_theta_latency_is_rounded_for_operator_display():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "def _fmt_latency_ms" in app
+    assert 'f"{float(value):.1f} ms"' in app
+    assert 'round(float(theta_display["latency_ms"]), 1)' in app
+
+
+def test_ui_source_has_no_accidental_dict_inside_set_literals():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "{{" not in app
+    assert "}}" not in app
+
+
+def test_streamlit_width_api_is_current():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert "use_container_width" not in app
+    assert 'width="stretch"' in app

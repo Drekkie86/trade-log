@@ -43,7 +43,7 @@ COLUMN_LABELS = {
     "proposals_count": "Proposals",
     "admitted_count": "Admitted",
     "blocked_count": "Blocked",
-    "outcome_mark_count": "Shadow marks",
+    "outcome_mark_count": "Marks this cycle",
     "error_type": "Error type",
     "model_key": "Backend model ID",
     "model_version": "Version",
@@ -151,6 +151,59 @@ def _humanize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.rename(columns=labels)
 
 
+def _fmt_latency_ms(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.1f} ms"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _show_full_text_details(frame: pd.DataFrame) -> None:
+    """Expose values that the compact dataframe can visually truncate."""
+    if frame.empty:
+        return
+
+    full_text = []
+    always_expand = {
+        "Admission label",
+        "Detail",
+        "Notes",
+        "Error message",
+        "Path",
+    }
+
+    for row_index, row in frame.reset_index(drop=True).iterrows():
+        for column, value in row.items():
+            if value is None:
+                continue
+            rendered = str(value)
+            column_name = str(column)
+            if (
+                column_name in always_expand
+                or "Hash" in column_name
+                or len(rendered) >= 40
+            ):
+                full_text.append((row_index + 1, column_name, rendered))
+
+    if not full_text:
+        return
+
+    with st.expander("Full text / identifiers"):
+        st.caption(
+            "Compact tables may shorten long values visually. "
+            "The complete stored values are shown here without abbreviation."
+        )
+        for row_number, column_name, rendered in full_text[:60]:
+            st.markdown(f"**Row {row_number} · {column_name}**")
+            st.write(rendered)
+        if len(full_text) > 60:
+            st.caption(
+                f"{len(full_text) - 60} additional long values omitted from this compact detail view."
+            )
+
+
 def _show_table(
     rows,
     *,
@@ -169,6 +222,7 @@ def _show_table(
     if height is not None:
         dataframe_kwargs["height"] = height
     st.dataframe(frame, **dataframe_kwargs)
+    _show_full_text_details(frame)
 
 
 
@@ -243,7 +297,7 @@ snapshot, backup_inventory = _load_runtime_state()
 
 with st.sidebar:
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), use_container_width=True)
+        st.image(str(LOGO_PATH), width="stretch")
     st.markdown(
         '<div class="chr-side-caption">NO CRYING IN THE CASINO</div>',
         unsafe_allow_html=True,
@@ -259,17 +313,15 @@ with st.sidebar:
             "◉ Observations",
             "⚗ Shadow Lab",
             "∑ Quant Models",
-            "🎲 Casino / 0DTE Lab",
-            "✓ Readiness",
-            "◆ Release Status",
-            "⚙ System",
+            "🌊 Storm Cellar / 0DTE Lab",
+            "⚙ Ops",
         ],
         label_visibility="collapsed",
     )
     page = page.split(" ", 1)[1]
 
     st.divider()
-    if st.button("↻ Refresh deck", use_container_width=True):
+    if st.button("↻ Refresh deck", width="stretch"):
         _load_runtime_state(force=True)
         st.rerun()
 
@@ -325,7 +377,7 @@ if page == "Dashboard":
                 [
                     ("API readiness", _status_label(theta_health.get("state")), theta_health.get("state")),
                     ("Endpoint", str(theta_health.get("endpoint") or "local /v3"), theta_health.get("state")),
-                    ("Latency", f"{theta_health.get('latency_ms', '—')} ms", theta_health.get("state")),
+                    ("Latency", _fmt_latency_ms(theta_health.get("latency_ms")), theta_health.get("state")),
                 ]
             ),
             badge_label="Operational" if theta_health.get("ready") else _status_label(theta_health.get("state")),
@@ -336,8 +388,8 @@ if page == "Dashboard":
             "Market clock",
             (
                 f'<div style="font-size:2.15rem;font-family:Georgia,serif;color:#F1D08A">{_status_label(market_clock.get("state"))}</div>'
-                f'<div style="margin-top:.45rem;color:#9EB4C3">Session date: {_safe(market_clock.get("session_date"))}</div>'
-                f'<div style="margin-top:.2rem">Next sample: <strong>{_safe(market_clock.get("next_sample"))}</strong></div>'
+                f'<div style="margin-top:.45rem;color:#9EB4C3">Session date: {_safe((market_clock.get("session") or {}).get("session_date"))}</div>'
+                f'<div style="margin-top:.2rem">Next sample: <strong>{_safe(market_clock.get("next_sample_at"))}</strong></div>'
             ),
             badge_label="XNYS",
             badge_tone="info",
@@ -691,12 +743,12 @@ elif page == "Quant Models":
                     }
                 )
 
-elif page == "Casino / 0DTE Lab":
+elif page == "Storm Cellar / 0DTE Lab":
     st.markdown(
         """
         <div class="chr-casino">
-          <h3>🎲 Casino / 0DTE Lab — EXPERIMENTAL, SEPARATE</h3>
-          <p><strong>Casino in spirit, quant in discipline.</strong> Tiny capped risk, defined-risk structures, explicit slippage, jump/event risk, gamma exposure and scenario EV.</p>
+          <h3>🌊 Storm Cellar / 0DTE Lab — EXPERIMENTAL, SEPARATE</h3>
+          <p><strong>Speculative by charter, quantitative by discipline.</strong> Tiny capped risk, defined-risk structures, explicit slippage, jump/event risk, gamma exposure and scenario EV.</p>
           <p><strong>NOT PART OF CORE ENGINE.</strong> No automatic promotion into the main research engine. The lab must be able to say NO TRADE.</p>
         </div>
         """,
@@ -717,109 +769,170 @@ elif page == "Casino / 0DTE Lab":
         "- Explicit NO TRADE output"
     )
 
-elif page == "Readiness":
-    section_heading("V1 readiness", "Operational readiness is deliberately separate from scientific maturity.")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Product state", _status_label(readiness["product_state"]))
-    c2.metric(
-        "Scientific state",
-        _status_label(readiness["scientific_state"]),
-        f"{readiness['independent_prospective_dates']} prospective date(s)",
+elif page == "Ops":
+    section_heading(
+        "Operations",
+        "Deployment, scientific/product readiness and runtime diagnostics in one operator surface.",
     )
-    c3.metric(
-        "Latest verified backup",
-        "None" if backup_inventory["latest_valid_age_hours"] is None else f"{backup_inventory['latest_valid_age_hours']:.1f}h ago",
-        f"{backup_inventory['valid_files']} valid / {backup_inventory['invalid_files']} invalid",
+    ops_view = st.radio(
+        "Ops view",
+        ["Readiness", "Release", "System"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="ops_view",
     )
 
-    _show_table(readiness["checks"])
-
-    section_heading("Data-quality pulse")
-    q1, q2, q3, q4 = st.columns(4)
-    iterations = quality.get("iteration_window", {})
-    underlyings = quality.get("underlying_totals", {})
-    q1.metric("Recent completed", iterations.get("completed", 0))
-    q2.metric("Failed/orphaned", int(iterations.get("failed", 0)) + int(iterations.get("orphaned", 0)))
-    q3.metric("Underlying failures", underlyings.get("failed", 0))
-    q4.metric("Recovered underlyings", underlyings.get("recovered", 0))
-
-    if quality.get("failure_types"):
-        _show_table(quality["failure_types"])
-
-    section_heading("Backup inventory")
-    if backup_inventory["entries"]:
-        _show_table(backup_inventory["entries"])
-    else:
-        st.warning("No verified backup files have been created yet.")
-
-elif page == "Release Status":
-    section_heading("V1.0 release candidate", "Release engineering state and unattended burn-in evidence.")
-    manifest = build_release_manifest().as_dict()
-    burn = summarize_burn_in(read_burn_in_samples()).as_dict()
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Version", CHRISTIANIA_VERSION)
-    c2.metric("Git state", "Clean" if manifest["git_clean"] else "Dirty / unavailable")
-    c3.metric("Burn-in", _status_label(burn["state"]), f"{burn['duration_hours']:.1f}h")
-    section_heading("Release fingerprint")
-    st.json(manifest)
-    section_heading("Burn-in report")
-    st.json(burn)
-    st.info(
-        "Final V1.0 promotion requires clean-VM deployment, HTTPS/OIDC, real reboot/autostart, "
-        "72h unattended burn-in, and independent live Theta timestamp validation."
-    )
-
-elif page == "System":
-    section_heading("System", "Runtime, database and provider diagnostics.")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Schema", f"v{database['schema_version']}")
-    c2.metric("Journal", str(database["journal_mode"]).upper())
-    c3.metric("Quick check", _status_label(database["quick_check"]))
-    c4.metric("FK violations", database["foreign_key_violation_count"])
-
-    left, right = st.columns(2)
-    with left:
-        section_heading("Runtime clock")
-        st.json(
-            {
-                "market_clock": market_clock,
-                "daemon_health": daemon_health,
-                "theta_health": theta_health,
-            }
+    if ops_view == "Readiness":
+        section_heading(
+            "V1 readiness",
+            "Operational readiness is deliberately separate from scientific maturity.",
         )
-    with right:
-        section_heading("Theta timestamp semantics")
-        st.json(snapshot.get("theta_timestamp_semantics"))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Product state", _status_label(readiness["product_state"]))
+        c2.metric(
+            "Scientific state",
+            _status_label(readiness["scientific_state"]),
+            f"{readiness['independent_prospective_dates']} prospective date(s)",
+        )
+        c3.metric(
+            "Latest verified backup",
+            "None"
+            if backup_inventory["latest_valid_age_hours"] is None
+            else f"{backup_inventory['latest_valid_age_hours']:.1f}h ago",
+            f"{backup_inventory['valid_files']} valid / {backup_inventory['invalid_files']} invalid",
+        )
 
-    section_heading("Provider roles", "Real configured provider names; no exchange/tape names are substituted for vendors.")
-    _show_table(
-        [
-            {{
-                "provider": "Massive",
-                "role": "Listing/reference frame and snapshot/model enrichment",
-                "runtime_state": "Not independently probed on this screen",
-            }},
-            {{
-                "provider": "ThetaData",
-                "role": "Local live options NBBO / Greeks / IV provider",
-                "runtime_state": _status_label(theta_health.get("state")),
-            }},
-            {{
-                "provider": "Saxo",
-                "role": "Broker identity/reference; V1 has no order path",
-                "runtime_state": "Execution disabled",
-            }},
-        ]
-    )
-    st.caption(
-        "Provider labels identify vendors. Exchange or tape names appear only when the stored source field actually represents one."
-    )
+        _show_table(readiness["checks"])
 
-    section_heading("Database path")
-    st.code(database["path"], language=None)
+        section_heading("Data-quality pulse")
+        iterations = quality.get("iteration_window", {})
+        underlyings = quality.get("underlying_totals", {})
+        failed_or_orphaned = int(iterations.get("failed", 0)) + int(iterations.get("orphaned", 0))
+        underlying_failures = int(underlyings.get("failed", 0) or 0)
 
-    section_heading("Daemon lease")
-    if snapshot["daemon_lock"]:
-        st.json(snapshot["daemon_lock"])
+        q1, q2, q3, q4 = st.columns(4)
+        with q1:
+            card(
+                "Recent completed",
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{int(iterations.get("completed", 0) or 0)}</div>',
+                badge_label="Operational",
+                badge_tone="info",
+            )
+        with q2:
+            card(
+                "Failed / orphaned",
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{failed_or_orphaned}</div>'
+                '<div style="margin-top:.35rem;color:#C6D2D9">Recent daemon iterations requiring review.</div>',
+                badge_label="Review" if failed_or_orphaned else "None",
+                badge_tone="warn" if failed_or_orphaned else "good",
+            )
+        with q3:
+            card(
+                "Underlying failures",
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{underlying_failures}</div>'
+                '<div style="margin-top:.35rem;color:#C6D2D9">Failed underlying collections in the quality window.</div>',
+                badge_label="Review" if underlying_failures else "None",
+                badge_tone="warn" if underlying_failures else "good",
+            )
+        with q4:
+            card(
+                "Recovered underlyings",
+                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{int(underlyings.get("recovered", 0) or 0)}</div>'
+                '<div style="margin-top:.35rem;color:#C6D2D9">Recovery provenance remains retained.</div>',
+                badge_label="Provenance",
+                badge_tone="info",
+            )
+
+        if quality.get("failure_types"):
+            _show_table(quality["failure_types"])
+
+        section_heading("Backup inventory")
+        if backup_inventory["entries"]:
+            _show_table(backup_inventory["entries"])
+        else:
+            st.warning("No verified backup files have been created yet.")
+
+    elif ops_view == "Release":
+        section_heading(
+            "V1.0 release candidate",
+            "Release engineering state and unattended burn-in evidence.",
+        )
+        manifest = build_release_manifest().as_dict()
+        burn = summarize_burn_in(read_burn_in_samples()).as_dict()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Version", CHRISTIANIA_VERSION)
+        c2.metric("Git state", "Clean" if manifest["git_clean"] else "Dirty / unavailable")
+        c3.metric("Burn-in", _status_label(burn["state"]), f"{burn['duration_hours']:.1f}h")
+        section_heading("Release fingerprint")
+        st.json(manifest)
+        section_heading("Burn-in report")
+        st.json(burn)
+        st.info(
+            "Final V1.0 promotion requires clean-VM deployment, HTTPS/OIDC, real reboot/autostart, "
+            "72h unattended burn-in, and independent live Theta timestamp validation."
+        )
+
     else:
-        st.warning("No active daemon lease is recorded.")
+        section_heading("System", "Runtime, database and provider diagnostics.")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Schema", f"v{database['schema_version']}")
+        c2.metric("Journal", str(database["journal_mode"]).upper())
+        c3.metric("Quick check", _status_label(database["quick_check"]))
+        c4.metric("FK violations", database["foreign_key_violation_count"])
+
+        theta_display = dict(theta_health)
+        if theta_display.get("latency_ms") is not None:
+            try:
+                theta_display["latency_ms"] = round(float(theta_display["latency_ms"]), 1)
+            except (TypeError, ValueError):
+                theta_display["latency_ms"] = None
+
+        left, right = st.columns(2)
+        with left:
+            section_heading("Runtime clock")
+            st.json(
+                {
+                    "market_clock": market_clock,
+                    "daemon_health": daemon_health,
+                    "theta_health": theta_display,
+                }
+            )
+        with right:
+            section_heading("Theta timestamp semantics")
+            st.json(snapshot.get("theta_timestamp_semantics"))
+
+        section_heading(
+            "Provider roles",
+            "Real configured provider names; no exchange/tape names are substituted for vendors.",
+        )
+        _show_table(
+            [
+                {
+                    "provider": "Massive",
+                    "role": "Listing/reference frame and snapshot/model enrichment",
+                    "runtime_state": "Not independently probed on this screen",
+                },
+                {
+                    "provider": "ThetaData",
+                    "role": "Local live options NBBO / Greeks / IV provider",
+                    "runtime_state": _status_label(theta_health.get("state")),
+                },
+                {
+                    "provider": "Saxo",
+                    "role": "Broker identity/reference; V1 has no order path",
+                    "runtime_state": "Execution disabled",
+                },
+            ]
+        )
+        st.caption(
+            "Provider labels identify vendors. Exchange or tape names appear only when the stored source field actually represents one."
+        )
+
+        section_heading("Database path")
+        st.code(database["path"], language=None)
+
+        section_heading("Daemon lease")
+        if snapshot["daemon_lock"]:
+            st.json(snapshot["daemon_lock"])
+        else:
+            st.warning("No active daemon lease is recorded.")
