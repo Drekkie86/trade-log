@@ -50,3 +50,19 @@ The Shadow Lab exposes candidate follow-up marks over time. Current independent-
 liquidation stress marks remain explicitly distinct from validated package outcomes;
 `outcome_eligible` is surfaced rather than silently treating every mark as proof that a
 candidate thesis was right.
+
+## UI semantic integrity
+
+Christiania's presentation may be theatrical; its claims may not be. **Aesthetic confidence must never imply scientific confidence.**
+
+V1 therefore enforces these interface rules:
+
+- calibration evidence is never shown as decision/trading readiness while governance disables decisions or admission;
+- a friendly hypothesis label is only a reviewed alias and is displayed together with the exact **Backend hypothesis ID**;
+- model aliases likewise retain the versioned backend model ID;
+- unknown hypothesis/model identifiers fall back to their exact stored value rather than receiving invented strategy names;
+- vendor labels use the real provider identities **Massive / ThetaData / Saxo**; exchange/tape names are shown only when a stored source field actually means an exchange/tape;
+- absent evidence is rendered as an explicit empty state or dash, never as fabricated-looking activity;
+- no dashboard metric exists to provide an aspirational target count.
+
+The governing rule is: fun in presentation, deadly serious in numbers.

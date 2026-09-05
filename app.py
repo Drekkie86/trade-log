@@ -23,6 +23,10 @@ from src.ui import (
     section_heading,
     status_dot,
     chart_note,
+    calibration_evidence_state,
+    hypothesis_label,
+    model_label,
+    provider_label,
 )
 from src.version import CHRISTIANIA_VERSION
 
@@ -42,14 +46,14 @@ COLUMN_LABELS = {
     "blocked_count": "Blocked",
     "outcome_mark_count": "Shadow marks",
     "error_type": "Error type",
-    "model_key": "Model",
+    "model_key": "Backend model ID",
     "model_version": "Version",
     "model_family": "Model family",
     "governance_role": "Governance role",
     "evidence_use_enabled": "Evidence use enabled",
     "admission_enabled": "Admission enabled",
     "decision_enabled": "Decision enabled",
-    "hypothesis_key": "Hypothesis",
+    "hypothesis_key": "Backend hypothesis ID",
     "primary_unit": "Primary unit",
     "primary_metric": "Primary metric",
     "minimum_independent_dates": "Minimum independent dates",
@@ -109,6 +113,7 @@ COLUMN_LABELS = {
     "family": "Family",
     "role": "Role",
     "notes": "Notes",
+    "runtime_state": "Runtime state",
 }
 
 
@@ -117,7 +122,34 @@ def _human_column_name(name: str) -> str:
 
 
 def _humanize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
-    return frame.rename(columns={name: _human_column_name(str(name)) for name in frame.columns})
+    frame = frame.copy()
+
+    if "hypothesis_key" in frame.columns:
+        position = frame.columns.get_loc("hypothesis_key")
+        frame.insert(
+            position,
+            "hypothesis_display_name",
+            frame["hypothesis_key"].map(hypothesis_label),
+        )
+
+    if "model_key" in frame.columns:
+        position = frame.columns.get_loc("model_key")
+        frame.insert(
+            position,
+            "model_display_name",
+            frame["model_key"].map(model_label),
+        )
+
+    if "provider" in frame.columns:
+        frame["provider"] = frame["provider"].map(provider_label)
+
+    labels = {{
+        name: _human_column_name(str(name))
+        for name in frame.columns
+    }}
+    labels["hypothesis_display_name"] = "Hypothesis"
+    labels["model_display_name"] = "Model"
+    return frame.rename(columns=labels)
 
 
 def _show_table(
@@ -270,6 +302,11 @@ theta_health = snapshot.get("theta_health", {"state": "NOT_PROBED"})
 database = snapshot["database"]
 readiness = assess_v1_readiness(snapshot, backup_inventory).as_dict()
 quality = snapshot.get("data_quality", {})
+calibration_state = calibration_evidence_state(
+    models=snapshot.get("models", []),
+    hypotheses=snapshot.get("hypotheses", []),
+    independent_dates=int(prospective.get("independent_dates", 0)),
+)
 
 if page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")
@@ -365,15 +402,20 @@ if page == "Dashboard":
 
     lower1, lower2, lower3 = st.columns([1.1, 1.1, 0.8])
     with lower1:
-        section_heading("Calibration readiness")
+        section_heading("Calibration evidence state")
         dates = readiness["independent_prospective_dates"]
         st.progress(_pct(dates, 20), text=f"{dates}/20 prospective dates toward preregistration review")
+        st.markdown(
+            f"**Calibration:** {badge(calibration_state['state'], tone=calibration_state['tone'])}",
+            unsafe_allow_html=True,
+        )
+        st.caption(calibration_state["detail"])
         st.markdown(
             f"**Product state:** {badge(_status_label(readiness['product_state']))}",
             unsafe_allow_html=True,
         )
         st.markdown(
-            f"**Scientific state:** {badge(_status_label(readiness['scientific_state']), tone='info')}",
+            f"**Scientific maturity:** {badge(_status_label(readiness['scientific_state']), tone='info')}",
             unsafe_allow_html=True,
         )
 
@@ -418,6 +460,14 @@ elif page == "Research Runs":
 
 elif page == "Calibration":
     section_heading("Calibration", "Evidence accumulation and frozen prospective governance.")
+    if calibration_state["tone"] == "bad":
+        st.error(calibration_state["state"] + " — " + calibration_state["detail"])
+    else:
+        st.warning(calibration_state["state"] + " — " + calibration_state["detail"])
+    st.caption(
+        "Calibration status is scientific evidence maturity, not trading readiness. "
+        "Decision and admission flags remain authoritative."
+    )
     c1, c2, c3 = st.columns(3)
     c1.metric("Independent dates", prospective["independent_dates"], "first descriptive review at 5")
     c2.metric("Prospective rows", prospective["observation_rows"])
@@ -427,9 +477,15 @@ elif page == "Calibration":
 
     section_heading("Frozen hypotheses")
     _show_table(snapshot.get("hypotheses", []))
+    st.caption(
+        "Friendly names are reviewed aliases only. The exact backend hypothesis ID is shown alongside every alias."
+    )
 
     section_heading("Research model registry")
     _show_table(snapshot.get("models", []))
+    st.caption(
+        "Friendly model names never replace versioned backend IDs; unknown identifiers are displayed verbatim."
+    )
 
 elif page == "Observations":
     section_heading("Surfaced observations", "OBSERVATIONAL ONLY — not validated edge and not trade signals.")
@@ -698,6 +754,30 @@ elif page == "System":
     with right:
         section_heading("Theta timestamp semantics")
         st.json(snapshot.get("theta_timestamp_semantics"))
+
+    section_heading("Provider roles", "Real configured provider names; no exchange/tape names are substituted for vendors.")
+    _show_table(
+        [
+            {{
+                "provider": "Massive",
+                "role": "Listing/reference frame and snapshot/model enrichment",
+                "runtime_state": "Not independently probed on this screen",
+            }},
+            {{
+                "provider": "ThetaData",
+                "role": "Local live options NBBO / Greeks / IV provider",
+                "runtime_state": _status_label(theta_health.get("state")),
+            }},
+            {{
+                "provider": "Saxo",
+                "role": "Broker identity/reference; V1 has no order path",
+                "runtime_state": "Execution disabled",
+            }},
+        ]
+    )
+    st.caption(
+        "Provider labels identify vendors. Exchange or tape names appear only when the stored source field actually represents one."
+    )
 
     section_heading("Database path")
     st.code(database["path"], language=None)
