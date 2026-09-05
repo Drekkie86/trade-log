@@ -2,3 +2,4 @@ numpy
 requests
 streamlit>=1.50,<2
 exchange_calendars>=4.13,<5
+scipy>=1.14,<2

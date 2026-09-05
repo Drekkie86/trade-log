@@ -26,6 +26,8 @@ The one-VM target uses SQLite WAL, a read-only Streamlit command deck, verified 
 
 Package 6 adds the release web boundary: Caddy HTTPS -> oauth2-proxy OIDC -> loopback-only Streamlit. Christiania stores no end-user passwords.
 
+Package 7 adds the research-only quantitative model library and Quant Bench: BSM/Black-76, implied volatility, analytic/numerical Greeks, CRR trees, Monte Carlo, Heston, Merton jump diffusion, SVI, SABR, local-volatility extraction, realized-volatility estimators, EWMA/GARCH, scenarios, tail diagnostics, structure EV/risk and model-disagreement diagnostics.
+
 ## Governance
 
 Surfaced anomalies are observational evidence, not validated edge. Prospective evidence remains separated from discovery evidence. Model decision/admission flags remain disabled under the frozen V1 protocol. The V1 application contains no broker-order path.

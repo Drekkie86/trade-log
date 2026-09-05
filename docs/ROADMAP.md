@@ -1,6 +1,6 @@
 # Christiania V1.0 Roadmap — authoritative current plan
 
-Status baseline: Package 5 (`57fd733`) completed the Copenhagen operations/recovery layer.
+Status baseline: Package 6 (`c4a9a5a`) completed the secure authenticated web edge and V1 documentation/security consolidation.
 This document supersedes the earlier pre-Cohort implementation roadmap. Historical documents remain useful evidence but are not current implementation instructions.
 
 ## V1 goal
@@ -11,10 +11,11 @@ V1.0 does **not** claim a proven trading edge and contains no broker-order path.
 
 ## Completed
 
-- Packages 1–5: recovery provenance, SQLite WAL/read-only UI, verified backup/restore, XNYS scheduling, one-VM systemd runtime, Theta control plane, per-slot Theta gating, audit exports, operational readiness and Copenhagen recovery tooling.
+- Packages 1–6: recovery provenance, SQLite WAL/read-only UI, verified backup/restore, XNYS scheduling, one-VM systemd runtime, Theta control plane, per-slot Theta gating, audit exports, operational readiness, Copenhagen recovery tooling and the secure OIDC/HTTPS web edge.
+- Package 7: advanced quantitative model library and Quant Bench, while keeping every new model research-only.
 - Frozen prospective-science governance remains observational-only.
 
-## Package 6 — Secure Web Edge & Documentation Consolidation
+## Package 6 — Secure Web Edge & Documentation Consolidation — COMPLETE
 
 - Caddy automatic HTTPS reverse proxy.
 - oauth2-proxy generic OIDC authentication gateway.
@@ -26,7 +27,7 @@ V1.0 does **not** claim a proven trading edge and contains no broker-order path.
 - migration 021–025 governance audit converted into regression contracts.
 - authoritative V1 architecture/status documentation and stale-doc cleanup.
 
-## Package 7 — Advanced Quantitative Model Library & Research Bench
+## Package 7 — Advanced Quantitative Model Library & Research Bench — COMPLETE IN THIS PACKAGE
 
 Build serious mathematical infrastructure without promoting unvalidated challengers into trading decisions:
 

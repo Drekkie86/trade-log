@@ -33,6 +33,10 @@ SQLite remains deliberately single-writer for V1. PostgreSQL is deferred until g
 
 The frozen primary model and prospective hypotheses remain observational. Challenger models may be added to the model library, but admission/decision flags remain disabled unless a future governance package explicitly changes them after adequate prospective evidence.
 
+## Quantitative-library boundary
+
+`src/quant` is a side-effect-free research library. It does not import the database repository, broker adapters, shadow-admission logic or trade service. Advanced models produce prices, calibration diagnostics, scenarios, risk summaries and disagreement measures only. They do not mutate the frozen primary model role or prospective protocol.
+
 ## Trading boundary
 
 V1 contains no broker-order path. Broker/provider adapters may support reference, quote, identity and research evidence, but V1 does not submit orders.

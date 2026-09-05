@@ -11,6 +11,9 @@ from src.operations.backup_recovery import (
 from src.operations.v1_readiness import (
     assess_v1_readiness,
 )
+from src.quant.bench import run_vanilla_bench
+from src.quant.registry import catalog as quant_model_catalog
+from src.quant.types import QuantInputError, VanillaOption
 
 
 st.set_page_config(
@@ -113,6 +116,7 @@ with st.sidebar:
             "Prospective",
             "Observations",
             "Shadow Lab",
+            "Quant Bench",
             "Readiness",
             "System",
         ],
@@ -514,6 +518,79 @@ elif page == "Shadow Lab":
         st.info(
             "No shadow candidates recorded."
         )
+
+elif page == "Quant Bench":
+    st.subheader("Quantitative model bench")
+    st.caption(
+        "RESEARCH ONLY — challenger-model disagreement, calibration and scenario diagnostics. "
+        "No model on this page can admit a candidate or submit an order."
+    )
+
+    st.markdown("**Model governance registry**")
+    st.dataframe(
+        quant_model_catalog(),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Vanilla cross-model bench**")
+    with st.form("quant-vanilla-bench"):
+        c1, c2, c3, c4 = st.columns(4)
+        spot = c1.number_input("Spot", min_value=0.01, value=100.0, step=1.0)
+        strike = c2.number_input("Strike", min_value=0.01, value=100.0, step=1.0)
+        days = c3.number_input("Days to expiry", min_value=1, value=30, step=1)
+        right = c4.selectbox("Right", ["CALL", "PUT"])
+        c1, c2, c3, c4 = st.columns(4)
+        vol_pct = c1.number_input("Volatility %", min_value=0.01, value=25.0, step=1.0)
+        rate_pct = c2.number_input("Rate %", value=3.0, step=0.25)
+        div_pct = c3.number_input("Dividend yield %", value=0.0, step=0.25)
+        market_price = c4.number_input("Market price (optional)", min_value=0.0, value=0.0, step=0.1)
+        submitted = st.form_submit_button("Run research bench")
+
+    if submitted:
+        try:
+            option = VanillaOption(
+                spot=float(spot),
+                strike=float(strike),
+                time_to_expiry=float(days) / 365.0,
+                rate=float(rate_pct) / 100.0,
+                volatility=float(vol_pct) / 100.0,
+                right=right,
+                dividend_yield=float(div_pct) / 100.0,
+            )
+            result = run_vanilla_bench(
+                option,
+                market_price=(None if market_price <= 0 else float(market_price)),
+                mc_paths=50_000,
+            ).as_dict()
+        except QuantInputError as exc:
+            st.error(str(exc))
+        else:
+            st.warning(result["governance"]["warning"])
+            prices = [
+                {"model": name, "price": value}
+                for name, value in result["model_prices"].items()
+            ]
+            st.dataframe(prices, use_container_width=True, hide_index=True)
+            c1, c2, c3 = st.columns(3)
+            disagreement = result["disagreement"]
+            c1.metric("Model range", f"{disagreement['absolute_range']:.4f}")
+            c2.metric("Consensus mean", f"{disagreement['mean']:.4f}")
+            c3.metric(
+                "Market − consensus",
+                "—" if disagreement["market_minus_consensus"] is None else f"{disagreement['market_minus_consensus']:.4f}",
+            )
+            st.markdown("**Analytic Greeks**")
+            st.json(result["greeks"])
+            st.markdown("**Diagnostics**")
+            st.json(
+                {
+                    "implied_volatility": result["implied_volatility"],
+                    "monte_carlo": result["monte_carlo"],
+                    "heston_parameters": result["heston_parameters"],
+                    "merton_parameters": result["merton_parameters"],
+                }
+            )
 
 elif page == "Readiness":
     st.subheader("V1 Copenhagen readiness")
