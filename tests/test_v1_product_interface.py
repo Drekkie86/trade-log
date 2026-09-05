@@ -345,3 +345,35 @@ def test_interaction_layer_has_no_external_javascript_or_trade_mutation_words():
     assert "place_order" not in block
     assert "admission_enabled =" not in block
     assert "decision_enabled =" not in block
+
+
+def test_decision_desk_is_visible_and_fails_closed():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    assert '"🎯 Decision Desk"' in app
+    assert 'CURRENT GLOBAL CONCLUSION: NO TRADE' in app
+    assert 'Cash-settlement verified' in app
+    assert 'Full model dossier' in app
+    assert 'Expected value", "NOT CALIBRATED"' in app
+    assert 'Planned loss trigger' in app
+    assert 'A stop threshold is a monitoring rule, not a guaranteed fill' in app
+
+
+def test_decision_desk_does_not_add_broker_execution_path():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+    decision = (ROOT / "src/decision/desk.py").read_text(encoding="utf-8")
+
+    assert "submit_order" not in app
+    assert "place_order" not in app
+    assert "submit_order" not in decision
+    assert "place_order" not in decision
+    assert "does not submit orders" in app
+
+
+def test_cash_settlement_policy_is_explicit_not_inferred():
+    policy = (ROOT / "src/research/settlement_policy.py").read_text(encoding="utf-8")
+
+    assert '"SPX"' in policy
+    assert '"XSP"' in policy
+    assert "FAIL_CLOSED" in policy
+    assert "BLOCKED_UNVERIFIED_SETTLEMENT" in policy

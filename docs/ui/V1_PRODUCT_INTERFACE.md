@@ -113,3 +113,26 @@ one-off wording patches.
 - Surfaced Observations supports Power-BI-style cross-filtering: a row or residual bar selection filters the other observation visuals by the selected underlying/direction/right, with an explicit active-filter strip and Clear filters action.
 - Research Runs supports row selection and narrows run-specific failure diagnostics when a matching research run exists.
 - Interactive chart selection uses Streamlit's Vega-Lite selection contract; no extra JavaScript or external chart runtime is added.
+
+
+## Package 10 — Decision Desk and hard live-use gates
+
+The Decision Desk is Christiania's synthesis surface. It brings together the persisted anomaly, exact shadow structure, admission evidence, follow-up marks, settlement classification, risk controls and the full research-only quantitative model suite for one selected candidate.
+
+Its central rule is **NO TRADE is always a valid output**. The screen cannot bypass the frozen scientific governance. A high residual, attractive model value or profitable shadow mark cannot override a hard blocker.
+
+### Cash-settlement rule
+
+V1 live/manual-review eligibility fails closed. A contract must be on Christiania's explicit verified cash-settled product allow-list. The initial list is deliberately tiny: SPX and XSP, verified from Cboe product documentation on 2026-09-05. A ticker not on the list is not inferred to be cash-settled. American-style or conflicting metadata is blocking. This rule exists to prevent a small options experiment from unexpectedly creating a delivered share position.
+
+### Risk and stop rule
+
+The fixed EUR 500 active-bankroll cap remains unchanged. The Decision Desk additionally requires an explicit session-level per-trade risk budget and a planned loss-trigger fraction before a candidate can clear the risk gate. Zero/unconfigured controls fail closed. The stop threshold is explicitly described as a monitoring rule rather than a guaranteed execution price; defined-risk maximum loss remains the first line of protection.
+
+### Model dossier
+
+The Decision Desk runs the full research model suite only for the selected candidate and only from stored candidate/quote/model inputs. It does not invent missing spot, IV, rate, dividend yield or entry prices. Model prices are aggregated across the actual persisted multi-leg structure. Model consensus and disagreement remain diagnostic evidence; Christiania explicitly labels probability-weighted expected value as not calibrated for decision use.
+
+### Research rank versus recommendation
+
+The review board orders candidates for investigation using transparent stored evidence (cash-settlement eligibility, shadow admission, model-input completeness, validated outcomes, mark count and anomaly magnitude). This is a **research-review order**, not a probability-of-profit score and not a live-trade leaderboard.

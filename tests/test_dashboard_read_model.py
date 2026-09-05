@@ -39,6 +39,7 @@ def test_command_deck_loads_empty_current_schema(
         ]
         == 0
     )
+    assert snapshot["decision_desk_candidates"] == []
 
 
 def test_command_deck_reads_daemon_and_run_state(

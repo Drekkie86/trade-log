@@ -488,6 +488,217 @@ def load_command_deck(
             ).fetchall()
         )
 
+        decision_desk_candidates = _rows_to_dicts(
+            conn.execute(
+                '''
+                SELECT
+                    sc.id AS candidate_id,
+                    sc.research_run_id,
+                    sc.reference_contract_id,
+                    sc.underlying,
+                    sc.surfaced_at,
+                    sc.scanner_family_id,
+                    sc.scanner_version,
+                    sc.hypothesis_family,
+                    sc.hypothesis_version,
+                    sc.structure_id,
+                    sc.structure_version,
+                    sc.admission_label,
+                    sc.universe_status,
+                    lrc.exercise_style,
+                    lrc.primary_exchange,
+                    lrc.shares_per_contract AS target_shares_per_contract,
+                    ssp.expiration,
+                    ssp.right,
+                    ssp.target_strike,
+                    ssp.anomaly_direction,
+                    ssp.structure_json,
+                    ssp.entry_pricing_json,
+                    ssp.risk_currency,
+                    ssp.max_theoretical_loss_minor,
+                    ssp.risk_basis,
+                    sad.decision AS admission_decision,
+                    sad.reason_code AS admission_reason_code,
+                    sad.estimated_cost_eur_minor,
+                    sad.reserved_risk_eur_minor,
+                    sad.bankroll_cap_eur_minor,
+                    hse.iv_residual,
+                    hse.abs_iv_residual,
+                    hse.residual_threshold,
+                    hse.surfaced_direction,
+                    oq.bid AS target_bid,
+                    oq.ask AS target_ask,
+                    oq.implied_volatility AS target_implied_volatility,
+                    oq.delta AS target_delta,
+                    oq.gamma AS target_gamma,
+                    oq.theta AS target_theta,
+                    oq.vega AS target_vega,
+                    oq.quote_at AS target_quote_at,
+                    ms.underlying_price,
+                    COALESCE(mc.mark_count, 0) AS mark_count,
+                    COALESCE(mc.validated_outcomes, 0) AS validated_outcomes,
+                    rm.observed_at AS latest_mark_at,
+                    rm.estimated_net_pnl_eur_minor
+                        AS latest_estimated_net_pnl_eur_minor
+                FROM shadow_candidates AS sc
+                LEFT JOIN shadow_admission_decisions AS sad
+                  ON sad.candidate_id = sc.id
+                 AND sad.decision = 'ADMITTED'
+                LEFT JOIN shadow_structure_proposals AS ssp
+                  ON ssp.id = sad.proposal_id
+                LEFT JOIN hypothesis_scanner_evaluations AS hse
+                  ON hse.id = ssp.hypothesis_evaluation_id
+                LEFT JOIN option_quotes AS oq
+                  ON oq.id = hse.option_quote_id
+                LEFT JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                LEFT JOIN listing_reference_contracts AS lrc
+                  ON lrc.id = sc.reference_contract_id
+                LEFT JOIN (
+                    SELECT
+                        candidate_id,
+                        COUNT(*) AS mark_count,
+                        SUM(CASE WHEN outcome_eligible = 1 THEN 1 ELSE 0 END)
+                            AS validated_outcomes
+                    FROM shadow_mark_observations
+                    GROUP BY candidate_id
+                ) AS mc
+                  ON mc.candidate_id = sc.id
+                LEFT JOIN (
+                    SELECT candidate_id, observed_at, estimated_net_pnl_eur_minor
+                    FROM (
+                        SELECT
+                            candidate_id,
+                            observed_at,
+                            estimated_net_pnl_eur_minor,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY candidate_id
+                                ORDER BY observed_at DESC, id DESC
+                            ) AS row_rank
+                        FROM shadow_mark_observations
+                    )
+                    WHERE row_rank = 1
+                ) AS rm
+                  ON rm.candidate_id = sc.id
+                ORDER BY sc.id DESC
+                LIMIT 100;
+                '''
+            ).fetchall()
+        )
+
+        leg_quote_ids: set[int] = set()
+        for candidate in decision_desk_candidates:
+            candidate["structure_legs"] = []
+            candidate["model_input_complete"] = False
+            try:
+                import json
+                structure = json.loads(candidate.get("structure_json") or "{}")
+                pricing = json.loads(candidate.get("entry_pricing_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+
+            price_by_quote = {
+                int(item["option_quote_id"]): item.get("entry_price")
+                for item in pricing.get("legs", [])
+                if item.get("option_quote_id") is not None
+            }
+            legs = []
+            for item in structure.get("legs", []):
+                quote_id = item.get("option_quote_id")
+                if quote_id is None:
+                    continue
+                quote_id = int(quote_id)
+                leg_quote_ids.add(quote_id)
+                legs.append(
+                    {
+                        **item,
+                        "option_quote_id": quote_id,
+                        "entry_price": price_by_quote.get(quote_id),
+                    }
+                )
+            candidate["structure_legs"] = legs
+
+        leg_quote_map: dict[int, dict[str, Any]] = {}
+        if leg_quote_ids:
+            placeholders = ",".join("?" for _ in leg_quote_ids)
+            leg_rows = conn.execute(
+                f"""
+                SELECT
+                    oq.id AS option_quote_id,
+                    oq.strike,
+                    oq.right,
+                    oq.bid,
+                    oq.ask,
+                    oq.implied_volatility,
+                    oq.delta,
+                    oq.gamma,
+                    oq.theta,
+                    oq.vega,
+                    oq.quote_at,
+                    oq.shares_per_contract,
+                    (
+                        SELECT pmo.implied_volatility
+                        FROM provider_model_observations AS pmo
+                        WHERE pmo.option_quote_id = oq.id
+                          AND pmo.implied_volatility IS NOT NULL
+                        ORDER BY pmo.id DESC
+                        LIMIT 1
+                    ) AS provider_implied_volatility,
+                    (
+                        SELECT pmo.model_underlying_price
+                        FROM provider_model_observations AS pmo
+                        WHERE pmo.option_quote_id = oq.id
+                          AND pmo.model_underlying_price IS NOT NULL
+                        ORDER BY pmo.id DESC
+                        LIMIT 1
+                    ) AS model_underlying_price,
+                    (
+                        SELECT pmo.model_rate
+                        FROM provider_model_observations AS pmo
+                        WHERE pmo.option_quote_id = oq.id
+                          AND pmo.model_rate IS NOT NULL
+                        ORDER BY pmo.id DESC
+                        LIMIT 1
+                    ) AS model_rate,
+                    (
+                        SELECT pmo.model_dividend_yield
+                        FROM provider_model_observations AS pmo
+                        WHERE pmo.option_quote_id = oq.id
+                          AND pmo.model_dividend_yield IS NOT NULL
+                        ORDER BY pmo.id DESC
+                        LIMIT 1
+                    ) AS model_dividend_yield
+                FROM option_quotes AS oq
+                WHERE oq.id IN ({placeholders});
+                """,
+                tuple(sorted(leg_quote_ids)),
+            ).fetchall()
+            leg_quote_map = {
+                int(row["option_quote_id"]): dict(row)
+                for row in leg_rows
+            }
+
+        for candidate in decision_desk_candidates:
+            enriched_legs = []
+            for leg in candidate.get("structure_legs", []):
+                quote = leg_quote_map.get(int(leg["option_quote_id"]), {})
+                enriched_legs.append({**leg, **quote})
+            candidate["structure_legs"] = enriched_legs
+            required = (
+                candidate.get("underlying_price") is not None
+                and candidate.get("expiration") is not None
+                and bool(enriched_legs)
+                and all(
+                    (leg.get("implied_volatility") is not None
+                     or leg.get("provider_implied_volatility") is not None)
+                    and leg.get("model_rate") is not None
+                    and leg.get("model_dividend_yield") is not None
+                    and leg.get("entry_price") is not None
+                    for leg in enriched_legs
+                )
+            )
+            candidate["model_input_complete"] = bool(required)
+
         shadow_mark_history = _rows_to_dicts(
             conn.execute(
                 '''
@@ -778,6 +989,7 @@ def load_command_deck(
         "recent_anomalies": recent_anomalies,
         "recent_proposals": recent_proposals,
         "recent_candidates": recent_candidates,
+        "decision_desk_candidates": decision_desk_candidates,
         "shadow_mark_history": shadow_mark_history,
         "shadow_candidate_followup": shadow_candidate_followup,
         "shadow_tracking": shadow_tracking,
