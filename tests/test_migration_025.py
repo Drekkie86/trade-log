@@ -1,4 +1,4 @@
-from src.database.repository import get_connection
+from src.database.repository import EXPECTED_SCHEMA_VERSION, get_connection
 
 
 def test_v25_recovery_provenance_objects(db_path):
@@ -6,7 +6,7 @@ def test_v25_recovery_provenance_objects(db_path):
     try:
         assert conn.execute(
             "SELECT MAX(version) FROM schema_version"
-        ).fetchone()[0] == 25
+        ).fetchone()[0] == EXPECTED_SCHEMA_VERSION
 
         columns = {
             row["name"]

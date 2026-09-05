@@ -780,6 +780,19 @@ elif page == "Decision Desk":
         tte = resolve_time_to_expiry(full_selected)
         exit_monitor = assess_exit_monitor(full_selected, risk_plan)
 
+        section_heading("Frozen shadow risk evidence")
+        frozen_risk = full_selected.get("frozen_risk_plan")
+        if not frozen_risk:
+            st.warning("NOT FROZEN — session controls are exploratory and do not count as prospective risk evidence.")
+            st.caption("Freeze a plan with record_shadow_risk_plan_v1.py before using risk-management outcomes as prospective evidence.")
+        else:
+            fr1, fr2, fr3, fr4 = st.columns(4)
+            fr1.metric("Risk-plan state", "FROZEN")
+            fr2.metric("Defined max loss", f"€{float(frozen_risk.get('max_defined_loss_eur_minor') or 0)/100:.2f}")
+            fr3.metric("Reserved risk", f"€{float(frozen_risk.get('reserved_risk_eur_minor') or 0)/100:.2f}")
+            fr4.metric("Latest monitor", str(frozen_risk.get("overall_state") or "NOT ASSESSED"))
+            st.caption("Frozen plans are immutable. Assessments are append-only. A stop threshold is never presented as a guaranteed fill.")
+
         section_heading("Current conclusion")
         disposition = full_selected.get("decision_desk_disposition")
         blockers = list(full_selected.get("decision_blockers") or [])

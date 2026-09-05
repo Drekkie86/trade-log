@@ -1005,6 +1005,16 @@ def load_command_deck(
             "admission_reason_summary": admission_reason_summary,
         }
 
+        shadow_risk_current = _rows_to_dicts(
+            conn.execute("SELECT * FROM v_shadow_risk_current ORDER BY candidate_id DESC LIMIT 100;").fetchall()
+        )
+        shadow_risk_map = {int(row["candidate_id"]): row for row in shadow_risk_current}
+        for candidate in decision_desk_candidates:
+            risk = shadow_risk_map.get(int(candidate.get("candidate_id") or 0))
+            candidate["frozen_risk_plan"] = risk
+            candidate["frozen_risk_plan_state"] = "FROZEN" if risk else "NOT_FROZEN"
+            candidate["latest_risk_assessment_state"] = None if not risk else risk.get("overall_state")
+
     finally:
         conn.close()
 
@@ -1037,6 +1047,7 @@ def load_command_deck(
         "shadow_mark_history": shadow_mark_history,
         "shadow_candidate_followup": shadow_candidate_followup,
         "shadow_tracking": shadow_tracking,
+        "shadow_risk_current": shadow_risk_current,
         "recovery_summary": recovery_summary,
         "data_quality": data_quality,
     }
