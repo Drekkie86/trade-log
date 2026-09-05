@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from src.research.cash_settled_market_contract import resolve_contract_semantics
+
 
 @dataclass(frozen=True)
 class SettlementClassification:
@@ -14,25 +16,12 @@ class SettlementClassification:
     provenance: str
     contract_identity_state: str
     multiplier_state: str
+    series_root: str | None
+    settlement_style: str
+    settlement_reference_time_et: str | None
 
     def as_dict(self) -> dict:
         return asdict(self)
-
-
-_CASH_SETTLED_PRODUCTS = {
-    "SPX": {
-        "settlement_type": "CASH",
-        "exercise_style": "EUROPEAN",
-        "multiplier": 100.0,
-        "provenance": "CBOE_SPX_PRODUCT_PAGE_VERIFIED_2026-09-05",
-    },
-    "XSP": {
-        "settlement_type": "CASH",
-        "exercise_style": "EUROPEAN",
-        "multiplier": 100.0,
-        "provenance": "CBOE_XSP_PRODUCT_PAGE_VERIFIED_2026-09-05",
-    },
-}
 
 
 def classify_settlement(
@@ -41,97 +30,72 @@ def classify_settlement(
     observed_exercise_style: str | None = None,
     reference_contract_id: int | None = None,
     shares_per_contract: float | None = None,
+    series_root: str | None = None,
 ) -> SettlementClassification:
     symbol = str(underlying or "").strip().upper()
     observed_style = str(observed_exercise_style or "").strip().upper()
-    contract_identity_state = "VERIFIED_REFERENCE_ID" if reference_contract_id is not None else "MISSING_REFERENCE_ID"
+    identity_state = "VERIFIED_REFERENCE_ID" if reference_contract_id is not None else "MISSING_REFERENCE_ID"
+    semantics = resolve_contract_semantics(symbol, series_root=series_root)
 
-    if not symbol:
-        return SettlementClassification(
-            underlying="UNKNOWN",
-            settlement_type="UNVERIFIED",
-            exercise_style=observed_style or "UNVERIFIED",
-            live_eligible=False,
-            state="BLOCKED_UNVERIFIED_SETTLEMENT",
-            reason="Contract underlying is missing; cash settlement cannot be verified.",
-            provenance="FAIL_CLOSED",
-            contract_identity_state=contract_identity_state,
-            multiplier_state="UNVERIFIED",
-        )
-
-    policy = _CASH_SETTLED_PRODUCTS.get(symbol)
-    if policy is None:
+    if semantics.state == "UNSUPPORTED_PRODUCT":
         reason = (
-            "American-style contract is not on Christiania's explicit cash-settled allow-list."
+            "American-style contract is outside Christiania's explicit cash-settled registry."
             if observed_style == "AMERICAN"
-            else "Contract is not on Christiania's explicit cash-settled allow-list."
+            else "Contract is outside Christiania's explicit cash-settled registry."
         )
         return SettlementClassification(
-            underlying=symbol,
-            settlement_type="UNVERIFIED",
-            exercise_style=observed_style or "UNVERIFIED",
-            live_eligible=False,
-            state=("BLOCKED_ASSIGNMENT_OR_PHYSICAL_RISK" if observed_style == "AMERICAN" else "BLOCKED_UNVERIFIED_SETTLEMENT"),
-            reason=reason,
-            provenance="FAIL_CLOSED",
-            contract_identity_state=contract_identity_state,
-            multiplier_state="UNVERIFIED",
+            symbol or "UNKNOWN", "UNVERIFIED", observed_style or "UNVERIFIED", False,
+            "BLOCKED_ASSIGNMENT_OR_PHYSICAL_RISK" if observed_style == "AMERICAN" else "BLOCKED_UNVERIFIED_SETTLEMENT",
+            reason, "FAIL_CLOSED", identity_state, "UNVERIFIED", semantics.series_root,
+            semantics.settlement_style, semantics.settlement_reference_time_et,
         )
 
-    expected_style = policy["exercise_style"]
-    if observed_style and observed_style != expected_style:
+    if not semantics.exact_series_identity:
         return SettlementClassification(
-            underlying=symbol,
-            settlement_type=policy["settlement_type"],
-            exercise_style=observed_style,
-            live_eligible=False,
-            state="BLOCKED_SETTLEMENT_METADATA_CONFLICT",
-            reason=f"Stored exercise style {observed_style} conflicts with the verified {expected_style} product policy.",
-            provenance=policy["provenance"],
-            contract_identity_state=contract_identity_state,
-            multiplier_state="UNVERIFIED",
+            symbol, semantics.settlement_type, semantics.exercise_style, False,
+            "BLOCKED_SERIES_IDENTITY_UNVERIFIED",
+            semantics.reason, semantics.source_url or "FAIL_CLOSED", identity_state,
+            "UNVERIFIED", semantics.series_root, semantics.settlement_style,
+            semantics.settlement_reference_time_et,
+        )
+
+    if observed_style and observed_style != semantics.exercise_style:
+        return SettlementClassification(
+            symbol, semantics.settlement_type, observed_style, False,
+            "BLOCKED_SETTLEMENT_METADATA_CONFLICT",
+            f"Stored exercise style {observed_style} conflicts with verified {semantics.exercise_style} product semantics.",
+            semantics.source_url or "FAIL_CLOSED", identity_state, "UNVERIFIED",
+            semantics.series_root, semantics.settlement_style, semantics.settlement_reference_time_et,
         )
 
     if reference_contract_id is None:
         return SettlementClassification(
-            underlying=symbol,
-            settlement_type=policy["settlement_type"],
-            exercise_style=expected_style,
-            live_eligible=False,
-            state="BLOCKED_CONTRACT_IDENTITY_UNVERIFIED",
-            reason="Cash-settled product family is verified, but the exact persisted contract identity is missing.",
-            provenance=policy["provenance"],
-            contract_identity_state="MISSING_REFERENCE_ID",
-            multiplier_state="UNVERIFIED",
+            symbol, semantics.settlement_type, semantics.exercise_style, False,
+            "BLOCKED_CONTRACT_IDENTITY_UNVERIFIED",
+            "Cash-settled product semantics are verified, but the exact persisted contract identity is missing.",
+            semantics.source_url or "FAIL_CLOSED", "MISSING_REFERENCE_ID", "UNVERIFIED",
+            semantics.series_root, semantics.settlement_style, semantics.settlement_reference_time_et,
         )
 
     observed_multiplier = None if shares_per_contract is None else float(shares_per_contract)
-    expected_multiplier = float(policy["multiplier"])
+    expected_multiplier = semantics.multiplier
     if observed_multiplier != expected_multiplier:
         return SettlementClassification(
-            underlying=symbol,
-            settlement_type=policy["settlement_type"],
-            exercise_style=expected_style,
-            live_eligible=False,
-            state="BLOCKED_CONTRACT_MULTIPLIER_CONFLICT",
-            reason=f"Persisted contract multiplier {observed_multiplier!r} does not match verified product multiplier {expected_multiplier:g}.",
-            provenance=policy["provenance"],
-            contract_identity_state="VERIFIED_REFERENCE_ID",
-            multiplier_state="CONFLICT",
+            symbol, semantics.settlement_type, semantics.exercise_style, False,
+            "BLOCKED_CONTRACT_MULTIPLIER_CONFLICT",
+            f"Persisted contract multiplier {observed_multiplier!r} does not match verified product multiplier {expected_multiplier:g}.",
+            semantics.source_url or "FAIL_CLOSED", "VERIFIED_REFERENCE_ID", "CONFLICT",
+            semantics.series_root, semantics.settlement_style, semantics.settlement_reference_time_et,
         )
 
     return SettlementClassification(
-        underlying=symbol,
-        settlement_type=policy["settlement_type"],
-        exercise_style=expected_style,
-        live_eligible=True,
-        state="VERIFIED_CASH_SETTLED",
-        reason="Verified cash-settled product with persisted contract identity and expected multiplier; no delivery of underlying shares at settlement.",
-        provenance=policy["provenance"],
-        contract_identity_state="VERIFIED_REFERENCE_ID",
-        multiplier_state="VERIFIED",
+        symbol, semantics.settlement_type, semantics.exercise_style, True,
+        "VERIFIED_CASH_SETTLED",
+        "Verified cash-settled series with persisted contract identity and expected multiplier; no delivery of underlying shares at settlement.",
+        semantics.source_url or "CBOE_PRODUCT_CONTRACT", "VERIFIED_REFERENCE_ID", "VERIFIED",
+        semantics.series_root, semantics.settlement_style, semantics.settlement_reference_time_et,
     )
 
 
 def cash_settled_allowlist() -> tuple[str, ...]:
-    return tuple(sorted(_CASH_SETTLED_PRODUCTS))
+    return ("SPX", "XSP")
