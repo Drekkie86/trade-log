@@ -1,0 +1,24 @@
+[Unit]
+Description=Christiania RC0 Lightweight Supervisor
+After=network-online.target christiania-daemon.service christiania-app.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+Environment=HOME=/tmp
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/christiania_rc0_supervisor.py --json
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/christiania/audit

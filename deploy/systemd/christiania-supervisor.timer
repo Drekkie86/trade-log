@@ -1,0 +1,12 @@
+[Unit]
+Description=Frequent Christiania RC0 Lightweight Supervision
+
+[Timer]
+OnBootSec=4m
+OnUnitActiveSec=5m
+AccuracySec=30s
+Persistent=true
+Unit=christiania-supervisor.service
+
+[Install]
+WantedBy=timers.target
