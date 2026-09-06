@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, time
+from datetime import datetime, timedelta
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from src.providers.thetadata import ThetaDataClient, ThetaDataError
+from src.operations.market_calendar import get_market_session
 from src.research.live_pipeline import LivePipelineError, parse_thetadata_market_timestamp
 from src.research.thetadata_live_adapter import fetch_live_quote_rows
 
@@ -20,6 +22,8 @@ PRIMARY_V1_SYMBOL = "XSP"
 RESEARCH_SYMBOLS = ("SPX", "XSP")
 DEFAULT_MAX_QUOTE_AGE_SECONDS = 180.0
 DEFAULT_FUTURE_TOLERANCE_SECONDS = 5.0
+EVIDENCE_FORMAT_VERSION = 2
+LIVE_PROOF_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 CBOE_XSP_SPEC = "https://www.cboe.com/tradable_products/sp_500/mini_spx_options/specifications"
 CBOE_SPX_SPEC = "https://www.cboe.com/tradable-products/sp-500/spx-options/spx-specifications"
@@ -34,6 +38,7 @@ class ContractSemantics:
     exercise_style: str
     multiplier: float | None
     settlement_style: str
+    settlement_reference_event: str
     settlement_reference_time_et: str | None
     exact_series_identity: bool
     state: str
@@ -62,57 +67,74 @@ def resolve_contract_semantics(
     if requested == "XSP":
         if root not in {None, "XSP"}:
             return ContractSemantics(
-                requested, root, "CASH", "EUROPEAN", 100.0, "PM", "16:00:00",
-                False, "SERIES_IDENTITY_CONFLICT",
+                requested, root, "CASH", "EUROPEAN", 100.0, "PM",
+                "OFFICIAL_INDEX_CLOSE", None, False, "SERIES_IDENTITY_CONFLICT",
                 f"Theta series root {root} conflicts with requested XSP.", CBOE_XSP_SPEC,
             )
         return ContractSemantics(
-            requested, "XSP", "CASH", "EUROPEAN", 100.0, "PM", "16:00:00",
-            True, "VERIFIED_PRODUCT_CONTRACT",
-            "Cboe specifies XSP as cash-settled, European-style, $100 multiplier and PM-settled.",
+            requested, "XSP", "CASH", "EUROPEAN", 100.0, "PM",
+            "OFFICIAL_INDEX_CLOSE", None, True, "VERIFIED_PRODUCT_CONTRACT",
+            "Cboe specifies XSP as cash-settled, European-style, $100 multiplier and PM-settled using the official S&P 500 close.",
             CBOE_XSP_SPEC,
         )
 
     if requested == "SPX":
         if root is None:
             return ContractSemantics(
-                requested, None, "CASH", "EUROPEAN", 100.0, "UNRESOLVED", None,
-                False, "SERIES_ROOT_REQUIRED",
+                requested, None, "CASH", "EUROPEAN", 100.0, "UNRESOLVED",
+                "UNRESOLVED", None, False, "SERIES_ROOT_REQUIRED",
                 "SPX product-family identity alone is insufficient because SPX and SPXW use different settlement conventions.",
                 CBOE_SPX_SPEC,
             )
         if root == "SPX":
             return ContractSemantics(
-                requested, root, "CASH", "EUROPEAN", 100.0, "AM", None,
-                True, "VERIFIED_PRODUCT_CONTRACT",
-                "Standard SPX is AM-settled. Its settlement calculation is opening-price based, so Christiania does not invent a single fixed settlement timestamp.",
+                requested, root, "CASH", "EUROPEAN", 100.0, "AM",
+                "SPECIAL_OPENING_QUOTATION", None, True, "VERIFIED_PRODUCT_CONTRACT",
+                "Standard SPX is AM-settled using opening-price inputs. Christiania does not invent a single fixed settlement timestamp.",
                 CBOE_SPX_SPEC,
             )
         if root == "SPXW":
             return ContractSemantics(
-                requested, root, "CASH", "EUROPEAN", 100.0, "PM", "16:00:00",
-                True, "VERIFIED_PRODUCT_CONTRACT",
-                "SPXW is the PM-settled SPX series root.", CBOE_SPX_SPEC,
+                requested, root, "CASH", "EUROPEAN", 100.0, "PM",
+                "OFFICIAL_INDEX_CLOSE", None, True, "VERIFIED_PRODUCT_CONTRACT",
+                "SPXW is the PM-settled SPX series root and uses the official index close.",
+                CBOE_SPX_SPEC,
             )
         return ContractSemantics(
-            requested, root, "CASH", "EUROPEAN", 100.0, "UNRESOLVED", None,
-            False, "SERIES_ROOT_UNRECOGNIZED",
-            f"Unrecognized SPX series root {root}; settlement convention is not inferred.", CBOE_SPX_SPEC,
+            requested, root, "CASH", "EUROPEAN", 100.0, "UNRESOLVED",
+            "UNRESOLVED", None, False, "SERIES_ROOT_UNRECOGNIZED",
+            f"Unrecognized SPX series root {root}; settlement convention is not inferred.",
+            CBOE_SPX_SPEC,
         )
 
     return ContractSemantics(
         requested or "UNKNOWN", root, "UNVERIFIED", "UNVERIFIED", None,
-        "UNRESOLVED", None, False, "UNSUPPORTED_PRODUCT",
+        "UNRESOLVED", "UNRESOLVED", None, False, "UNSUPPORTED_PRODUCT",
         "Product is outside Christiania's V1 cash-settled market-contract registry.", None,
     )
 
 
 def settlement_reference_at(expiration: str, semantics: ContractSemantics) -> datetime | None:
-    if semantics.settlement_reference_time_et is None:
+    if semantics.settlement_reference_event != "OFFICIAL_INDEX_CLOSE":
         return None
     day = datetime.fromisoformat(str(expiration)).date()
-    clock = time.fromisoformat(semantics.settlement_reference_time_et)
-    return datetime.combine(day, clock, tzinfo=NEW_YORK)
+    session = get_market_session(day)
+    if session is None:
+        return None
+    return datetime.fromisoformat(session.close_at)
+
+
+def _probe_code_sha256() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _canonical_evidence_bytes(payload: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        dict(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
 
 
 def _payload_rows(payload: Any) -> tuple[Any, ...]:
@@ -226,7 +248,7 @@ def assess_live_quote_row(
     return {
         "requested_symbol": requested_symbol.upper(),
         "series_root": root,
-        "state": "LIVE_VALIDATED" if not blockers else "LIVE_BLOCKED",
+        "state": "LIVE_DATA_CONTRACT_VALIDATED" if not blockers else "LIVE_BLOCKED",
         "blockers": blockers,
         "raw_timestamp": raw_timestamp,
         "parsed_timestamp_et": parsed_timestamp,
@@ -243,7 +265,7 @@ def assess_live_quote_row(
 
 def _best_live_assessment(symbol: str, rows: Iterable[Mapping[str, Any]], observed_at: datetime) -> dict[str, Any]:
     assessments = [assess_live_quote_row(symbol, row, observed_at=observed_at) for row in rows]
-    passing = [item for item in assessments if item["state"] == "LIVE_VALIDATED"]
+    passing = [item for item in assessments if item["state"] == "LIVE_DATA_CONTRACT_VALIDATED"]
     if passing:
         return min(passing, key=lambda item: abs(float(item.get("quote_age_seconds") or 0.0)))
     if assessments:
@@ -276,6 +298,8 @@ def build_probe_evidence(
         "generated_at": now.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "provider": "THETADATA",
         "provider_base_url": client.base_url,
+        "evidence_format_version": EVIDENCE_FORMAT_VERSION,
+        "probe_code_sha256": _probe_code_sha256(),
         "primary_v1_symbol": PRIMARY_V1_SYMBOL,
         "symbols": {},
     }
@@ -315,13 +339,13 @@ def build_probe_evidence(
         result["symbols"][symbol] = entry
 
     states = {key: value.get("state") for key, value in result["symbols"].items()}
-    live_symbols = sorted(key for key, state in states.items() if state == "LIVE_VALIDATED")
+    live_symbols = sorted(key for key, state in states.items() if state == "LIVE_DATA_CONTRACT_VALIDATED")
     if probe_mode == "reference":
         overall = "REFERENCE_PROVEN" if states and all(state == "REFERENCE_PROVEN" for state in states.values()) else "REFERENCE_INCOMPLETE"
     elif set(live_symbols) == set(result["symbols"]):
-        overall = "LIVE_VALIDATED"
+        overall = "LIVE_DATA_CONTRACT_VALIDATED"
     elif PRIMARY_V1_SYMBOL in live_symbols:
-        overall = "LIVE_VALIDATED_XSP_ONLY"
+        overall = "LIVE_DATA_CONTRACT_VALIDATED_XSP_ONLY"
     else:
         overall = "LIVE_PROBE_FAILED"
     result["overall_state"] = overall
@@ -334,19 +358,35 @@ def build_probe_evidence(
 def write_probe_evidence(evidence: Mapping[str, Any], path: Path | None = None) -> Path:
     target = Path(path or default_evidence_path()).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
-    canonical = json.dumps(dict(evidence), indent=2, sort_keys=True) + "\n"
-    payload = canonical.encode("utf-8")
-    digest = hashlib.sha256(payload).hexdigest()
-    enriched = dict(evidence)
-    enriched["evidence_payload_sha256"] = digest
-    final_payload = json.dumps(enriched, indent=2, sort_keys=True) + "\n"
+    signed = dict(evidence)
+    signed["evidence_format_version"] = EVIDENCE_FORMAT_VERSION
+    signed["probe_code_sha256"] = _probe_code_sha256()
+
+    if signed.get("probe_mode") == "live":
+        generated = datetime.fromisoformat(str(signed["generated_at"]).replace("Z", "+00:00"))
+        signed["live_proof_valid_until"] = (
+            generated.astimezone(UTC) + timedelta(seconds=LIVE_PROOF_MAX_AGE_SECONDS)
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    else:
+        signed.pop("live_proof_valid_until", None)
+
+    digest = hashlib.sha256(_canonical_evidence_bytes(signed)).hexdigest()
+    final = dict(signed)
+    final["evidence_payload_sha256"] = digest
+    final_payload = json.dumps(final, indent=2, sort_keys=True) + "\
+"
     temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(final_payload, encoding="utf-8", newline="\n")
+    temporary.write_text(final_payload, encoding="utf-8", newline="\
+")
     temporary.replace(target)
     return target
 
 
-def read_probe_evidence(path: Path | None = None) -> dict[str, Any] | None:
+def read_probe_evidence(
+    path: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
     target = Path(path or default_evidence_path()).expanduser()
     if not target.exists():
         return None
@@ -354,6 +394,46 @@ def read_probe_evidence(path: Path | None = None) -> dict[str, Any] | None:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("contract_version") != CONTRACT_VERSION:
+    if not isinstance(payload, dict):
         return None
+    if payload.get("contract_version") != CONTRACT_VERSION:
+        return None
+    if payload.get("evidence_format_version") != EVIDENCE_FORMAT_VERSION:
+        return None
+    if payload.get("probe_code_sha256") != _probe_code_sha256():
+        return None
+
+    supplied_digest = str(payload.get("evidence_payload_sha256") or "")
+    signed = dict(payload)
+    signed.pop("evidence_payload_sha256", None)
+    actual_digest = hashlib.sha256(_canonical_evidence_bytes(signed)).hexdigest()
+    if not supplied_digest or not hmac.compare_digest(supplied_digest, actual_digest):
+        return None
+
+    live_symbols = tuple(payload.get("live_symbols") or ())
+    if live_symbols:
+        if payload.get("probe_mode") != "live":
+            return None
+        valid_until_raw = payload.get("live_proof_valid_until")
+        generated_raw = payload.get("generated_at")
+        if not valid_until_raw or not generated_raw:
+            return None
+        try:
+            generated = datetime.fromisoformat(str(generated_raw).replace("Z", "+00:00"))
+            valid_until = datetime.fromisoformat(str(valid_until_raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        observed = now or datetime.now(UTC)
+        if observed.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+        observed = observed.astimezone(UTC)
+        if generated.tzinfo is None or valid_until.tzinfo is None:
+            return None
+        if observed < generated.astimezone(UTC) - timedelta(seconds=DEFAULT_FUTURE_TOLERANCE_SECONDS):
+            return None
+        if observed > valid_until.astimezone(UTC):
+            return None
+        if (valid_until - generated).total_seconds() > LIVE_PROOF_MAX_AGE_SECONDS + 1:
+            return None
+
     return payload

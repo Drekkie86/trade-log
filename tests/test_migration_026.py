@@ -101,3 +101,19 @@ def test_migration_026_rejects_cross_candidate_mark_link(tmp_path):
             """,
             (risk_plan_id,),
         )
+
+
+
+def test_shadow_risk_plan_delete_is_blocked(tmp_path):
+    db = tmp_path / "delete.db"
+    conn = sqlite3.connect(db)
+    _base(conn)
+    conn.executescript(MIGRATION.read_text(encoding="utf-8"))
+    conn.execute("""
+      INSERT INTO shadow_risk_plans(
+        candidate_id,created_at,plan_version,actor,bankroll_cap_eur_minor,
+        max_defined_loss_eur_minor,reserved_risk_eur_minor,entry_assumption_json
+      ) VALUES(1,'2026-09-01T14:01:00Z','v','x',50000,5000,5000,'{}')
+    """)
+    with pytest.raises(sqlite3.IntegrityError, match="cannot be deleted"):
+        conn.execute("DELETE FROM shadow_risk_plans WHERE candidate_id=1")

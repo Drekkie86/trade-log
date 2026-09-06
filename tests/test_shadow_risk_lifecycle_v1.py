@@ -38,17 +38,24 @@ def seed(db):
             id INTEGER PRIMARY KEY,
             candidate_id INTEGER,
             observed_at TEXT,
-            estimated_net_pnl_eur_minor INTEGER
+            estimated_net_pnl_eur_minor INTEGER,
+            measurement_role TEXT NOT NULL DEFAULT 'INDEPENDENT_LEG_LIQUIDATION_STRESS',
+            outcome_eligible INTEGER NOT NULL DEFAULT 0
         );
 
         INSERT INTO shadow_candidates
-        VALUES(1,'2026-09-01T14:00:00+00:00',5000);
+        VALUES(1,'2026-09-08T14:00:00+00:00',5000);
 
         INSERT INTO shadow_candidates
-        VALUES(2,'2026-09-01T14:00:00+00:00',5000);
+        VALUES(2,'2026-09-08T14:00:00+00:00',5000);
         """
     )
     conn.executescript(MIGRATION.read_text(encoding="utf-8"))
+    conn.executescript((
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "027_pre_rc_integrity_hardening.sql"
+    ).read_text(encoding="utf-8"))
     conn.close()
 
 
@@ -60,13 +67,13 @@ def test_price_and_time_stop(tmp_path):
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
         stop_loss_fraction=0.5,
-        time_stop_at="2026-09-02T14:00:00+00:00",
-        created_at="2026-09-01T14:01:00+00:00",
+        time_stop_at="2026-09-09T14:00:00+00:00",
+        created_at="2026-09-08T14:01:00+00:00",
         db_path=db,
     )
     assessment = evaluate_risk_plan(
         plan,
-        observed_at="2026-09-01T15:00:00+00:00",
+        observed_at="2026-09-08T15:00:00+00:00",
         mark_net_pnl_eur_minor=-2600,
     )
     assert assessment.overall_state == "EXIT_TRIGGERED"
@@ -80,13 +87,13 @@ def test_manual_rule_requires_review(tmp_path):
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
         thesis_invalidation_rule="anomaly disappears",
-        created_at="2026-09-01T14:01:00+00:00",
+        created_at="2026-09-08T14:01:00+00:00",
         db_path=db,
     )
     assert (
         evaluate_risk_plan(
             plan,
-            observed_at="2026-09-01T15:00:00+00:00",
+            observed_at="2026-09-08T15:00:00+00:00",
         ).overall_state
         == "REVIEW_REQUIRED"
     )
@@ -100,7 +107,7 @@ def test_bankroll_cap(tmp_path):
             candidate_id=1,
             max_defined_loss_eur_minor=5000,
             reserved_risk_eur_minor=50001,
-            created_at="2026-09-01T14:01:00+00:00",
+            created_at="2026-09-08T14:01:00+00:00",
             db_path=db,
         )
 
@@ -111,19 +118,19 @@ def test_retrospective_plan_is_refused(tmp_path):
     conn = sqlite3.connect(db)
     conn.execute(
         """
-        INSERT INTO shadow_mark_observations
-        VALUES(10,1,'2026-09-01T14:05:00+00:00',-100)
+        INSERT INTO shadow_mark_observations(id,candidate_id,observed_at,estimated_net_pnl_eur_minor)
+        VALUES(10,1,'2026-09-08T14:05:00+00:00',-100)
         """
     )
     conn.commit()
     conn.close()
 
-    with pytest.raises(ValueError, match="Prospective risk plan refused"):
+    with pytest.raises(ValueError, match="already has shadow marks"):
         create_frozen_risk_plan(
             candidate_id=1,
             max_defined_loss_eur_minor=5000,
             reserved_risk_eur_minor=5000,
-            created_at="2026-09-01T14:06:00+00:00",
+            created_at="2026-09-08T14:01:00+00:00",
             db_path=db,
         )
 
@@ -135,14 +142,14 @@ def test_assessment_cannot_predate_plan(tmp_path):
         candidate_id=1,
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
-        created_at="2026-09-01T14:10:00+00:00",
+        created_at="2026-09-08T14:10:00+00:00",
         db_path=db,
     )
+    from datetime import timedelta
+    recorded = __import__("datetime").datetime.fromisoformat(plan.recorded_at.replace("Z", "+00:00"))
+    before = (recorded - timedelta(seconds=1)).isoformat()
     with pytest.raises(ValueError, match="cannot predate"):
-        evaluate_risk_plan(
-            plan,
-            observed_at="2026-09-01T14:09:00+00:00",
-        )
+        evaluate_risk_plan(plan, observed_at=before)
 
 
 def test_wrong_candidate_shadow_mark_is_refused(tmp_path):
@@ -152,14 +159,14 @@ def test_wrong_candidate_shadow_mark_is_refused(tmp_path):
         candidate_id=1,
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
-        created_at="2026-09-01T14:01:00+00:00",
+        created_at="2026-09-08T14:01:00+00:00",
         db_path=db,
     )
     conn = sqlite3.connect(db)
     conn.execute(
         """
-        INSERT INTO shadow_mark_observations
-        VALUES(11,2,'2026-09-01T14:05:00+00:00',-100)
+        INSERT INTO shadow_mark_observations(id,candidate_id,observed_at,estimated_net_pnl_eur_minor)
+        VALUES(11,2,'2026-09-08T14:05:00+00:00',-100)
         """
     )
     conn.commit()
@@ -169,7 +176,7 @@ def test_wrong_candidate_shadow_mark_is_refused(tmp_path):
         record_risk_assessment(
             candidate_id=1,
             shadow_mark_id=11,
-            observed_at="2026-09-01T14:05:00+00:00",
+            observed_at="2026-09-08T14:05:00+00:00",
             db_path=db,
         )
 
@@ -181,14 +188,14 @@ def test_shadow_mark_timestamp_and_pnl_are_authoritative(tmp_path):
         candidate_id=1,
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
-        created_at="2026-09-01T14:01:00+00:00",
+        created_at="2026-09-08T14:01:00+00:00",
         db_path=db,
     )
     conn = sqlite3.connect(db)
     conn.execute(
         """
-        INSERT INTO shadow_mark_observations
-        VALUES(12,1,'2026-09-01T14:05:00+00:00',-100)
+        INSERT INTO shadow_mark_observations(id,candidate_id,observed_at,estimated_net_pnl_eur_minor)
+        VALUES(12,1,'2026-09-08T14:05:00+00:00',-100)
         """
     )
     conn.commit()
@@ -198,7 +205,7 @@ def test_shadow_mark_timestamp_and_pnl_are_authoritative(tmp_path):
         record_risk_assessment(
             candidate_id=1,
             shadow_mark_id=12,
-            observed_at="2026-09-01T14:06:00+00:00",
+            observed_at="2026-09-08T14:06:00+00:00",
             db_path=db,
         )
 
@@ -206,7 +213,7 @@ def test_shadow_mark_timestamp_and_pnl_are_authoritative(tmp_path):
         record_risk_assessment(
             candidate_id=1,
             shadow_mark_id=12,
-            observed_at="2026-09-01T14:05:00+00:00",
+            observed_at="2026-09-08T14:05:00+00:00",
             mark_net_pnl_eur_minor=-999,
             db_path=db,
         )
@@ -220,7 +227,7 @@ def test_monitor_records_all_unassessed_marks(tmp_path):
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
         stop_loss_fraction=0.5,
-        created_at="2026-09-01T14:01:00+00:00",
+        created_at="2026-09-08T14:01:00+00:00",
         db_path=db,
     )
     conn = sqlite3.connect(db)
@@ -232,8 +239,8 @@ def test_monitor_records_all_unassessed_marks(tmp_path):
         VALUES(?,?,?,?)
         """,
         [
-            (20,1,"2026-09-01T14:05:00+00:00",-100),
-            (21,1,"2026-09-01T14:10:00+00:00",-2600),
+            (20,1,"2026-09-08T14:05:00+00:00",-100),
+            (21,1,"2026-09-08T14:10:00+00:00",-2600),
         ],
     )
     conn.commit()

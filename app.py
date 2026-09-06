@@ -102,7 +102,7 @@ COLUMN_LABELS = {
     "quality_state": "Mark quality",
     "measurement_role": "Measurement role",
     "outcome_eligible": "Outcome eligible",
-    "mark_count": "Mark count",
+    "mark_count": "Total shadow marks",
     "latest_mark_at": "Latest mark",
     "latest_estimated_net_pnl_eur_minor": "Latest est. net P&L (EUR cents)",
     "latest_measurement_role": "Latest measurement role",
@@ -687,7 +687,7 @@ elif page == "Decision Desk":
     )
     st.caption(
         "CURRENT GLOBAL CONCLUSION: NO TRADE while candidate-specific scientific governance remains disabled. "
-        "The desk can also classify research as CONTINUE SHADOW. ELIGIBLE FOR MANUAL TRADE REVIEW requires every gate. "
+        "The desk can also classify research as CONTINUE SHADOW. ELIGIBLE FOR MANUAL REVIEW requires every gate. "
         "Christiania does not submit orders."
     )
 
@@ -729,7 +729,7 @@ elif page == "Decision Desk":
 
     no_trade_count = sum(1 for row in board if row.get("decision_desk_disposition") == "NO TRADE")
     shadow_count = sum(1 for row in board if row.get("decision_desk_disposition") == "CONTINUE SHADOW")
-    eligible_count = sum(1 for row in board if row.get("decision_desk_disposition") == "ELIGIBLE FOR MANUAL TRADE REVIEW")
+    eligible_count = sum(1 for row in board if row.get("decision_desk_disposition") == "ELIGIBLE FOR MANUAL REVIEW")
     cash_verified_count = sum(1 for row in board if row.get("settlement_state") == "VERIFIED_CASH_SETTLED")
     top1, top2, top3, top4 = st.columns(4)
     top1.metric("Tracked candidates", _fmt_count(len(board)))
@@ -801,7 +801,7 @@ elif page == "Decision Desk":
         elif disposition == "CONTINUE SHADOW":
             st.warning("CONTINUE SHADOW — useful research, not eligible for manual trade review")
         else:
-            st.success("ELIGIBLE FOR MANUAL TRADE REVIEW — still not an order")
+            st.success("ELIGIBLE FOR MANUAL REVIEW — still not an order")
         if blockers:
             st.markdown("**Unresolved / blocking reasons:** " + " · ".join(blockers))
         st.caption("A visually attractive anomaly can never override settlement, quote quality, evidence, governance or risk controls.")
@@ -1109,14 +1109,15 @@ elif page == "Shadow Lab":
         "Candidate follow-up: inception, subsequent marks, validated outcomes, and current evidence state.",
     )
     tracking = snapshot.get("shadow_tracking", {})
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Proposals", _fmt_count(counts["proposals_total"]), f"{_fmt_count(counts['proposals_blocked'])} builder-blocked")
     c2.metric("Admitted shadows", _fmt_count(counts["admitted_total"]), f"{_fmt_count(counts['admission_blocked'])} blocked")
     c3.metric("Recorded marks", _fmt_count(counts["shadow_marks"]), f"{_fmt_count(tracking.get('marked_candidates', 0))} candidate(s)")
-    c4.metric("Validated outcomes", _fmt_count(tracking.get("validated_outcomes", 0)), "outcome-eligible only")
+    c4.metric("Validated hold/mark outcomes", _fmt_count(tracking.get("validated_outcomes", 0)), "raw population")
+    c5.metric("Predeclared risk exits", _fmt_count(tracking.get("risk_exit_outcomes", 0)), f"{_fmt_count(tracking.get('eligible_risk_exit_outcomes', 0))} evidence-eligible")
     _visual_note(
         "This is the follow-up laboratory: proposals are ideas, admitted shadows are hypothetical experiments we track, "
-        "marks are later valuations, and only outcome-eligible marks may become validated outcomes."
+        "marks are later valuations. Validated hold/mark outcomes and predeclared risk-trigger exits are deliberately separate measurement populations."
     )
 
     followup = snapshot.get("shadow_candidate_followup", [])

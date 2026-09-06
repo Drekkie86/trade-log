@@ -24,7 +24,7 @@ def resolve_db_path(db_path=None) -> Path:
 
     return DB_PATH
 
-EXPECTED_SCHEMA_VERSION = 26
+EXPECTED_SCHEMA_VERSION = 27
 
 
 PROVENANCE_VALUES = {

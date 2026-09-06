@@ -275,8 +275,9 @@ def test_join_is_measurably_faster_than_the_legacy_in_list():
     Regression guard: at a size large enough to matter, the rewritten
     query must be meaningfully faster than the original. This is a real
     timing assertion, not a query-plan check, so it is marked slow and
-    uses a generous margin (3x) to avoid flaking on a loaded CI runner
-    while still catching an accidental revert.
+    uses a 2.5x floor. The prior 3x single-shot threshold was observed to
+    flap between ~2.95x and >3x on the unchanged baseline under runner load;
+    2.5x still catches a meaningful regression without pretending timing is exact.
     """
     import sys
 
@@ -316,7 +317,7 @@ def test_join_is_measurably_faster_than_the_legacy_in_list():
         os.remove(path)
 
     assert len(fixed) == len(legacy)
-    assert t_fixed * 3 < t_legacy, (
+    assert t_fixed * 2.5 < t_legacy, (
         f"Expected the fixed query to be meaningfully faster: "
         f"legacy={t_legacy:.3f}s fixed={t_fixed:.3f}s"
     )

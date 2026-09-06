@@ -1,4 +1,6 @@
-import json
+from datetime import UTC, datetime
+
+from src.research.cash_settled_market_contract import write_probe_evidence
 
 import pytest
 
@@ -30,13 +32,25 @@ def test_cash_settled_symbol_requires_explicit_opt_in(monkeypatch):
         configured_symbols()
 
 
+def _write_live_proof(path):
+    now = datetime.now(UTC)
+    return write_probe_evidence({
+        "contract_version":"CASH_SETTLED_MARKET_CONTRACT_V1",
+        "probe_mode":"live",
+        "generated_at":now.isoformat(timespec="milliseconds").replace("+00:00","Z"),
+        "provider":"THETADATA",
+        "provider_base_url":"http://127.0.0.1:25503/v3",
+        "overall_state":"LIVE_DATA_CONTRACT_VALIDATED_XSP_ONLY",
+        "live_symbols":["XSP"],
+        "symbols":{},
+        "decision_enabled":False,
+        "broker_order_path":False,
+    }, path)
+
+
 def test_cash_settled_symbol_requires_live_proof_even_after_opt_in(monkeypatch, tmp_path):
     path = tmp_path / "evidence.json"
-    path.write_text(json.dumps({
-        "contract_version": "CASH_SETTLED_MARKET_CONTRACT_V1",
-        "overall_state": "REFERENCE_PROVEN",
-        "live_symbols": [],
-    }), encoding="utf-8")
+    path.write_text('{"contract_version":"CASH_SETTLED_MARKET_CONTRACT_V1","overall_state":"REFERENCE_PROVEN","live_symbols":[]}')
     monkeypatch.setenv("CHRISTIANIA_SYMBOLS", "XSP")
     monkeypatch.setenv("CHRISTIANIA_ENABLE_CASH_SETTLED_RESEARCH", "1")
     monkeypatch.setenv("CHRISTIANIA_CASH_SETTLED_EVIDENCE_PATH", str(path))
@@ -44,13 +58,8 @@ def test_cash_settled_symbol_requires_live_proof_even_after_opt_in(monkeypatch, 
         configured_symbols()
 
 
-def test_cash_settled_symbol_can_run_only_after_opt_in_and_live_proof(monkeypatch, tmp_path):
-    path = tmp_path / "evidence.json"
-    path.write_text(json.dumps({
-        "contract_version": "CASH_SETTLED_MARKET_CONTRACT_V1",
-        "overall_state": "LIVE_VALIDATED_XSP_ONLY",
-        "live_symbols": ["XSP"],
-    }), encoding="utf-8")
+def test_cash_settled_symbol_can_run_only_after_opt_in_and_integrity_checked_live_proof(monkeypatch, tmp_path):
+    path = _write_live_proof(tmp_path / "evidence.json")
     monkeypatch.setenv("CHRISTIANIA_SYMBOLS", "XSP")
     monkeypatch.setenv("CHRISTIANIA_ENABLE_CASH_SETTLED_RESEARCH", "1")
     monkeypatch.setenv("CHRISTIANIA_CASH_SETTLED_EVIDENCE_PATH", str(path))

@@ -16,8 +16,8 @@ def test_release_manifest_fingerprints_schema_migrations_and_quant_registry(db_p
 
     assert result.version == "1.0.0-rc1"
     assert result.release_channel == "release-candidate"
-    assert result.schema_version == 26
-    assert result.expected_schema_version == 26
+    assert result.schema_version == 27
+    assert result.expected_schema_version == 27
     assert len(result.migration_chain_sha256) == 64
     assert len(result.quant_registry_sha256) == 64
     assert result.dependencies["numpy"]

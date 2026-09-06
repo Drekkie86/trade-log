@@ -878,6 +878,16 @@ def load_command_deck(
             '''
         ).fetchone()
 
+        risk_exit_tracking_row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS risk_exit_outcomes,
+                SUM(CASE WHEN evidence_eligible = 1 THEN 1 ELSE 0 END)
+                    AS eligible_risk_exit_outcomes
+            FROM shadow_risk_exit_outcomes;
+            """
+        ).fetchone()
+
         shadow_tracking = {
             "mark_observations": int(
                 shadow_tracking_row["mark_observations"] or 0
@@ -887,6 +897,12 @@ def load_command_deck(
             ),
             "validated_outcomes": int(
                 shadow_tracking_row["validated_outcomes"] or 0
+            ),
+            "risk_exit_outcomes": int(
+                risk_exit_tracking_row["risk_exit_outcomes"] or 0
+            ),
+            "eligible_risk_exit_outcomes": int(
+                risk_exit_tracking_row["eligible_risk_exit_outcomes"] or 0
             ),
         }
 

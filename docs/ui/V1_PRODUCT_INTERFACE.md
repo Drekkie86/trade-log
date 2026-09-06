@@ -144,6 +144,6 @@ The Decision Desk is now the synthesis surface rather than a simple candidate sa
 The three operator-facing outcomes are:
 - `NO TRADE`: at least one hard safety gate fails;
 - `CONTINUE SHADOW`: useful research remains, but evidence/operational decision gates are incomplete;
-- `ELIGIBLE FOR MANUAL TRADE REVIEW`: reserved for a future state in which every explicit gate is satisfied. It is still not an order.
+- `ELIGIBLE FOR MANUAL REVIEW`: reserved for a future state in which every explicit gate is satisfied. It is still not an order.
 
 Christiania does not fabricate calibrated EV. Until probability calibration, realistic cost/slippage integration, event context and exact timestamp semantics are available, the UI states those gaps directly.

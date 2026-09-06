@@ -26,7 +26,7 @@ def _seed_source(path):
                 version,
                 applied_at
             )
-            VALUES(26, '2026-09-05T00:00:00Z');
+            VALUES(27, '2026-09-05T00:00:00Z');
             '''
         )
         conn.execute(
@@ -61,7 +61,7 @@ def test_verified_backup_preserves_committed_wal_data(
         retention=3,
     )
 
-    assert result.schema_version == 26
+    assert result.schema_version == 27
     assert result.integrity_check == "ok"
     assert (
         result.foreign_key_violation_count
@@ -147,7 +147,7 @@ def test_verified_backup_rejects_stale_schema(
                 version,
                 applied_at
             )
-            VALUES(25, '2026-09-04T00:00:00Z');
+            VALUES(26, '2026-09-04T00:00:00Z');
             """
         )
         conn.commit()

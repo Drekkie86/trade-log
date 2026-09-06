@@ -100,3 +100,25 @@ def test_manual_review_cannot_be_reached_while_event_ev_and_exact_tte_are_missin
     assert "EVENT_RISK_CONTEXT_NOT_INTEGRATED" in board[0]["decision_blockers"]
     assert "CALIBRATED_NET_EV_NOT_AVAILABLE" in board[0]["decision_blockers"]
     assert "EXACT_EXPIRATION_TIMESTAMP_UNAVAILABLE" in board[0]["decision_blockers"]
+
+
+
+def test_v1_manual_review_disposition_is_unreachable_even_for_favorable_candidate():
+    candidate = _candidate(
+        expiration_at="2026-09-12T16:00:00-04:00",
+        target_quote_at="2026-09-05T20:00:19Z",
+    )
+    board = build_candidate_review_board(
+        [candidate],
+        models=_models(True),
+        hypotheses=_hypotheses(True),
+        max_trade_risk_eur=25.0,
+        stop_loss_fraction=0.5,
+        now=datetime(2026,9,5,20,0,20,tzinfo=UTC),
+    )
+    row = board[0]
+    assert row["decision_desk_disposition"] == "CONTINUE SHADOW"
+    assert row["decision_desk_disposition"] != "ELIGIBLE FOR MANUAL REVIEW"
+    assert "EVENT_RISK_CONTEXT_NOT_INTEGRATED" in row["decision_blockers"]
+    assert "CALIBRATED_NET_EV_NOT_AVAILABLE" in row["decision_blockers"]
+    assert "EXACT_EXPIRATION_TIMESTAMP_UNAVAILABLE" not in row["decision_blockers"]

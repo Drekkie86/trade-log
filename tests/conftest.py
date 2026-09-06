@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from src.database.repository import get_connection
+from src.database.migration_runner import apply_pending_migrations as apply_migrations_atomically
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -40,42 +41,7 @@ def get_db_version(
 def apply_pending_migrations(
     connection: sqlite3.Connection,
 ) -> None:
-    """
-    Apply any migrations newer than the fresh-install schema.
-
-    If trade_log_schema.sql is already v3,
-    migrations 002 and 003 are skipped.
-    """
-    current_version = get_db_version(
-        connection
-    )
-
-    migration_files = sorted(
-        MIGRATIONS_DIR.glob("*.sql")
-    )
-
-    for migration_path in migration_files:
-        migration_version = int(
-            migration_path.name.split(
-                "_",
-                1,
-            )[0]
-        )
-
-        if migration_version <= current_version:
-            continue
-
-        sql = migration_path.read_text(
-            encoding="utf-8"
-        )
-
-        connection.executescript(
-            sql
-        )
-
-        current_version = get_db_version(
-            connection
-        )
+    apply_migrations_atomically(connection, MIGRATIONS_DIR)
 
 
 @pytest.fixture

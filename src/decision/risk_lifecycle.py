@@ -18,6 +18,8 @@ class FrozenRiskPlan:
     id: int
     candidate_id: int
     created_at: str
+    recorded_at: str
+    prospectivity_state: str
     plan_version: str
     actor: str
     bankroll_cap_eur_minor: int
@@ -65,7 +67,13 @@ def get_frozen_risk_plan(*, candidate_id: int, db_path=None) -> FrozenRiskPlan |
     conn = get_connection(db_path)
     try:
         row = conn.execute(
-            "SELECT * FROM shadow_risk_plans WHERE candidate_id = ?",
+            """
+            SELECT p.*, rec.recorded_at, rec.prospectivity_state
+            FROM shadow_risk_plans AS p
+            JOIN shadow_risk_plan_recordings AS rec
+              ON rec.risk_plan_id = p.id
+            WHERE p.candidate_id = ?
+            """,
             (candidate_id,),
         ).fetchone()
     finally:
@@ -86,6 +94,8 @@ def get_frozen_risk_plan(*, candidate_id: int, db_path=None) -> FrozenRiskPlan |
         id=int(row["id"]),
         candidate_id=int(row["candidate_id"]),
         created_at=str(row["created_at"]),
+        recorded_at=str(row["recorded_at"]),
+        prospectivity_state=str(row["prospectivity_state"]),
         plan_version=str(row["plan_version"]),
         actor=str(row["actor"]),
         bankroll_cap_eur_minor=int(row["bankroll_cap_eur_minor"]),
@@ -156,22 +166,18 @@ def create_frozen_risk_plan(
         if created_dt < _aware(str(candidate["surfaced_at"])):
             raise ValueError("Risk plan cannot predate the candidate.")
 
-        existing_marks = conn.execute(
-            """
-            SELECT observed_at
-            FROM shadow_mark_observations
-            WHERE candidate_id = ?
-            ORDER BY observed_at, id;
-            """,
+        # Prospectivity does not depend on caller-supplied created_at.
+        # Any pre-existing shadow mark means the outcome history has begun,
+        # so a first risk plan is refused outright. A DB trigger enforces the
+        # same invariant for direct SQL callers.
+        existing_mark = conn.execute(
+            "SELECT 1 FROM shadow_mark_observations WHERE candidate_id = ? LIMIT 1",
             (candidate_id,),
-        ).fetchall()
-        if existing_marks:
-            first_mark = min(_aware(str(row["observed_at"])) for row in existing_marks)
-            if first_mark <= created_dt:
-                raise ValueError(
-                    "Prospective risk plan refused: candidate already has an outcome mark "
-                    "at or before the requested freeze time."
-                )
+        ).fetchone()
+        if existing_mark is not None:
+            raise ValueError(
+                "Prospective risk plan refused: candidate already has shadow marks."
+            )
 
         with conn:
             conn.execute(
@@ -207,6 +213,8 @@ def create_frozen_risk_plan(
     plan = get_frozen_risk_plan(candidate_id=candidate_id, db_path=db_path)
     if plan is None:
         raise RuntimeError("Frozen risk plan insert did not persist.")
+    if plan.prospectivity_state != "DB_RECORDED_PROSPECTIVE":
+        raise RuntimeError("New risk plan did not receive DB-recorded prospective origin evidence.")
     return plan
 
 
@@ -219,8 +227,10 @@ def evaluate_risk_plan(
     event_risk_active: bool | None = None,
 ) -> RiskAssessment:
     observed_dt = _aware(observed_at)
-    if observed_dt < _aware(plan.created_at):
-        raise ValueError("Risk assessment cannot predate the frozen plan.")
+    if plan.prospectivity_state != "DB_RECORDED_PROSPECTIVE":
+        raise ValueError("Risk assessment refused: risk-plan prospectivity is not DB-verified.")
+    if observed_dt < _aware(plan.recorded_at):
+        raise ValueError("Risk assessment cannot predate the DB-recorded risk plan.")
 
     reasons: list[str] = []
     loss_fraction_reserved = None
@@ -398,16 +408,20 @@ def monitor_frozen_risk_plans(*, db_path=None) -> dict[str, int]:
             """
             SELECT
                 p.candidate_id,
-                p.created_at AS plan_created_at,
+                rec.recorded_at AS plan_recorded_at,
+                rec.prospectivity_state,
                 m.id AS mark_id,
                 m.observed_at,
                 m.estimated_net_pnl_eur_minor
             FROM shadow_risk_plans AS p
+            JOIN shadow_risk_plan_recordings AS rec
+              ON rec.risk_plan_id = p.id
             JOIN shadow_mark_observations AS m
               ON m.candidate_id = p.candidate_id
             LEFT JOIN shadow_risk_assessments AS a
               ON a.shadow_mark_id = m.id
             WHERE a.id IS NULL
+              AND rec.prospectivity_state = 'DB_RECORDED_PROSPECTIVE'
             ORDER BY m.observed_at, m.id;
             """
         ).fetchall()
@@ -429,7 +443,7 @@ def monitor_frozen_risk_plans(*, db_path=None) -> dict[str, int]:
     recorded = 0
     retrospective_marks = 0
     for row in rows:
-        if _aware(str(row["observed_at"])) < _aware(str(row["plan_created_at"])):
+        if _aware(str(row["observed_at"])) < _aware(str(row["plan_recorded_at"])):
             retrospective_marks += 1
             continue
         record_risk_assessment(

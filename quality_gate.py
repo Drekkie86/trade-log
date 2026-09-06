@@ -418,39 +418,28 @@ def build_fresh_database() -> GateResult:
 
 
 def run_pytest() -> GateResult:
-    completed = run(
-        sys.executable,
-        "-m",
-        "pytest",
+    # Run deterministic/core tests separately from timing-sensitive slow tests.
+    # Use inherited stdout/stderr instead of PIPE capture: some integration
+    # tests spawn child processes that can keep captured pipe handles open on
+    # POSIX even after pytest itself has completed.
+    core = run(
+        sys.executable, "-m", "pytest", "-q", "-m", "not slow",
+        capture=False,
     )
+    if core.returncode != 0:
+        return GateResult("full pytest suite", False, "core pytest population failed")
 
-    if completed.returncode == 0:
-        summary = ""
-        for line in reversed(
-            completed.stdout.splitlines()
-        ):
-            if "passed" in line:
-                summary = line.strip()
-                break
-
-        return GateResult(
-            "full pytest suite",
-            True,
-            summary or "pytest passed",
-        )
-
-    tail = "\n".join(
-        (
-            completed.stdout
-            + "\n"
-            + completed.stderr
-        ).splitlines()[-25:]
+    slow = run(
+        sys.executable, "-m", "pytest", "-q", "-m", "slow",
+        capture=False,
     )
+    if slow.returncode != 0:
+        return GateResult("full pytest suite", False, "slow pytest population failed")
 
     return GateResult(
         "full pytest suite",
-        False,
-        tail,
+        True,
+        "core and slow pytest populations passed separately",
     )
 
 

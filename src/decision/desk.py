@@ -289,9 +289,10 @@ def build_candidate_review_board(
             shadow_blockers.extend(governance.blockers or ("CANDIDATE_GOVERNANCE_DISABLED",))
         if not tte["decision_eligible"]:
             shadow_blockers.append("EXACT_EXPIRATION_TIMESTAMP_UNAVAILABLE")
-        # Event/jump calendar integration is deliberately missing in V1 and must fail closed for manual eligibility.
+        # V1 SAFETY INVARIANT: these two unconditional blockers deliberately make
+        # ELIGIBLE FOR MANUAL REVIEW unreachable. Keep the behavioral regression
+        # test in tests/test_decision_desk_v1.py in sync with any future change.
         shadow_blockers.append("EVENT_RISK_CONTEXT_NOT_INTEGRATED")
-        # Prospective evidence can inform review but never auto-enables decisions.
         shadow_blockers.append("CALIBRATED_NET_EV_NOT_AVAILABLE")
 
         all_blockers = list(dict.fromkeys(hard_blockers + shadow_blockers))
@@ -302,7 +303,7 @@ def build_candidate_review_board(
             disposition = "CONTINUE SHADOW"
             research_action = "CONTINUE SHADOW"
         else:
-            disposition = "ELIGIBLE FOR MANUAL TRADE REVIEW"
+            disposition = "ELIGIBLE FOR MANUAL REVIEW"
             research_action = "MANUAL REVIEW"
 
         board.append({

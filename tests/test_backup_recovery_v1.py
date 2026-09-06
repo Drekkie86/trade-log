@@ -57,8 +57,8 @@ def test_restore_drill_never_changes_source_backup(db_path, tmp_path):
 
     after = open(backup, "rb").read()
     assert drill.state == "PASSED"
-    assert drill.source_schema_version == 26
-    assert drill.restored_schema_version == 26
+    assert drill.source_schema_version == 27
+    assert drill.restored_schema_version == 27
     assert drill.integrity_check == "ok"
     assert drill.foreign_key_violation_count == 0
     assert before == after
