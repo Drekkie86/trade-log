@@ -132,6 +132,64 @@ def inventory_backups(
     )
 
 
+def inventory_backups_fast(
+    backup_dir: str | Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> BackupInventory:
+    """Metadata-only inventory for latency-sensitive interactive UI paths.
+
+    No SQLite database is opened here. Consequently, no file is represented
+    as VALID or INVALID; every discovered backup is explicitly NOT_REVERIFIED.
+    Deep verification remains the responsibility of inventory_backups().
+    """
+    directory = resolve_backup_dir(backup_dir)
+    observed_at = datetime.now(UTC) if now is None else now.astimezone(UTC)
+
+    if not directory.exists():
+        return BackupInventory(
+            directory=str(directory),
+            total_files=0,
+            valid_files=0,
+            invalid_files=0,
+            latest_valid_path=None,
+            latest_valid_age_hours=None,
+            entries=(),
+        )
+
+    entries: list[BackupInventoryEntry] = []
+    for path in sorted(directory.glob("christiania_backup_*.db"), reverse=True):
+        stat = path.stat()
+        modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+        age_hours = max(
+            0.0,
+            (observed_at - modified).total_seconds() / 3600.0,
+        )
+        entries.append(
+            BackupInventoryEntry(
+                path=str(path),
+                filename=path.name,
+                size_bytes=stat.st_size,
+                modified_at=modified.isoformat(),
+                age_hours=age_hours,
+                schema_version=None,
+                integrity_check=None,
+                foreign_key_violation_count=None,
+                state="NOT_REVERIFIED",
+                detail="METADATA_ONLY_INTERACTIVE",
+            )
+        )
+
+    return BackupInventory(
+        directory=str(directory),
+        total_files=len(entries),
+        valid_files=0,
+        invalid_files=0,
+        latest_valid_path=None,
+        latest_valid_age_hours=None,
+        entries=tuple(entries),
+    )
+
 def resolve_latest_valid_backup(backup_dir: str | Path | None = None) -> Path:
     inventory = inventory_backups(backup_dir)
     if not inventory.latest_valid_path:

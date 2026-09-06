@@ -18,7 +18,10 @@ import pandas as pd
 import streamlit as st
 
 from src.dashboard.read_model import load_command_deck
-from src.operations.backup_recovery import inventory_backups
+from src.operations.backup_recovery import (
+    inventory_backups,
+    inventory_backups_fast,
+)
 from src.operations.burn_in import read_burn_in_samples, summarize_burn_in
 from src.operations.release_manifest import build_release_manifest
 from src.operations.v1_readiness import assess_v1_readiness
@@ -464,15 +467,32 @@ def _load_runtime_state(*, force: bool = False):
     if force or "_chr_snapshot" not in st.session_state or stale:
         with st.spinner("Refreshing Christiania research state…"):
             st.session_state["_chr_snapshot"] = load_command_deck(
-                include_provider_health=True
+                include_provider_health=True,
+                deep_integrity=False,
             )
-            st.session_state["_chr_backup_inventory"] = inventory_backups().as_dict()
+            st.session_state["_chr_backup_inventory"] = (
+                inventory_backups_fast().as_dict()
+            )
             st.session_state["_chr_runtime_loaded_at"] = now
 
     return (
         st.session_state["_chr_snapshot"],
         st.session_state["_chr_backup_inventory"],
     )
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_deep_ops_readiness():
+    deep_snapshot = load_command_deck(
+        include_provider_health=True,
+        deep_integrity=True,
+    )
+    deep_backups = inventory_backups().as_dict()
+    deep_readiness = assess_v1_readiness(
+        deep_snapshot,
+        deep_backups,
+    ).as_dict()
+    return deep_snapshot, deep_backups, deep_readiness
 
 
 snapshot, backup_inventory = _load_runtime_state()
@@ -528,7 +548,6 @@ market_clock = snapshot["market_clock"]
 daemon_health = snapshot["daemon_health"]
 theta_health = snapshot.get("theta_health", {"state": "NOT_PROBED"})
 database = snapshot["database"]
-readiness = assess_v1_readiness(snapshot, backup_inventory).as_dict()
 quality = snapshot.get("data_quality", {})
 decision_candidates = snapshot.get("decision_desk_candidates", [])
 scientific_decision_enabled = bool(
@@ -552,7 +571,7 @@ if page == "Dashboard":
                 [
                     ("Research daemon", _status_label(daemon_health.get("state")), daemon_health.get("state")),
                     ("Latest cycle", _status_label(latest_iteration.get("status") if latest_iteration else None), latest_iteration.get("status") if latest_iteration else None),
-                    ("Storage & backups", f"{_fmt_count(backup_inventory.get('valid_files', 0))} verified", "READY" if backup_inventory.get("valid_files") else "WARN"),
+                    ("Storage & backups", f"{_fmt_count(backup_inventory.get('total_files', 0))} file(s)", "INFO"),
                 ]
             ),
             badge_label="Healthy" if daemon_health.get("state") in {"HEALTHY", "NO_DAEMON_LEASE"} else daemon_health.get("state", "Unknown"),
@@ -644,7 +663,7 @@ if page == "Dashboard":
     lower1, lower2, lower3 = st.columns([1.1, 1.1, 0.8])
     with lower1:
         section_heading("Calibration evidence state")
-        dates = readiness["independent_prospective_dates"]
+        dates = int(prospective.get("independent_dates", 0) or 0)
         st.progress(_pct(dates, 20), text=f"{dates}/20 prospective dates toward preregistration review")
         st.markdown(
             f"**Calibration:** {badge(calibration_state['state'], tone=calibration_state['tone'])}",
@@ -652,11 +671,20 @@ if page == "Dashboard":
         )
         st.caption(calibration_state["detail"])
         st.markdown(
-            f"**Product state:** {badge(_status_label(readiness['product_state']))}",
+            "**Operational readiness:** "
+            + badge("Deep verification in Ops", tone="info"),
             unsafe_allow_html=True,
         )
         st.markdown(
-            f"**Scientific maturity:** {badge(_status_label(readiness['scientific_state']), tone='info')}",
+            "**Scientific maturity:** "
+            + badge(
+                "Prereg Review Threshold Reached"
+                if dates >= 20
+                else "First Descriptive Review Reached"
+                if dates >= 5
+                else "Prospective Calibration Accumulating",
+                tone="info",
+            ),
             unsafe_allow_html=True,
         )
 
@@ -668,17 +696,20 @@ if page == "Dashboard":
         st.caption("Models are maps, not territory. All V1 challengers remain research-only.")
 
     with lower3:
-        section_heading("Verified backups")
-        latest_age = backup_inventory.get("latest_valid_age_hours")
+        section_heading("Backup files")
+        backup_entries = backup_inventory.get("entries", [])
+        latest_age = min(
+            (float(row.get("age_hours", 0.0)) for row in backup_entries),
+            default=None,
+        )
         st.metric(
-            "Valid backups",
-            _fmt_count(backup_inventory.get("valid_files", 0)),
+            "Backup files",
+            _fmt_count(backup_inventory.get("total_files", 0)),
             "—" if latest_age is None else f"latest {_fmt_number(latest_age, decimals=1)}h ago",
         )
-        if backup_inventory.get("invalid_files"):
-            st.error(f"{backup_inventory['invalid_files']} invalid backup(s)")
-        else:
-            st.success("Recovery inventory nominal")
+        st.caption(
+            "Metadata-only on interactive startup. Open Ops → Readiness for deep backup verification."
+        )
 
 elif page == "Decision Desk":
     section_heading(
@@ -1352,9 +1383,18 @@ elif page == "Ops":
     )
 
     if ops_view == "Readiness":
+        with st.spinner(
+            "Running deep database and backup verification for V1 readiness…"
+        ):
+            deep_snapshot, deep_backup_inventory, readiness = (
+                _cached_deep_ops_readiness()
+            )
+        quality = deep_snapshot.get("data_quality", {})
+
         section_heading(
             "V1 readiness",
-            "Operational readiness is deliberately separate from scientific maturity.",
+            "Operational readiness is deliberately separate from scientific maturity. "
+            "This view performs deep verification and may take time on multi-gigabyte data.",
         )
         c1, c2, c3 = st.columns(3)
         c1.metric("Product state", _status_label(readiness["product_state"]))
@@ -1366,9 +1406,9 @@ elif page == "Ops":
         c3.metric(
             "Latest verified backup",
             "None"
-            if backup_inventory["latest_valid_age_hours"] is None
-            else f"{_fmt_number(backup_inventory['latest_valid_age_hours'], decimals=1)}h ago",
-            f"{_fmt_count(backup_inventory['valid_files'])} valid / {_fmt_count(backup_inventory['invalid_files'])} invalid",
+            if deep_backup_inventory["latest_valid_age_hours"] is None
+            else f"{_fmt_number(deep_backup_inventory['latest_valid_age_hours'], decimals=1)}h ago",
+            f"{_fmt_count(deep_backup_inventory['valid_files'])} valid / {_fmt_count(deep_backup_inventory['invalid_files'])} invalid",
         )
 
         _show_table(readiness["checks"])
@@ -1422,8 +1462,8 @@ elif page == "Ops":
             _show_table(quality["failure_types"])
 
         section_heading("Backup inventory")
-        if backup_inventory["entries"]:
-            _show_table(backup_inventory["entries"])
+        if deep_backup_inventory["entries"]:
+            _show_table(deep_backup_inventory["entries"])
         else:
             st.warning("No verified backup files have been created yet.")
 
@@ -1452,8 +1492,18 @@ elif page == "Ops":
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Schema", f"v{database['schema_version']}")
         c2.metric("Journal", str(database["journal_mode"]).upper())
-        c3.metric("Quick check", _status_label(database["quick_check"]))
-        c4.metric("FK violations", _fmt_count(database["foreign_key_violation_count"]))
+        c3.metric(
+            "Quick check",
+            "Not run interactively"
+            if database["quick_check"] is None
+            else _status_label(database["quick_check"]),
+        )
+        c4.metric(
+            "FK violations",
+            "Not run interactively"
+            if database["foreign_key_violation_count"] is None
+            else _fmt_count(database["foreign_key_violation_count"]),
+        )
 
         theta_display = dict(theta_health)
         if theta_display.get("latency_ms") is not None:

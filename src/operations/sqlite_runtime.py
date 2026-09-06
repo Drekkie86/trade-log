@@ -115,6 +115,8 @@ def open_readonly_connection(
 
 def inspect_database(
     db_path: str | Path | None = None,
+    *,
+    deep_integrity: bool = True,
 ) -> DatabaseHealth:
     path = resolve_db_path(db_path)
 
@@ -160,17 +162,21 @@ def inspect_database(
             ).fetchone()[0]
         )
 
-        quick_check = str(
-            conn.execute(
-                "PRAGMA quick_check;"
-            ).fetchone()[0]
-        )
+        quick_check = None
+        fk_count = None
 
-        fk_count = len(
-            conn.execute(
-                "PRAGMA foreign_key_check;"
-            ).fetchall()
-        )
+        if deep_integrity:
+            quick_check = str(
+                conn.execute(
+                    "PRAGMA quick_check;"
+                ).fetchone()[0]
+            )
+
+            fk_count = len(
+                conn.execute(
+                    "PRAGMA foreign_key_check;"
+                ).fetchall()
+            )
 
     finally:
         conn.close()

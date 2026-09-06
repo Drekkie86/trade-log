@@ -36,9 +36,13 @@ def load_command_deck(
     *,
     now: datetime | None = None,
     include_provider_health: bool = False,
+    deep_integrity: bool = True,
 ) -> dict[str, Any]:
     path = resolve_db_path(db_path)
-    health = inspect_database(path)
+    health = inspect_database(
+        path,
+        deep_integrity=deep_integrity,
+    )
     market_clock = market_clock_snapshot(
         now=now
     ).as_dict()
@@ -70,8 +74,11 @@ def load_command_deck(
         }
 
     if (
-        health.quick_check != "ok"
-        or health.foreign_key_violation_count != 0
+        deep_integrity
+        and (
+            health.quick_check != "ok"
+            or health.foreign_key_violation_count != 0
+        )
     ):
         return {
             "database": health.as_dict(),
