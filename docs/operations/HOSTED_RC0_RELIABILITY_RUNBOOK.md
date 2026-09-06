@@ -34,6 +34,7 @@ There are two health layers.
 - research-daemon heartbeat;
 - Theta readiness;
 - required systemd services and timers;
+- effective service memory policy and current memory use;
 - backup-file metadata freshness;
 - absolute and percentage free-disk headroom.
 
@@ -44,6 +45,39 @@ It writes:
 Optional state-transition alerts use `CHRISTIANIA_ALERT_WEBHOOK_URL`. Only
 operational states and failed-check summaries are sent. Secrets are never
 included.
+
+### Service memory containment
+
+Memory control is per systemd service. There is no scheduled VM reboot and the
+supervisor does not restart processes itself.
+
+| Service | Supervisor warning | `MemoryHigh` | `MemoryMax` |
+|---|---:|---:|---:|
+| Theta | 1024 MiB | 1536 MiB | 2560 MiB |
+| Research daemon | 512 MiB | 768 MiB | 1280 MiB |
+| Command Deck | 384 MiB | 512 MiB | 1024 MiB |
+
+The three levels have different meanings:
+
+1. The supervisor warning threshold is an early operational boundary. Reaching
+   it makes RC0 `UNHEALTHY` and can trigger the existing state-transition alert.
+2. `MemoryHigh` is a systemd/cgroup pressure boundary. It is not merely a
+   warning; Linux may reclaim/throttle the cgroup above it.
+3. `MemoryMax` is the hard cgroup ceiling.
+
+All three core units use `OOMPolicy=stop`. If systemd recognizes an OOM event,
+remaining processes in that unit are stopped; the unit's existing `Restart=`
+policy remains responsible for process recovery.
+
+The supervisor reads the **effective** `MemoryCurrent`, `MemoryPeak`,
+`NRestarts`, `MemoryHigh` and `MemoryMax` values from systemd. A missing or
+malformed current-memory value, or drift in the effective high/max limits, is a
+blocking failure. `MemoryPeak` and `NRestarts` are retained as forensic
+telemetry and do not by themselves make RC0 unhealthy.
+
+Do not deliberately force an OOM on the production RC0 host as a routine
+acceptance test. Verify configured/effective limits with `systemctl show` and
+use ordinary service-restart/failure-injection rehearsals.
 
 ### Deep health — every 6 hours
 
@@ -93,6 +127,8 @@ Do not leave RC0 unattended unless all of these are true:
 - strict health passes;
 - RC0 acceptance reports `RC0 ACCEPTED`;
 - app/daemon/Theta survive service restarts;
+- effective `MemoryHigh`, `MemoryMax` and `OOMPolicy` match the release policy;
+- supervisor reports current memory below all warning thresholds;
 - secure edge is HTTPS + authenticated;
 - internal ports are not wildcard-bound;
 - at least one verified backup exists;
@@ -106,6 +142,6 @@ Do not leave RC0 unattended unless all of these are true:
 ## Failure philosophy
 
 Fail closed. Missing providers, stale daemon heartbeat, stale backup metadata,
-low disk headroom or invalid runtime state produce `UNHEALTHY`. The supervisor
-does not repair or mutate the live DB. It reports; systemd restart policies own
-process recovery.
+low disk headroom, memory-policy drift, high current memory or invalid runtime
+state produce `UNHEALTHY`. The supervisor does not repair or mutate the live
+DB. It reports; systemd restart policies own process recovery.

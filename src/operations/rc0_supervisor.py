@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 import json
 import os
@@ -27,11 +27,26 @@ DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
 DEFAULT_STATUS_FILENAME = "rc0_supervisor_status.json"
 DEFAULT_STATE_FILENAME = "rc0_supervisor_state.json"
 
-CORE_SERVICES = (
-    "christiania-theta.service",
-    "christiania-daemon.service",
-    "christiania-app.service",
-)
+MIB = 1024**2
+MEMORY_POLICY_BYTES = {
+    "christiania-theta.service": {
+        "warning": 1024 * MIB,
+        "high": 1536 * MIB,
+        "max": 2560 * MIB,
+    },
+    "christiania-daemon.service": {
+        "warning": 512 * MIB,
+        "high": 768 * MIB,
+        "max": 1280 * MIB,
+    },
+    "christiania-app.service": {
+        "warning": 384 * MIB,
+        "high": 512 * MIB,
+        "max": 1024 * MIB,
+    },
+}
+
+CORE_SERVICES = tuple(MEMORY_POLICY_BYTES)
 CORE_TIMERS = (
     "christiania-backup.timer",
     "christiania-health.timer",
@@ -69,6 +84,7 @@ class SupervisorSnapshot:
     latest_backup_metadata_age_hours: float | None
     disk_free_bytes: int | None
     disk_free_fraction: float | None
+    service_memory: dict[str, dict[str, int | None]] = field(default_factory=dict)
 
     @property
     def healthy(self) -> bool:
@@ -86,6 +102,7 @@ class SupervisorSnapshot:
             "latest_backup_metadata_age_hours": self.latest_backup_metadata_age_hours,
             "disk_free_bytes": self.disk_free_bytes,
             "disk_free_fraction": self.disk_free_fraction,
+            "service_memory": self.service_memory,
             "checks": [check.as_dict() for check in self.checks],
         }
 
@@ -134,6 +151,109 @@ def _timer_enabled(unit: str) -> str:
         timeout=10,
     )
     return (completed.stdout or completed.stderr or "unknown").strip()
+
+
+def _systemd_properties(unit: str) -> dict[str, str]:
+    completed = subprocess.run(
+        [
+            "systemctl",
+            "show",
+            unit,
+            "--property=MemoryCurrent",
+            "--property=MemoryPeak",
+            "--property=NRestarts",
+            "--property=MemoryHigh",
+            "--property=MemoryMax",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown error").strip()
+        raise RuntimeError(f"systemctl show failed for {unit}: {detail}")
+
+    properties: dict[str, str] = {}
+    for raw_line in completed.stdout.splitlines():
+        if "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        properties[key.strip()] = value.strip()
+    return properties
+
+
+def _parse_nonnegative_int(raw: object) -> int | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or not text.isdecimal():
+        return None
+    value = int(text)
+    return value if value >= 0 else None
+
+
+def _memory_check(
+    unit: str,
+    properties: dict[str, str],
+) -> tuple[SupervisorCheck, dict[str, int | None]]:
+    policy = MEMORY_POLICY_BYTES[unit]
+    current = _parse_nonnegative_int(properties.get("MemoryCurrent"))
+    peak = _parse_nonnegative_int(properties.get("MemoryPeak"))
+    restarts = _parse_nonnegative_int(properties.get("NRestarts"))
+    high = _parse_nonnegative_int(properties.get("MemoryHigh"))
+    maximum = _parse_nonnegative_int(properties.get("MemoryMax"))
+
+    telemetry = {
+        "current_bytes": current,
+        "peak_bytes": peak,
+        "nrestarts": restarts,
+        "warning_bytes": policy["warning"],
+        "memory_high_bytes": high,
+        "expected_memory_high_bytes": policy["high"],
+        "memory_max_bytes": maximum,
+        "expected_memory_max_bytes": policy["max"],
+    }
+
+    failures: list[str] = []
+    if current is None:
+        failures.append("MemoryCurrent unavailable or malformed")
+    elif current >= policy["warning"]:
+        failures.append(
+            f"MemoryCurrent={current} reached warning={policy['warning']}"
+        )
+
+    if high != policy["high"]:
+        failures.append(
+            f"MemoryHigh={high!r}; expected={policy['high']}"
+        )
+    if maximum != policy["max"]:
+        failures.append(
+            f"MemoryMax={maximum!r}; expected={policy['max']}"
+        )
+
+    if failures:
+        return (
+            SupervisorCheck(
+                f"memory:{unit}",
+                "FAIL",
+                "; ".join(failures) + ".",
+            ),
+            telemetry,
+        )
+
+    return (
+        SupervisorCheck(
+            f"memory:{unit}",
+            "PASS",
+            (
+                f"Current={current}; peak={peak}; restarts={restarts}; "
+                f"warning={policy['warning']}; MemoryHigh={high}; "
+                f"MemoryMax={maximum}."
+            ),
+        ),
+        telemetry,
+    )
 
 
 def _atomic_json_write(path: Path, payload: dict[str, object]) -> None:
@@ -196,10 +316,12 @@ def collect_snapshot(
     now: datetime | None = None,
     service_state: Callable[[str], str] = _systemd_state,
     timer_state: Callable[[str], str] = _timer_enabled,
+    service_properties: Callable[[str], dict[str, str]] = _systemd_properties,
     disk_usage: Callable[[str | os.PathLike[str]], object] = shutil.disk_usage,
 ) -> SupervisorSnapshot:
     observed = _utc_now() if now is None else now.astimezone(UTC)
     checks: list[SupervisorCheck] = []
+    service_memory: dict[str, dict[str, int | None]] = {}
 
     deck = load_command_deck(
         include_provider_health=True,
@@ -263,6 +385,29 @@ def collect_snapshot(
                 f"{unit} is {state}.",
             )
         )
+        try:
+            memory_check, telemetry = _memory_check(
+                unit,
+                service_properties(unit),
+            )
+        except Exception as exc:
+            memory_check = SupervisorCheck(
+                f"memory:{unit}",
+                "FAIL",
+                f"Unable to read effective memory policy: {type(exc).__name__}: {exc}",
+            )
+            telemetry = {
+                "current_bytes": None,
+                "peak_bytes": None,
+                "nrestarts": None,
+                "warning_bytes": MEMORY_POLICY_BYTES[unit]["warning"],
+                "memory_high_bytes": None,
+                "expected_memory_high_bytes": MEMORY_POLICY_BYTES[unit]["high"],
+                "memory_max_bytes": None,
+                "expected_memory_max_bytes": MEMORY_POLICY_BYTES[unit]["max"],
+            }
+        checks.append(memory_check)
+        service_memory[unit] = telemetry
 
     for unit in CORE_TIMERS:
         state = timer_state(unit)
@@ -348,6 +493,7 @@ def collect_snapshot(
         latest_backup_metadata_age_hours=latest_backup_age,
         disk_free_bytes=free,
         disk_free_fraction=free_fraction,
+        service_memory=service_memory,
     )
 
 

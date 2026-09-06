@@ -31,6 +31,31 @@ def test_supervisor_service_writes_only_audit_state():
     assert "christiania_rc0_supervisor.py" in text
 
 
+def test_core_services_have_exact_memory_containment_policy():
+    expected = {
+        "christiania-theta.service": (
+            "MemoryHigh=1536M",
+            "MemoryMax=2560M",
+        ),
+        "christiania-daemon.service": (
+            "MemoryHigh=768M",
+            "MemoryMax=1280M",
+        ),
+        "christiania-app.service": (
+            "MemoryHigh=512M",
+            "MemoryMax=1024M",
+        ),
+    }
+
+    for unit, (memory_high, memory_max) in expected.items():
+        text = (
+            ROOT / "deploy/systemd" / unit
+        ).read_text(encoding="utf-8")
+        assert memory_high in text
+        assert memory_max in text
+        assert "OOMPolicy=stop" in text
+
+
 def test_failure_injection_contains_no_database_mutation_commands():
     text = (
         ROOT

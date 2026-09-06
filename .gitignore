@@ -12,6 +12,9 @@ trade_log.db
 creds.txt
 .streamlit/secrets.toml
 
+vendor/
+desktop.ini
+
 Christiania_Full_Claude_Review_*.zip
 
 audit_exports/
