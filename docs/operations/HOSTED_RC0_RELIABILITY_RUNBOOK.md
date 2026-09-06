@@ -42,6 +42,13 @@ It writes:
 
 `/var/lib/christiania/audit/rc0_supervisor_status.json`
 
+The supervisor service retains `ProtectSystem=strict`. Its sandbox exposes only
+`/var/lib/christiania/data` and `/var/lib/christiania/audit` as writable paths.
+The data-directory exception is required for SQLite WAL/shared-memory access
+even though the supervisor opens Christiania's database through the read-only,
+query-only runtime path. The supervisor itself contains no database mutation
+workflow.
+
 Optional state-transition alerts use `CHRISTIANIA_ALERT_WEBHOOK_URL`. Only
 operational states and failed-check summaries are sent. Secrets are never
 included.

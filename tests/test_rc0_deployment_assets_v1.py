@@ -21,13 +21,17 @@ def test_lightweight_supervisor_runs_every_five_minutes():
     assert "Persistent=true" in text
 
 
-def test_supervisor_service_writes_only_audit_state():
+def test_supervisor_service_allows_only_sqlite_data_and_audit_writes():
     text = (
         ROOT
         / "deploy/systemd/christiania-supervisor.service"
     ).read_text(encoding="utf-8")
     assert "ProtectSystem=strict" in text
-    assert "ReadWritePaths=/var/lib/christiania/audit" in text
+    assert (
+        "ReadWritePaths=/var/lib/christiania/data "
+        "/var/lib/christiania/audit"
+    ) in text
+    assert "ReadWritePaths=/var/lib/christiania/audit\n" not in text
     assert "christiania_rc0_supervisor.py" in text
 
 

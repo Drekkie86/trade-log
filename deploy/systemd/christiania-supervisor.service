@@ -21,4 +21,4 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/var/lib/christiania/audit
+ReadWritePaths=/var/lib/christiania/data /var/lib/christiania/audit
