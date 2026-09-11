@@ -95,3 +95,23 @@ the controlled recovery path. The intended path is:
 4. controlled recovery restarts Theta, proves READY, and restores the research
    daemon only if it was running before recovery.
 
+## Research daemon dependency invariant
+
+The research daemon must start after Theta and should request that Theta be
+started, but it must not use `Requires=christiania-theta.service`.
+
+Use `After=` plus `Wants=` instead.
+
+Reason: with `Requires=`, a Theta stop or failure also deactivates the research
+daemon before the watchdog recovery service runs. The recovery service then
+cannot distinguish "daemon intentionally stopped for maintenance" from
+"daemon was running but systemd stopped it because Theta disappeared".
+
+With `Wants=`:
+
+1. starting the research daemon still requests Theta startup;
+2. if Theta becomes unavailable, the daemon remains active long enough for the
+   watchdog to observe the dependency failure;
+3. thresholded recovery can see that the daemon was active, stop it cleanly,
+   restart Theta, prove READY, and then restore the daemon;
+4. a daemon that was genuinely stopped for maintenance remains stopped.

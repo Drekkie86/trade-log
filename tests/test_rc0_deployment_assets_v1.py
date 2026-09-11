@@ -109,3 +109,12 @@ def test_installer_wildcard_covers_reliability_units():
     ).read_text(encoding="utf-8")
     assert 'deploy/systemd/christiania-*.service' in installer
     assert 'deploy/systemd/christiania-*.timer' in installer
+
+def test_research_daemon_does_not_die_with_theta_dependency():
+    text = (
+        ROOT
+        / "deploy/systemd/christiania-daemon.service"
+    ).read_text(encoding="utf-8")
+    assert "After=network-online.target christiania-theta.service" in text
+    assert "Wants=network-online.target christiania-theta.service" in text
+    assert "Requires=christiania-theta.service" not in text
