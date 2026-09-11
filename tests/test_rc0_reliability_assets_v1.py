@@ -17,6 +17,8 @@ def test_theta_watchdog_has_thresholded_failure_recovery():
     )
     assert "OnFailure=christiania-theta-recover.service" in service
     assert "User=christiania" in service
+    assert "Requires=christiania-theta.service" not in service
+    assert "After=network-online.target christiania-theta.service" in service
     assert "OnUnitActiveSec=60s" in timer
     assert "Persistent=true" in timer
 

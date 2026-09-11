@@ -78,3 +78,20 @@ After deployment:
 6. configure external alert and heartbeat endpoints, set `CHRISTIANIA_REQUIRE_EXTERNAL_OBSERVABILITY=1`, and prove both unhealthy and recovery notifications.
 
 A release is not accepted merely because systemd reports services as active.
+
+## Watchdog dependency invariant
+
+The Theta watchdog must be able to run while `christiania-theta.service` is
+inactive. It may be ordered after Theta with `After=`, but it must not use
+`Requires=christiania-theta.service`.
+
+Reason: `Requires=` causes systemd to start Theta as a side effect of starting
+the watchdog. That masks a genuine Theta outage from the watchdog and bypasses
+the controlled recovery path. The intended path is:
+
+1. watchdog observes Theta unavailable;
+2. consecutive-failure threshold is reached;
+3. watchdog fails and triggers `christiania-theta-recover.service`;
+4. controlled recovery restarts Theta, proves READY, and restores the research
+   daemon only if it was running before recovery.
+

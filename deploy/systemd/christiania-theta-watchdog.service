@@ -2,7 +2,6 @@
 Description=Christiania Theta Readiness Watchdog
 After=network-online.target christiania-theta.service
 Wants=network-online.target
-Requires=christiania-theta.service
 OnFailure=christiania-theta-recover.service
 
 [Service]
