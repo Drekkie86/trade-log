@@ -11,7 +11,7 @@ from typing import Callable
 from src.operations.audit_export import resolve_audit_dir
 from src.operations.theta_watchdog import reset_watchdog_state
 from src.providers.thetadata_control import (
-    ThetaHealth,
+    ThetaTerminalHealth,
     wait_for_theta_terminal,
 )
 
@@ -88,7 +88,7 @@ def recover_theta(
     audit_dir: Path | None = None,
     systemctl: Callable[..., subprocess.CompletedProcess[str]] = _systemctl,
     active: Callable[[str], bool] = _unit_active,
-    wait_ready: Callable[..., ThetaHealth] = wait_for_theta_terminal,
+    wait_ready: Callable[..., ThetaTerminalHealth] = wait_for_theta_terminal,
 ) -> ThetaRecoveryResult:
     reason = str(reason).strip()
     if not reason:

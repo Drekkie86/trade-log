@@ -10,7 +10,7 @@ from typing import Callable
 
 from src.config import get_runtime_setting
 from src.operations.audit_export import resolve_audit_dir
-from src.providers.thetadata_control import ThetaHealth, probe_theta_terminal
+from src.providers.thetadata_control import ThetaTerminalHealth, probe_theta_terminal
 
 
 DEFAULT_FAILURE_THRESHOLD = 2
@@ -99,7 +99,7 @@ def reset_watchdog_state(
 
 def evaluate_theta_watchdog(
     *,
-    probe: Callable[[], ThetaHealth] = probe_theta_terminal,
+    probe: Callable[[], ThetaTerminalHealth] = probe_theta_terminal,
     audit_dir: Path | None = None,
     failure_threshold: int | None = None,
     now: datetime | None = None,
