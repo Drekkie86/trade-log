@@ -1,0 +1,13 @@
+[Unit]
+Description=Christiania Theta Readiness Watchdog Timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=5s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=christiania-theta-watchdog.service
+
+[Install]
+WantedBy=timers.target

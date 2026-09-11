@@ -1,0 +1,17 @@
+[Unit]
+Description=Christiania Preventive Theta Session Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/christiania
+Environment=HOME=/root
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_theta_recovery.py --reason preventive-daily-refresh
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/christiania/audit

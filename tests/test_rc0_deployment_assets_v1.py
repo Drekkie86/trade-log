@@ -99,3 +99,13 @@ def test_installer_materializes_deployed_commit_identity():
     assert 'git -C "${SOURCE_DIR}" rev-parse HEAD' in text
     assert '"${APP_DIR}/DEPLOYED_COMMIT"' in text
     assert "--exclude '.git'" in text
+
+
+def test_installer_wildcard_covers_reliability_units():
+    installer = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "install_one_vm.sh"
+    ).read_text(encoding="utf-8")
+    assert 'deploy/systemd/christiania-*.service' in installer
+    assert 'deploy/systemd/christiania-*.timer' in installer

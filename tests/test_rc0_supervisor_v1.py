@@ -412,3 +412,77 @@ def test_research_progress_stale_success_fails_active_window(
     )
     assert check.state == "FAIL"
     assert "stale" in check.detail.lower()
+
+
+def test_failed_unhealthy_alert_is_retried(tmp_path, monkeypatch):
+    attempts = []
+
+    def setting(name):
+        if name == "CHRISTIANIA_ALERT_WEBHOOK_URL":
+            return "https://example.invalid/hook"
+        return None
+
+    monkeypatch.setattr(rc0_supervisor, "get_runtime_setting", setting)
+
+    def fail_alert(url, payload, timeout_seconds):
+        attempts.append((url, payload))
+        raise ConnectionError("test outage")
+
+    monkeypatch.setattr(rc0_supervisor, "_post_alert", fail_alert)
+
+    snapshot = rc0_supervisor.SupervisorSnapshot(
+        observed_at="2026-09-11T19:00:00Z",
+        state="UNHEALTHY",
+        checks=(rc0_supervisor.SupervisorCheck("x", "FAIL", "bad"),),
+        schema_version=27,
+        daemon_state="HEALTHY",
+        theta_state="READY",
+        backup_file_count=1,
+        latest_backup_metadata_age_hours=1.0,
+        disk_free_bytes=100,
+        disk_free_fraction=0.5,
+    )
+
+    first = rc0_supervisor.persist_and_alert(snapshot, audit_dir=tmp_path)
+    second = rc0_supervisor.persist_and_alert(snapshot, audit_dir=tmp_path)
+
+    assert first["alert_state"] == "FAILED"
+    assert second["alert_state"] == "FAILED"
+    assert len(attempts) == 2
+
+
+def test_healthy_supervisor_sends_deadman_heartbeat(tmp_path, monkeypatch):
+    pings = []
+
+    def setting(name):
+        if name == "CHRISTIANIA_HEARTBEAT_URL":
+            return "https://heartbeat.invalid/ping"
+        return None
+
+    monkeypatch.setattr(rc0_supervisor, "get_runtime_setting", setting)
+    monkeypatch.setattr(
+        rc0_supervisor,
+        "_ping_heartbeat",
+        lambda url, timeout_seconds: pings.append(url),
+    )
+
+    snapshot = rc0_supervisor.SupervisorSnapshot(
+        observed_at="2026-09-11T19:00:00Z",
+        state="HEALTHY",
+        checks=(),
+        schema_version=27,
+        daemon_state="HEALTHY",
+        theta_state="READY",
+        backup_file_count=1,
+        latest_backup_metadata_age_hours=1.0,
+        disk_free_bytes=100,
+        disk_free_fraction=0.5,
+    )
+
+    state = rc0_supervisor.persist_and_alert(
+        snapshot,
+        audit_dir=tmp_path,
+    )
+
+    assert state["heartbeat_state"] == "SENT"
+    assert pings == ["https://heartbeat.invalid/ping"]

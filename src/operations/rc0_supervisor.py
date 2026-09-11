@@ -56,6 +56,8 @@ CORE_TIMERS = (
     "christiania-restore-drill.timer",
     "christiania-burn-in.timer",
     "christiania-supervisor.timer",
+    "christiania-theta-watchdog.timer",
+    "christiania-theta-refresh.timer",
 )
 
 
@@ -131,6 +133,18 @@ def _setting_int(name: str, default: int) -> int:
     if value < 0:
         raise ValueError(f"{name} cannot be negative.")
     return value
+
+
+def _setting_bool(name: str, default: bool = False) -> bool:
+    raw = get_runtime_setting(name)
+    if raw in (None, ""):
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value.")
 
 
 def _systemd_state(unit: str) -> str:
@@ -513,6 +527,30 @@ def _post_alert(
         raise ConnectionError(f"Alert webhook unreachable: {exc}") from exc
 
 
+def _ping_heartbeat(
+    url: str,
+    *,
+    timeout_seconds: float = DEFAULT_ALERT_TIMEOUT_SECONDS,
+) -> None:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Christiania-RC0-Heartbeat/1",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            if int(response.status) < 200 or int(response.status) >= 300:
+                raise RuntimeError(
+                    f"Heartbeat endpoint returned HTTP {int(response.status)}."
+                )
+    except URLError as exc:
+        raise ConnectionError(
+            f"Heartbeat endpoint unreachable: {exc}"
+        ) from exc
+
+
 def collect_snapshot(
     *,
     now: datetime | None = None,
@@ -577,6 +615,44 @@ def collect_snapshot(
             ),
         )
     )
+
+    external_required = _setting_bool(
+        "CHRISTIANIA_REQUIRE_EXTERNAL_OBSERVABILITY",
+        False,
+    )
+    alert_url = get_runtime_setting("CHRISTIANIA_ALERT_WEBHOOK_URL")
+    heartbeat_url = get_runtime_setting("CHRISTIANIA_HEARTBEAT_URL")
+    for name, configured, detail in (
+        (
+            "external-alert-config",
+            bool(alert_url),
+            "State-transition alert webhook configured.",
+        ),
+        (
+            "external-heartbeat-config",
+            bool(heartbeat_url),
+            "External dead-man heartbeat configured.",
+        ),
+    ):
+        if configured:
+            checks.append(SupervisorCheck(name, "PASS", detail))
+        elif external_required:
+            checks.append(
+                SupervisorCheck(
+                    name,
+                    "FAIL",
+                    "External observability is required but not configured.",
+                )
+            )
+        else:
+            checks.append(
+                SupervisorCheck(
+                    name,
+                    "INFO",
+                    "External observability endpoint not configured yet.",
+                    blocking=False,
+                )
+            )
 
     for unit in CORE_SERVICES:
         state = service_state(unit)
@@ -727,7 +803,13 @@ def persist_and_alert(
     alert_state = "NOT_CONFIGURED"
     alert_error = None
 
-    if send_alert and alert_url and transition:
+    retry_failed_alert = (
+        snapshot.state == "UNHEALTHY"
+        and str(previous.get("alert_state") or "") == "FAILED"
+    )
+    should_alert = transition or retry_failed_alert
+
+    if send_alert and alert_url and should_alert:
         payload = {
             "application": "Christiania",
             "environment": "RC0",
@@ -755,6 +837,37 @@ def persist_and_alert(
             alert_error = f"{type(exc).__name__}: {exc}"
         else:
             alert_state = "SENT"
+    elif alert_url and str(previous.get("alert_state") or "") == "SENT":
+        alert_state = "SENT"
+
+    heartbeat_url = get_runtime_setting("CHRISTIANIA_HEARTBEAT_URL")
+    heartbeat_failure_url = get_runtime_setting(
+        "CHRISTIANIA_HEARTBEAT_FAILURE_URL"
+    )
+    heartbeat_state = "NOT_CONFIGURED"
+    heartbeat_error = None
+    heartbeat_target = (
+        heartbeat_url
+        if snapshot.healthy
+        else heartbeat_failure_url
+    )
+
+    if heartbeat_target:
+        try:
+            _ping_heartbeat(
+                heartbeat_target,
+                timeout_seconds=_setting_float(
+                    "CHRISTIANIA_ALERT_TIMEOUT_SECONDS",
+                    DEFAULT_ALERT_TIMEOUT_SECONDS,
+                ),
+            )
+        except Exception as exc:
+            heartbeat_state = "FAILED"
+            heartbeat_error = f"{type(exc).__name__}: {exc}"
+        else:
+            heartbeat_state = "SENT"
+    elif heartbeat_url:
+        heartbeat_state = "SUPPRESSED_UNHEALTHY"
 
     state_payload = {
         "state": snapshot.state,
@@ -763,6 +876,8 @@ def persist_and_alert(
         "transition": transition,
         "alert_state": alert_state,
         "alert_error": alert_error,
+        "heartbeat_state": heartbeat_state,
+        "heartbeat_error": heartbeat_error,
     }
     _atomic_json_write(state_path, state_payload)
     return state_payload

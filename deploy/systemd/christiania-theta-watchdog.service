@@ -1,0 +1,26 @@
+[Unit]
+Description=Christiania Theta Readiness Watchdog
+After=network-online.target christiania-theta.service
+Wants=network-online.target
+Requires=christiania-theta.service
+OnFailure=christiania-theta-recover.service
+
+[Service]
+Type=oneshot
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+Environment=HOME=/tmp
+EnvironmentFile=/etc/christiania/christiania.env
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_theta_watchdog.py
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/christiania/audit
