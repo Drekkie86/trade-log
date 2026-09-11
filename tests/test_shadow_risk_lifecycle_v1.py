@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,15 @@ MIGRATION = (
     / "migrations"
     / "026_shadow_risk_plan_lifecycle.sql"
 )
+
+
+def _after_recorded(plan, *, minutes: int) -> str:
+    recorded = datetime.fromisoformat(
+        plan.recorded_at.replace("Z", "+00:00")
+    )
+    return (
+        recorded + timedelta(minutes=minutes)
+    ).isoformat()
 
 
 def seed(db):
@@ -62,21 +72,41 @@ def seed(db):
 def test_price_and_time_stop(tmp_path):
     db = tmp_path / "x.db"
     seed(db)
+
+    time_stop_at = (
+        datetime.now(timezone.utc)
+        + timedelta(days=1)
+    ).isoformat()
+
     plan = create_frozen_risk_plan(
         candidate_id=1,
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
         stop_loss_fraction=0.5,
-        time_stop_at="2026-09-09T14:00:00+00:00",
+        time_stop_at=time_stop_at,
         created_at="2026-09-08T14:01:00+00:00",
         db_path=db,
     )
-    assessment = evaluate_risk_plan(
+
+    price_assessment = evaluate_risk_plan(
         plan,
-        observed_at="2026-09-08T15:00:00+00:00",
+        observed_at=_after_recorded(plan, minutes=1),
         mark_net_pnl_eur_minor=-2600,
     )
-    assert assessment.overall_state == "EXIT_TRIGGERED"
+    assert price_assessment.price_stop_state == "BREACHED"
+    assert price_assessment.time_stop_state == "CLEAR"
+    assert price_assessment.overall_state == "EXIT_TRIGGERED"
+
+    after_time_stop = (
+        datetime.fromisoformat(time_stop_at)
+        + timedelta(minutes=1)
+    ).isoformat()
+    time_assessment = evaluate_risk_plan(
+        plan,
+        observed_at=after_time_stop,
+    )
+    assert time_assessment.time_stop_state == "BREACHED"
+    assert time_assessment.overall_state == "EXIT_TRIGGERED"
 
 
 def test_manual_rule_requires_review(tmp_path):
@@ -93,7 +123,7 @@ def test_manual_rule_requires_review(tmp_path):
     assert (
         evaluate_risk_plan(
             plan,
-            observed_at="2026-09-08T15:00:00+00:00",
+            observed_at=_after_recorded(plan, minutes=1),
         ).overall_state
         == "REVIEW_REQUIRED"
     )
@@ -222,7 +252,7 @@ def test_shadow_mark_timestamp_and_pnl_are_authoritative(tmp_path):
 def test_monitor_records_all_unassessed_marks(tmp_path):
     db = tmp_path / "x.db"
     seed(db)
-    create_frozen_risk_plan(
+    plan = create_frozen_risk_plan(
         candidate_id=1,
         max_defined_loss_eur_minor=5000,
         reserved_risk_eur_minor=5000,
@@ -239,8 +269,8 @@ def test_monitor_records_all_unassessed_marks(tmp_path):
         VALUES(?,?,?,?)
         """,
         [
-            (20,1,"2026-09-08T14:05:00+00:00",-100),
-            (21,1,"2026-09-08T14:10:00+00:00",-2600),
+            (20,1,_after_recorded(plan, minutes=5),-100),
+            (21,1,_after_recorded(plan, minutes=10),-2600),
         ],
     )
     conn.commit()
