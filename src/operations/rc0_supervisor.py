@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -18,6 +18,7 @@ from src.dashboard.read_model import load_command_deck
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
 from src.operations.backup_recovery import inventory_backups_fast
 from src.operations.audit_export import resolve_audit_dir
+from src.operations.market_calendar import market_clock_snapshot
 
 
 DEFAULT_MIN_FREE_BYTES = 15 * 1024**3
@@ -26,6 +27,7 @@ DEFAULT_BACKUP_METADATA_MAX_AGE_HOURS = 30.0
 DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
 DEFAULT_STATUS_FILENAME = "rc0_supervisor_status.json"
 DEFAULT_STATE_FILENAME = "rc0_supervisor_state.json"
+DEFAULT_RESEARCH_SUCCESS_MAX_AGE_MINUTES = 40.0
 
 MIB = 1024**2
 MEMORY_POLICY_BYTES = {
@@ -256,6 +258,206 @@ def _memory_check(
     )
 
 
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _research_progress_check(
+    db_path: Path,
+    observed: datetime,
+) -> SupervisorCheck:
+    """
+    Verify that the daemon is producing successful research, not merely alive.
+
+    The append-only daemon-iteration table is the operational source of truth.
+    A latest FAILED/ORPHANED iteration is immediately blocking. During an
+    active XNYS sample window, success may not be older than the configured
+    SLO unless a fresh iteration is currently RUNNING.
+    """
+    observed = observed.astimezone(UTC)
+
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    scheduled_for,
+                    started_at,
+                    completed_at,
+                    status,
+                    error_type,
+                    error_message
+                FROM research_daemon_iterations
+                ORDER BY scheduled_for DESC, id DESC
+                LIMIT 64;
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return SupervisorCheck(
+            "research-progress",
+            "FAIL",
+            "Unable to inspect daemon iteration evidence: "
+            f"{type(exc).__name__}: {exc}",
+        )
+
+    clock = market_clock_snapshot(now=observed)
+
+    if not rows:
+        if clock.state in {"ACTIVE_SAMPLE_WINDOW", "AFTER_SAMPLE_WINDOW"}:
+            return SupervisorCheck(
+                "research-progress",
+                "FAIL",
+                f"No daemon iteration evidence exists during {clock.state}.",
+            )
+        return SupervisorCheck(
+            "research-progress",
+            "INFO",
+            f"No daemon iteration evidence yet; market state={clock.state}.",
+            blocking=False,
+        )
+
+    latest = rows[0]
+    latest_status = str(latest["status"] or "UNKNOWN").upper()
+
+    if latest_status in {"FAILED", "ORPHANED"}:
+        error_type = str(latest["error_type"] or "UNKNOWN_ERROR")
+        error_message = str(latest["error_message"] or "").strip()
+        detail = (
+            f"Latest scheduled research iteration is {latest_status}: "
+            f"{error_type}"
+        )
+        if error_message:
+            detail += f": {error_message}"
+        return SupervisorCheck(
+            "research-progress",
+            "FAIL",
+            detail,
+        )
+
+    latest_success = next(
+        (
+            row
+            for row in rows
+            if str(row["status"] or "").upper() == "COMPLETED"
+        ),
+        None,
+    )
+    latest_running = next(
+        (
+            row
+            for row in rows
+            if str(row["status"] or "").upper() == "RUNNING"
+        ),
+        None,
+    )
+
+    max_age = timedelta(
+        minutes=DEFAULT_RESEARCH_SUCCESS_MAX_AGE_MINUTES
+    )
+
+    if clock.state == "ACTIVE_SAMPLE_WINDOW":
+        if latest_running is not None:
+            started = _parse_iso_datetime(latest_running["started_at"])
+            if started is not None and observed - started <= max_age:
+                return SupervisorCheck(
+                    "research-progress",
+                    "PASS",
+                    "A scheduled research iteration is currently running "
+                    f"and started {(observed - started).total_seconds() / 60:.1f} "
+                    "minutes ago.",
+                )
+
+        if latest_success is None:
+            return SupervisorCheck(
+                "research-progress",
+                "FAIL",
+                "No successful daemon iteration exists during an active "
+                "market sample window.",
+            )
+
+        completed = _parse_iso_datetime(latest_success["completed_at"])
+        if completed is None:
+            return SupervisorCheck(
+                "research-progress",
+                "FAIL",
+                "Latest successful daemon iteration has no valid completed_at.",
+            )
+
+        age = observed - completed
+        if age > max_age:
+            return SupervisorCheck(
+                "research-progress",
+                "FAIL",
+                "Last successful research iteration is stale during the active "
+                f"sample window: age={age.total_seconds() / 60:.1f} minutes; "
+                f"maximum={DEFAULT_RESEARCH_SUCCESS_MAX_AGE_MINUTES:.1f}.",
+            )
+
+        return SupervisorCheck(
+            "research-progress",
+            "PASS",
+            "Research production current; last successful iteration age="
+            f"{age.total_seconds() / 60:.1f} minutes.",
+        )
+
+    if clock.state == "AFTER_SAMPLE_WINDOW":
+        if latest_success is None:
+            return SupervisorCheck(
+                "research-progress",
+                "FAIL",
+                "No successful daemon iteration exists after today's "
+                "market sample window.",
+            )
+        scheduled = _parse_iso_datetime(latest_success["scheduled_for"])
+        session_date = (
+            None
+            if clock.session is None
+            else clock.session.session_date
+        )
+        if (
+            scheduled is None
+            or session_date is None
+            or scheduled.astimezone(
+                __import__("zoneinfo").ZoneInfo("America/New_York")
+            ).date().isoformat() != session_date
+        ):
+            return SupervisorCheck(
+                "research-progress",
+                "FAIL",
+                "No successful daemon iteration is recorded for today's "
+                "completed market sample window.",
+            )
+
+    if latest_success is None:
+        return SupervisorCheck(
+            "research-progress",
+            "FAIL",
+            f"No successful research iteration exists; market state={clock.state}.",
+        )
+
+    return SupervisorCheck(
+        "research-progress",
+        "PASS",
+        f"Latest daemon iteration is healthy; market state={clock.state}.",
+    )
+
+
 def _atomic_json_write(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
@@ -452,6 +654,13 @@ def collect_snapshot(
     )
 
     db_path = resolve_db_path()
+    checks.append(
+        _research_progress_check(
+            db_path,
+            observed,
+        )
+    )
+
     usage = disk_usage(db_path.parent)
     total = int(getattr(usage, "total"))
     free = int(getattr(usage, "free"))

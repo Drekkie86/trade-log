@@ -7,9 +7,11 @@ from src.database.repository import (
 )
 from src.providers.massive import MassiveNetworkError
 from src.research.independent_runner import (
+    IndependentResearchRunnerError,
     classify_us_session,
     config_hash,
     normalized_run_config,
+    resolve_code_sha,
     run_independent_research,
 )
 
@@ -429,3 +431,25 @@ def test_non_transient_failure_is_not_retried(db_path):
             underlying_recovery_delay_seconds=0,
         )
     assert massive.chain_calls == 1
+
+
+def test_resolve_code_sha_uses_deployed_marker_without_git(tmp_path):
+    sha = "a" * 40
+    (tmp_path / "DEPLOYED_COMMIT").write_text(
+        sha + "\n",
+        encoding="utf-8",
+    )
+    assert resolve_code_sha(tmp_path) == sha
+
+
+def test_resolve_code_sha_malformed_marker_fails_closed(tmp_path):
+    (tmp_path / "DEPLOYED_COMMIT").write_text(
+        "not-a-commit\n",
+        encoding="utf-8",
+    )
+    try:
+        resolve_code_sha(tmp_path)
+    except IndependentResearchRunnerError as exc:
+        assert "40-character hexadecimal commit SHA" in str(exc)
+    else:
+        raise AssertionError("Malformed DEPLOYED_COMMIT did not fail closed.")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 from src.operations import rc0_supervisor
@@ -62,6 +63,15 @@ def _prepare_collect_snapshot(monkeypatch):
         rc0_supervisor,
         "get_runtime_setting",
         lambda name: None,
+    )
+    monkeypatch.setattr(
+        rc0_supervisor,
+        "_research_progress_check",
+        lambda db_path, observed: rc0_supervisor.SupervisorCheck(
+            "research-progress",
+            "PASS",
+            "test research production healthy",
+        ),
     )
 
 
@@ -257,3 +267,148 @@ def test_memory_peak_and_restarts_are_telemetry_not_blockers(monkeypatch):
     theta = snapshot.service_memory["christiania-theta.service"]
     assert theta["nrestarts"] == 7
     assert theta["peak_bytes"] > theta["expected_memory_max_bytes"]
+
+
+def _iteration_db(tmp_path: Path) -> Path:
+    db = tmp_path / "iterations.db"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE research_daemon_iterations (
+                id INTEGER PRIMARY KEY,
+                scheduled_for TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL,
+                error_type TEXT,
+                error_message TEXT
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+def test_research_progress_latest_failure_is_blocking(tmp_path, monkeypatch):
+    db = _iteration_db(tmp_path)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO research_daemon_iterations (
+                scheduled_for, started_at, completed_at,
+                status, error_type, error_message
+            ) VALUES (?, ?, ?, 'FAILED', ?, ?);
+            """,
+            (
+                "2026-09-11T18:15:00Z",
+                "2026-09-11T18:15:00Z",
+                "2026-09-11T18:15:01Z",
+                "IndependentResearchRunnerError",
+                "Cannot determine Git HEAD",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        rc0_supervisor,
+        "market_clock_snapshot",
+        lambda now: SimpleNamespace(
+            state="ACTIVE_SAMPLE_WINDOW",
+            session=None,
+        ),
+    )
+
+    check = rc0_supervisor._research_progress_check(
+        db,
+        datetime(2026, 9, 11, 18, 20, tzinfo=UTC),
+    )
+    assert check.state == "FAIL"
+    assert "Cannot determine Git HEAD" in check.detail
+
+
+def test_research_progress_recent_success_passes_active_window(
+    tmp_path,
+    monkeypatch,
+):
+    db = _iteration_db(tmp_path)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO research_daemon_iterations (
+                scheduled_for, started_at, completed_at,
+                status, error_type, error_message
+            ) VALUES (?, ?, ?, 'COMPLETED', NULL, NULL);
+            """,
+            (
+                "2026-09-11T18:15:00Z",
+                "2026-09-11T18:15:00Z",
+                "2026-09-11T18:18:00Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        rc0_supervisor,
+        "market_clock_snapshot",
+        lambda now: SimpleNamespace(
+            state="ACTIVE_SAMPLE_WINDOW",
+            session=None,
+        ),
+    )
+
+    check = rc0_supervisor._research_progress_check(
+        db,
+        datetime(2026, 9, 11, 18, 20, tzinfo=UTC),
+    )
+    assert check.state == "PASS"
+    assert "current" in check.detail.lower()
+
+
+def test_research_progress_stale_success_fails_active_window(
+    tmp_path,
+    monkeypatch,
+):
+    db = _iteration_db(tmp_path)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO research_daemon_iterations (
+                scheduled_for, started_at, completed_at,
+                status, error_type, error_message
+            ) VALUES (?, ?, ?, 'COMPLETED', NULL, NULL);
+            """,
+            (
+                "2026-09-11T17:00:00Z",
+                "2026-09-11T17:00:00Z",
+                "2026-09-11T17:05:00Z",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        rc0_supervisor,
+        "market_clock_snapshot",
+        lambda now: SimpleNamespace(
+            state="ACTIVE_SAMPLE_WINDOW",
+            session=None,
+        ),
+    )
+
+    check = rc0_supervisor._research_progress_check(
+        db,
+        datetime(2026, 9, 11, 18, 20, tzinfo=UTC),
+    )
+    assert check.state == "FAIL"
+    assert "stale" in check.detail.lower()

@@ -12,7 +12,7 @@ ENV_DIR="/etc/christiania"
 SERVICE_USER="christiania"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-for required in python3 rsync systemctl useradd install; do
+for required in python3 rsync systemctl useradd install git; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     echo "Required command not found: ${required}" >&2
     exit 3
@@ -27,7 +27,15 @@ install -d -o root -g "${SERVICE_USER}" "${APP_DIR}" "${APP_DIR}/vendor"
 install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${STATE_DIR}/data" "${STATE_DIR}/backups" "${STATE_DIR}/audit"
 install -d -m 0750 -o root -g "${SERVICE_USER}" "${ENV_DIR}"
 
+DEPLOYED_COMMIT="$(git -C "${SOURCE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+if [[ ! "${DEPLOYED_COMMIT}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "Cannot determine a full 40-character source commit for deployment." >&2
+  exit 4
+fi
+DEPLOYED_COMMIT="${DEPLOYED_COMMIT,,}"
+
 rsync -a --delete --exclude '.git' --exclude '.venv' --exclude 'vendor/' --exclude '*.db*' --exclude '.env' "${SOURCE_DIR}/" "${APP_DIR}/"
+printf '%s\n' "${DEPLOYED_COMMIT}" > "${APP_DIR}/DEPLOYED_COMMIT"
 python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip
 "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"

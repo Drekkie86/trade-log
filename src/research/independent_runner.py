@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -88,6 +89,10 @@ def iso_utc_now() -> str:
     ).replace("+00:00", "Z")
 
 
+DEPLOYED_COMMIT_FILENAME = "DEPLOYED_COMMIT"
+_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
 def git_head(repo_root: Path) -> str:
     completed = subprocess.run(
         ("git", "rev-parse", "HEAD"),
@@ -111,8 +116,42 @@ def git_head(repo_root: Path) -> str:
         raise IndependentResearchRunnerError(
             "Git HEAD is blank."
         )
+    if _GIT_SHA_RE.fullmatch(value) is None:
+        raise IndependentResearchRunnerError(
+            "Git HEAD is not a full 40-character commit SHA."
+        )
 
-    return value
+    return value.lower()
+
+
+def resolve_code_sha(repo_root: Path) -> str:
+    """
+    Resolve immutable code identity in both deployment and development.
+
+    A production rsync deployment intentionally has no .git directory.
+    Its DEPLOYED_COMMIT marker is authoritative. If the marker exists but
+    is malformed, fail closed rather than silently deriving another identity.
+    A development checkout without a marker falls back to Git.
+    """
+    marker = repo_root / DEPLOYED_COMMIT_FILENAME
+
+    if marker.exists():
+        try:
+            value = marker.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise IndependentResearchRunnerError(
+                f"Cannot read deployed commit marker {marker}: {exc}"
+            ) from exc
+
+        if _GIT_SHA_RE.fullmatch(value) is None:
+            raise IndependentResearchRunnerError(
+                f"Deployed commit marker {marker} must contain exactly "
+                "one full 40-character hexadecimal commit SHA."
+            )
+
+        return value.lower()
+
+    return git_head(repo_root)
 
 
 def classify_us_session(
@@ -1242,7 +1281,7 @@ def run_independent_research(
 
     sha = (
         code_git_sha
-        or git_head(
+        or resolve_code_sha(
             repo_root
             or Path(__file__)
             .resolve()

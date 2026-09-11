@@ -89,3 +89,13 @@ def test_bootstrap_never_enables_firewall_implicitly():
     ).read_text(encoding="utf-8")
     assert "ufw enable" not in text
     assert "openjdk-21-jre-headless" in text
+
+
+def test_installer_materializes_deployed_commit_identity():
+    text = (
+        ROOT
+        / "deploy/install_one_vm.sh"
+    ).read_text(encoding="utf-8")
+    assert 'git -C "${SOURCE_DIR}" rev-parse HEAD' in text
+    assert '"${APP_DIR}/DEPLOYED_COMMIT"' in text
+    assert "--exclude '.git'" in text
