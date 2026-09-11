@@ -6,7 +6,9 @@ def test_systemd_daemon_waits_for_theta_api():
         "deploy/systemd/christiania-daemon.service"
     ).read_text(encoding="utf-8")
 
-    assert "Requires=christiania-theta.service" in text
+    assert "After=network-online.target christiania-theta.service" in text
+    assert "Wants=network-online.target christiania-theta.service" in text
+    assert "Requires=christiania-theta.service" not in text
     assert "ExecStartPre=" in text
     assert "run_theta_probe.py --wait-seconds 180" in text
 

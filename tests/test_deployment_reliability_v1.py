@@ -22,13 +22,15 @@ def test_systemd_app_binds_loopback_only():
     assert "--host 0.0.0.0" not in unit
 
 
-def test_systemd_daemon_requires_theta_and_restarts():
+def test_systemd_daemon_wants_theta_and_restarts():
     unit = (
         ROOT
         / "deploy/systemd/christiania-daemon.service"
     ).read_text(encoding="utf-8")
 
-    assert "Requires=christiania-theta.service" in unit
+    assert "After=network-online.target christiania-theta.service" in unit
+    assert "Wants=network-online.target christiania-theta.service" in unit
+    assert "Requires=christiania-theta.service" not in unit
     assert "Restart=always" in unit
     assert "KillSignal=SIGTERM" in unit
 
