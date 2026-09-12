@@ -46,6 +46,48 @@ def test_windows_deployer_uses_committed_git_archive():
     assert "git pull" not in script
 
 
+def test_windows_deployer_normalizes_receiver_to_lf():
+    script = _read(
+        "deploy/deploy_release.ps1"
+    )
+
+    assert (
+        '$receiverText.Replace('
+        in script
+    )
+    assert '"`r`n"' in script
+    assert '"`n"' in script
+    assert (
+        "System.Text.UTF8Encoding"
+        in script
+    )
+    assert (
+        "$receiverBytes -contains 13"
+        in script
+    )
+    assert (
+        "still contains CR bytes after LF normalization"
+        in script
+    )
+
+
+def test_windows_deployer_uploads_normalized_receiver():
+    script = _read(
+        "deploy/deploy_release.ps1"
+    )
+
+    assert (
+        '$receiverUploadPath = Join-Path $tempRoot '
+        '"christiania-receive-release.sh"'
+        in script
+    )
+
+    assert (
+        "& scp -i $KeyPath $receiverUploadPath"
+        in script
+    )
+
+
 def test_windows_deployer_uses_scp_then_receiver():
     script = _read(
         "deploy/deploy_release.ps1"

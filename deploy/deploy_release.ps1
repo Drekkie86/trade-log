@@ -69,7 +69,8 @@ if ($head -ne $originMain) {
 $tempRoot = Join-Path $env:TEMP "christiania-release-$head"
 $archiveName = "christiania-$head.tar.gz"
 $archivePath = Join-Path $tempRoot $archiveName
-$receiverPath = Join-Path $PSScriptRoot "receive_release.sh"
+$receiverSourcePath = Join-Path $PSScriptRoot "receive_release.sh"
+$receiverUploadPath = Join-Path $tempRoot "christiania-receive-release.sh"
 
 if (Test-Path -LiteralPath $tempRoot) {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force
@@ -86,6 +87,38 @@ try {
 
     if (-not (Test-Path -LiteralPath $archivePath)) {
         throw "Release archive was not created."
+    }
+
+    if (-not (Test-Path -LiteralPath $receiverSourcePath)) {
+        throw "Release receiver source was not found."
+    }
+
+    $receiverText = [System.IO.File]::ReadAllText(
+        $receiverSourcePath
+    )
+
+    $receiverText = $receiverText.Replace(
+        "`r`n",
+        "`n"
+    ).Replace(
+        "`r",
+        "`n"
+    )
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    [System.IO.File]::WriteAllText(
+        $receiverUploadPath,
+        $receiverText,
+        $utf8NoBom
+    )
+
+    $receiverBytes = [System.IO.File]::ReadAllBytes(
+        $receiverUploadPath
+    )
+
+    if ($receiverBytes -contains 13) {
+        throw "Release receiver still contains CR bytes after LF normalization."
     }
 
     $sha256 = (
@@ -108,7 +141,7 @@ try {
         throw "SCP of release archive failed."
     }
 
-    & scp -i $KeyPath $receiverPath "${User}@${Server}:$remoteReceiver"
+    & scp -i $KeyPath $receiverUploadPath "${User}@${Server}:$remoteReceiver"
 
     if ($LASTEXITCODE -ne 0) {
         throw "SCP of release receiver failed."
