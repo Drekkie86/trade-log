@@ -311,3 +311,112 @@ def test_health_cli_strict_backup_accepts_fresh_verified_backup(monkeypatch):
         assert christiania_health.main() == 0
     finally:
         sys.argv = old
+
+def test_health_cli_non_strict_uses_metadata_only_backup_inventory(monkeypatch):
+    import sys
+    import christiania_health
+
+    calls = {"fast": 0, "deep": 0}
+
+    monkeypatch.setattr(
+        christiania_health,
+        "load_command_deck",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "database": {
+                "path": "test.db",
+                "schema_version": 27,
+                "expected_schema_version": 27,
+                "journal_mode": "wal",
+                "quick_check": "ok",
+                "foreign_key_violation_count": 0,
+            },
+            "market_clock": {"state": "CLOSED", "next_sample_at": None},
+            "theta_health": {"state": "READY"},
+            "daemon_health": {"state": "HEALTHY"},
+            "latest_iteration": None,
+            "prospective": {
+                "independent_dates": 0,
+                "recovered_samples": 0,
+            },
+        },
+    )
+
+    class Inventory:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def as_dict(self):
+            return self.payload
+
+    def fast_inventory():
+        calls["fast"] += 1
+        return Inventory(
+            {
+                "total_files": 2,
+                "valid_files": 0,
+                "latest_valid_age_hours": None,
+            }
+        )
+
+    def deep_inventory():
+        calls["deep"] += 1
+        raise AssertionError("deep backup verification must not run")
+
+    monkeypatch.setattr(christiania_health, "inventory_backups_fast", fast_inventory)
+    monkeypatch.setattr(christiania_health, "inventory_backups", deep_inventory)
+
+    old = sys.argv
+    sys.argv = ["christiania_health.py", "--json"]
+    try:
+        assert christiania_health.main() == 0
+    finally:
+        sys.argv = old
+
+    assert calls == {"fast": 1, "deep": 0}
+
+
+def test_health_cli_strict_backup_uses_deep_backup_inventory(monkeypatch):
+    import sys
+    import christiania_health
+
+    calls = {"fast": 0, "deep": 0}
+
+    monkeypatch.setattr(
+        christiania_health,
+        "load_command_deck",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "theta_health": {"state": "READY"},
+            "daemon_health": {"state": "HEALTHY"},
+        },
+    )
+
+    class Inventory:
+        def as_dict(self):
+            return {
+                "total_files": 1,
+                "valid_files": 1,
+                "latest_valid_age_hours": 1.0,
+            }
+
+    def fast_inventory():
+        calls["fast"] += 1
+        raise AssertionError("fast inventory must not replace strict verification")
+
+    def deep_inventory():
+        calls["deep"] += 1
+        return Inventory()
+
+    monkeypatch.setattr(christiania_health, "inventory_backups_fast", fast_inventory)
+    monkeypatch.setattr(christiania_health, "inventory_backups", deep_inventory)
+
+    old = sys.argv
+    sys.argv = ["christiania_health.py", "--json", "--strict-backup"]
+    try:
+        assert christiania_health.main() == 0
+    finally:
+        sys.argv = old
+
+    assert calls == {"fast": 0, "deep": 1}
+

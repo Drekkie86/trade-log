@@ -8,6 +8,7 @@ from src.dashboard.read_model import (
 )
 from src.operations.backup_recovery import (
     inventory_backups,
+    inventory_backups_fast,
 )
 from src.operations.v1_readiness import (
     BACKUP_MAX_AGE_HOURS,
@@ -66,7 +67,11 @@ def main() -> int:
         and snapshot.get("daemon_health", {}).get("state") != "HEALTHY"
     )
 
-    backup_inventory = inventory_backups().as_dict()
+    backup_inventory = (
+        inventory_backups().as_dict()
+        if args.strict_backup
+        else inventory_backups_fast().as_dict()
+    )
     snapshot["backup_health"] = backup_inventory
     backup_age = backup_inventory.get("latest_valid_age_hours")
     strict_backup_failed = (
@@ -150,11 +155,18 @@ def main() -> int:
         "Theta Terminal: "
         f"{theta_health.get('state')}"
     )
-    print(
-        "Verified backups: "
-        f"{backup_inventory.get('valid_files', 0)} valid; "
-        f"latest age {backup_inventory.get('latest_valid_age_hours')}h"
-    )
+    if args.strict_backup:
+        print(
+            "Verified backups: "
+            f"{backup_inventory.get('valid_files', 0)} valid; "
+            f"latest age {backup_inventory.get('latest_valid_age_hours')}h"
+        )
+    else:
+        print(
+            "Backup files: "
+            f"{backup_inventory.get('total_files', 0)}; "
+            "metadata-only health path"
+        )
 
     if strict_daemon_failed:
         return 3
