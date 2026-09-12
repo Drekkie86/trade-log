@@ -16,7 +16,9 @@ def _print_human(
     payload: dict[str, object],
 ) -> None:
     ready = bool(
-        payload["ready"]
+        payload[
+            "ready"
+        ]
     )
 
     print(
@@ -33,6 +35,7 @@ def _print_human(
             else "NOT READY"
         )
     )
+
     print(
         "deployed_commit="
         + str(
@@ -42,6 +45,7 @@ def _print_human(
             or "UNKNOWN"
         )
     )
+
     print(
         "release_identity="
         + str(
@@ -50,6 +54,7 @@ def _print_human(
             ]
         )
     )
+
     print(
         "supervisor="
         + str(
@@ -58,6 +63,7 @@ def _print_human(
             ]
         )
     )
+
     print(
         "supervisor_observed_at="
         + str(
@@ -67,6 +73,28 @@ def _print_human(
             or "UNKNOWN"
         )
     )
+
+    age_raw = payload.get(
+        "supervisor_age_seconds"
+    )
+
+    age_text = (
+        "UNKNOWN"
+        if age_raw is None
+        else f"{float(age_raw):.1f}"
+    )
+
+    print(
+        "supervisor_freshness="
+        + str(
+            payload[
+                "supervisor_freshness_state"
+            ]
+        )
+        + " age_seconds="
+        + age_text
+    )
+
     print(
         "research_progress="
         + str(
@@ -79,10 +107,13 @@ def _print_human(
     detail = payload.get(
         "research_progress_detail"
     )
+
     if detail:
         print(
             "research_detail="
-            + str(detail)
+            + str(
+                detail
+            )
         )
 
     print(
@@ -102,33 +133,42 @@ def _print_human(
         services,
         dict,
     ):
-        for unit, state in services.items():
+        for (
+            unit,
+            state,
+        ) in services.items():
             print(
                 f"{unit}={state}"
             )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Christiania single operator "
-            "status surface."
+    parser = (
+        argparse.ArgumentParser(
+            description=(
+                "Christiania single operator "
+                "status surface."
+            )
         )
     )
+
     parser.add_argument(
         "--json",
         action="store_true",
     )
+
     parser.add_argument(
         "--app-dir",
         type=Path,
         default=DEFAULT_APP_DIR,
     )
+
     parser.add_argument(
         "--audit-dir",
         type=Path,
         default=DEFAULT_AUDIT_DIR,
     )
+
     parser.add_argument(
         "--systemd-root",
         type=Path,
@@ -137,13 +177,23 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    status = collect_control_plane_status(
-        app_dir=args.app_dir,
-        audit_dir=args.audit_dir,
-        systemd_root=args.systemd_root,
+    status = (
+        collect_control_plane_status(
+            app_dir=(
+                args.app_dir
+            ),
+            audit_dir=(
+                args.audit_dir
+            ),
+            systemd_root=(
+                args.systemd_root
+            ),
+        )
     )
 
-    payload = status.as_dict()
+    payload = (
+        status.as_dict()
+    )
 
     if args.json:
         print(
