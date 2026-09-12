@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -172,6 +173,202 @@ def test_deploy_preflight_passes_for_complete_runtime(
     )
 
 
+def test_deploy_preflight_uses_fast_backup_inventory_by_default(
+    monkeypatch,
+    db_path,
+    tmp_path,
+):
+    import christiania_deploy_preflight as preflight
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir()
+
+    theta = tmp_path / "ThetaTerminalv3.jar"
+    theta.write_bytes(b"jar")
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db_path.resolve()),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backup_dir.resolve()),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_AUDIT_DIR",
+        str(audit_dir.resolve()),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_THETA_JAR",
+        str(theta.resolve()),
+    )
+    monkeypatch.setenv(
+        "MASSIVE_API_KEY",
+        "test-secret",
+    )
+    monkeypatch.setenv(
+        "THETADATA_API_KEY",
+        "theta-test-secret",
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_SYMBOLS",
+        "AAPL,SPY",
+    )
+    monkeypatch.setattr(
+        preflight.shutil,
+        "which",
+        lambda name: "/usr/bin/java" if name == "java" else None,
+    )
+    monkeypatch.setattr(
+        preflight.importlib.metadata,
+        "version",
+        lambda name: "1.50.0" if name == "streamlit" else "0",
+    )
+
+    calls = {
+        "fast": 0,
+        "deep": 0,
+    }
+
+    def fake_fast(path):
+        assert path == backup_dir.resolve()
+        calls["fast"] += 1
+        return SimpleNamespace(
+            total_files=1,
+            valid_files=0,
+        )
+
+    def forbidden_deep(path):
+        calls["deep"] += 1
+        raise AssertionError(
+            "Normal deployment preflight must not deep-verify backups."
+        )
+
+    monkeypatch.setattr(
+        preflight,
+        "inventory_backups_fast",
+        fake_fast,
+    )
+    monkeypatch.setattr(
+        preflight,
+        "inventory_backups",
+        forbidden_deep,
+    )
+
+    checks = {
+        check.name: check
+        for check in preflight.run_preflight()
+    }
+
+    assert calls == {
+        "fast": 1,
+        "deep": 0,
+    }
+    assert checks["backup-file-available"].state == "PASS"
+    assert "verified-backup-available" not in checks
+
+
+def test_deploy_preflight_strict_backup_uses_deep_inventory(
+    monkeypatch,
+    db_path,
+    tmp_path,
+):
+    import christiania_deploy_preflight as preflight
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir()
+
+    theta = tmp_path / "ThetaTerminalv3.jar"
+    theta.write_bytes(b"jar")
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db_path.resolve()),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backup_dir.resolve()),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_AUDIT_DIR",
+        str(audit_dir.resolve()),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_THETA_JAR",
+        str(theta.resolve()),
+    )
+    monkeypatch.setenv(
+        "MASSIVE_API_KEY",
+        "test-secret",
+    )
+    monkeypatch.setenv(
+        "THETADATA_API_KEY",
+        "theta-test-secret",
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_SYMBOLS",
+        "AAPL,SPY",
+    )
+    monkeypatch.setattr(
+        preflight.shutil,
+        "which",
+        lambda name: "/usr/bin/java" if name == "java" else None,
+    )
+    monkeypatch.setattr(
+        preflight.importlib.metadata,
+        "version",
+        lambda name: "1.50.0" if name == "streamlit" else "0",
+    )
+
+    calls = {
+        "fast": 0,
+        "deep": 0,
+    }
+
+    def forbidden_fast(path):
+        calls["fast"] += 1
+        raise AssertionError(
+            "Strict deployment preflight must deep-verify backups."
+        )
+
+    def fake_deep(path):
+        assert path == backup_dir.resolve()
+        calls["deep"] += 1
+        return SimpleNamespace(
+            total_files=1,
+            valid_files=1,
+        )
+
+    monkeypatch.setattr(
+        preflight,
+        "inventory_backups_fast",
+        forbidden_fast,
+    )
+    monkeypatch.setattr(
+        preflight,
+        "inventory_backups",
+        fake_deep,
+    )
+
+    checks = {
+        check.name: check
+        for check in preflight.run_preflight(
+            strict_backup=True,
+        )
+    }
+
+    assert calls == {
+        "fast": 0,
+        "deep": 1,
+    }
+    assert checks["verified-backup-available"].state == "PASS"
+    assert "backup-file-available" not in checks
+
+
 def test_deploy_preflight_rejects_backup_in_live_db_directory(
     monkeypatch,
     db_path,
@@ -268,7 +465,6 @@ def test_systemd_theta_and_daemon_have_explicit_restart_limits():
         assert "StartLimitIntervalSec=300" in unit
         assert "StartLimitBurst=5" in unit
         assert "RestartSec=15" in unit
-
 
 
 def test_one_vm_installer_uses_explicit_env_file_for_manual_preflight():

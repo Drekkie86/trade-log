@@ -30,6 +30,7 @@ from src.operations.audit_export import (
 )
 from src.operations.backup_recovery import (
     inventory_backups,
+    inventory_backups_fast,
 )
 
 
@@ -68,6 +69,7 @@ def run_preflight(
     *,
     require_theta_live: bool = False,
     require_secure_edge: bool = False,
+    strict_backup: bool = False,
 ) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
@@ -173,13 +175,25 @@ def run_preflight(
         )
     )
 
-    backup_inventory = inventory_backups(backup_dir)
+    backup_inventory = (
+        inventory_backups(backup_dir)
+        if strict_backup
+        else inventory_backups_fast(backup_dir)
+    )
     checks.append(
         _check(
-            "verified-backup-available",
-            backup_inventory.valid_files > 0,
-            f"{backup_inventory.valid_files} verified backup(s) available.",
-            "No verified Christiania backup is available yet.",
+            "verified-backup-available" if strict_backup else "backup-file-available",
+            backup_inventory.valid_files > 0 if strict_backup else backup_inventory.total_files > 0,
+            (
+                f"{backup_inventory.valid_files} verified backup(s) available."
+                if strict_backup
+                else f"{backup_inventory.total_files} backup file(s) present; metadata-only preflight path."
+            ),
+            (
+                "No verified Christiania backup is available yet."
+                if strict_backup
+                else "No Christiania backup file is available yet."
+            ),
         )
     )
 
@@ -365,6 +379,11 @@ def main() -> int:
         help="Also require a successful live Theta v3 readiness probe.",
     )
     parser.add_argument(
+        "--strict-backup",
+        action="store_true",
+        help="Deep-verify backup SQLite integrity instead of using the fast metadata-only backup presence check.",
+    )
+    parser.add_argument(
         "--require-secure-edge",
         action="store_true",
         help="Also require production HTTPS/OIDC edge configuration.",
@@ -379,6 +398,7 @@ def main() -> int:
     checks = run_preflight(
         require_theta_live=args.require_theta_live,
         require_secure_edge=args.require_secure_edge,
+        strict_backup=args.strict_backup,
     )
     failed = [
         check
