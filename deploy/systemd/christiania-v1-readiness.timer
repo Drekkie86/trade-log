@@ -1,0 +1,12 @@
+[Unit]
+Description=Frequent Christiania V1 Operational Independence Gate
+
+[Timer]
+OnBootSec=7m
+OnUnitActiveSec=5m
+AccuracySec=30s
+Persistent=true
+Unit=christiania-v1-readiness.service
+
+[Install]
+WantedBy=timers.target
