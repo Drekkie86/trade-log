@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="/opt/christiania"
+SERVICE_USER="christiania"
+
+if [[ ! -x "${APP_DIR}/.venv/bin/python" ]]; then
+  echo "Christiania runtime Python is unavailable." >&2
+  exit 2
+fi
+
+if [[ ! -f "${APP_DIR}/christiania_status.py" ]]; then
+  echo "Christiania status application is unavailable." >&2
+  exit 2
+fi
+
+exec \
+  sudo -u "${SERVICE_USER}" \
+  "${APP_DIR}/.venv/bin/python" \
+  "${APP_DIR}/christiania_status.py" \
+  "$@"

@@ -14,9 +14,6 @@ EnvironmentFile=/etc/christiania/christiania.env
 ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_theta_terminal.py
 Restart=always
 RestartSec=15
-MemoryHigh=1536M
-MemoryMax=2560M
-OOMPolicy=stop
 NoNewPrivileges=true
 PrivateTmp=true
 
