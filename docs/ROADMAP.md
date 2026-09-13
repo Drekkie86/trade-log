@@ -1,6 +1,6 @@
 # Christiania Roadmap — authoritative current plan
 
-Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14. Package B is merged to `main` at `41dd5377cacbdae634164c1f95e945d30562f1d1` and awaits the next deployment cycle.
+Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14. Packages B and C are merged to `main`; Package C merged at `3ffd7b09d59625dda7581f85cf963043af98c927`. The newer merged code awaits the next deployment cycle.
 
 This document supersedes earlier package numbering where it conflicts with the current plan. Historical package documents remain evidence of what was built, not instructions for what comes next.
 
@@ -80,11 +80,11 @@ Delivered:
 
 `LOCAL_SURFACE_QUADRATIC_V2` remains frozen unless prospective evidence supports promotion of a challenger.
 
-## Package C — Edge Library V1 + Risk Mathematics — ACTIVE BUILD
+## Package C — Edge Library V1 + Risk Mathematics — COMPLETE / MERGED
 
-Goal: encode credible edge hypotheses while measuring the actual risk being purchased or sold.
+Package C is merged to `main` at `3ffd7b09d59625dda7581f85cf963043af98c927`.
 
-Package C builds on the existing risk, scenario and forecasting libraries and adds:
+Delivered:
 
 - a governed Edge Library with explicit scientific, capital and activation states;
 - variance risk premium marked **defined-risk only**;
@@ -93,6 +93,7 @@ Package C builds on the existing risk, scenario and forecasting libraries and ad
 - assumption-conditioned terminal P&L simulation for multi-leg option structures;
 - optional jump-mixture scenarios;
 - exact bounded/unbounded expiry loss detection;
+- contract-multiplier-aware cash P&L/risk accounting;
 - net expected P&L after costs/slippage under explicit assumptions;
 - P&L percentiles, probability of profit/loss, VaR and CVaR;
 - bankroll impairment and hard maximum-loss budget checks;
@@ -119,18 +120,27 @@ A high win rate is not an edge if the tail dominates. A trade with meaningful lo
 
 Package C's expected-P&L outputs are explicitly assumption-conditioned. They are not labelled alpha, forecast truth or trade recommendations.
 
-## Package D — Calibration + Model Tournament + Prospective Shadow
+## Package D — Calibration + Model Tournament + Prospective Shadow — ACTIVE BUILD
 
 Goal: make models earn trust prospectively.
 
-- track `P(thesis correct)` separately from `P(trade profitable)`;
-- calibration curves and proper scoring rules;
-- prospective incumbent/challenger tournament;
-- robustness to worse assumptions and poorer fills;
-- explicit sample/date sufficiency gates;
-- immutable shadow decision-time records;
-- outcome collection without hindsight contamination;
-- formal promotion/demotion states.
+Package D builds on the existing prospective-freeze and shadow infrastructure and adds:
+
+- strict separation of `P(thesis correct)` from `P(trade profitable)`;
+- Brier score, log loss and reliability/calibration bins;
+- calibration-in-the-large and expected calibration error;
+- paired incumbent/challenger tournaments on common immutable observation keys;
+- bootstrap uncertainty around paired Brier-loss differences;
+- explicit observation-count and independent-date sufficiency;
+- robustness as a mandatory promotion-review input;
+- `CONTINUE_SHADOW` versus `ELIGIBLE_FOR_PROMOTION_REVIEW` states;
+- read-only prospective/shadow runtime over the existing database;
+- visibility of prospective dates, frozen hypotheses, shadow lifecycle and outcome marks;
+- explicit reporting when decision-time probabilities were not immutably captured, rather than hindsight reconstruction;
+- dedicated Calibration & Prospective Shadow browser page;
+- no automatic model promotion or trading authority.
+
+Existing p-value/FDR/admission/decision firewalls remain off unless separately governed.
 
 ## Package E — Decision Engine + Discipline Leakage
 
@@ -177,6 +187,6 @@ Keep this lane separate from intelligence work unless operational evidence makes
 
 ## Near-term execution order
 
-**Package A deployed → Package B merged → Package C Edge Library / Risk Mathematics → Package D Calibration / Model Tournament / Shadow → Package E Decision / Discipline → Package F Casino / 0DTE.**
+**Package A deployed → Package B merged → Package C merged → Package D Calibration / Model Tournament / Shadow → Package E Decision / Discipline → Package F Casino / 0DTE.**
 
 The target is to deploy these as large coherent packages over days while prospective calibration continues in parallel.
