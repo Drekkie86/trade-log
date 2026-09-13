@@ -3,9 +3,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.quant.event_risk import implied_event_variance
+from src.quant.event_risk import implied_event_variance, total_variance
 from src.quant.realized_vol import close_to_close, garman_klass, parkinson, rogers_satchell, yang_zhang
 from src.quant.tails import diagnose
+from src.quant.types import QuantInputError
 from src.quant.vol_forecast import ewma_variance, fit_garch11
 
 
@@ -66,3 +67,37 @@ def test_event_variance_decomposition_never_negative():
 def test_event_variance_detects_excess_total_variance():
     result = implied_event_variance(0.50, 0.1, baseline_variance_rate=0.20**2)
     assert result["event_variance"] > 0
+
+
+def test_realized_vol_estimators_reject_invalid_annualization():
+    o, h, l, c = _synthetic_ohlc()
+    cases = [
+        (close_to_close, (c,)),
+        (parkinson, (h, l)),
+        (garman_klass, (o, h, l, c)),
+        (rogers_satchell, (o, h, l, c)),
+        (yang_zhang, (o, h, l, c)),
+    ]
+    for estimator, args in cases:
+        with pytest.raises(QuantInputError):
+            estimator(*args, annualization=-252.0)
+        with pytest.raises(QuantInputError):
+            estimator(*args, annualization=float("nan"))
+
+
+def test_ohlc_estimators_reject_malformed_ranges():
+    o, h, l, c = _synthetic_ohlc()
+    bad_high = h.copy()
+    bad_high[10] = min(o[10], c[10]) * 0.99
+    for estimator in (garman_klass, rogers_satchell, yang_zhang):
+        with pytest.raises(QuantInputError):
+            estimator(o, bad_high, l, c)
+
+
+def test_event_variance_rejects_non_finite_inputs():
+    with pytest.raises(QuantInputError):
+        total_variance(float("nan"), 0.1)
+    with pytest.raises(QuantInputError):
+        total_variance(0.2, float("inf"))
+    with pytest.raises(QuantInputError):
+        implied_event_variance(0.2, 0.1, baseline_variance_rate=float("nan"))
