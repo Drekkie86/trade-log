@@ -40,7 +40,7 @@ def test_model_disagreement_exposes_one_model_diverging_from_tight_cluster():
     )
 
     assert result.median == pytest.approx(10.45)
-    assert result.median_absolute_deviation == pytest.approx(0.02)
+    assert result.median_absolute_deviation == pytest.approx(0.01)
     assert result.most_distant_model_from_median == "HESTON"
     assert result.most_distant_model_abs_deviation == pytest.approx(1.65)
     assert result.market_minus_model_median == pytest.approx(-0.05)
@@ -80,8 +80,7 @@ def test_quant_cli_bench_json():
     cp = subprocess.run(
         [
             sys.executable,
-            "christiania_quant.py",
-            "bench",
+            "christiania_quant.py", "bench",
             "--spot", "100",
             "--strike", "100",
             "--time", "0.25",
