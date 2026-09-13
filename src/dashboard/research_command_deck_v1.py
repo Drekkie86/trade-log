@@ -11,7 +11,13 @@ from src.research.programme_family_governance_v1 import (
     load_programme_governance_snapshot,
 )
 
-RESEARCH_COMMAND_DECK_VERSION = "1.0.0"
+RESEARCH_COMMAND_DECK_VERSION = "1.0.1"
+
+NOT_READY_OPERATING_STATES = {
+    "RUNTIME_NOT_READY",
+    "RESEARCH_RUNTIME_DEGRADED",
+    "GOVERNANCE_FAILURE",
+}
 
 
 @dataclass(frozen=True)
@@ -118,7 +124,7 @@ def load_research_command_deck(
         }
 
     state, detail = _derive_operating_state(runtime, governance)
-    ready = bool(runtime.get("ready")) and state != "GOVERNANCE_FAILURE"
+    ready = bool(runtime.get("ready")) and state not in NOT_READY_OPERATING_STATES
 
     return ResearchCommandDeckState(
         version=RESEARCH_COMMAND_DECK_VERSION,
