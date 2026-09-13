@@ -6,7 +6,9 @@ This document supersedes earlier package numbering where it conflicts with the c
 
 ## Completed foundation and historical numbering
 
-The earlier V1 sequence remains part of Christiania's implementation history. In particular, **Package 7 — Advanced Quantitative Model Library & Research Bench** delivered the serious pricing, volatility, scenario and model-disagreement foundations that the current intelligence roadmap now extends. The current A–F package names below describe the next development pipeline; they do not erase or renumber completed historical work.
+The earlier V1 sequence remains part of Christiania's implementation history. In particular, **Package 7 — Advanced Quantitative Model Library & Research Bench** delivered the serious pricing, volatility, scenario and model-disagreement foundations that the current intelligence roadmap now extends.
+
+**Package 8 — clean-VM Release Candidate / Copenhagen acceptance** delivered the clean-host acceptance, deployment, reboot/recovery and burn-in framework that preceded the later Control Plane Reset. The current A–F package names below describe the next development pipeline; they do not erase or renumber completed historical work.
 
 ## Product goal
 
