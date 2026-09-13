@@ -20,6 +20,15 @@ sudo -u christiania "${APP_DIR}/.venv/bin/python" "${APP_DIR}/christiania_secure
   --env-file "${EDGE_ENV}"
 
 caddy validate --config /etc/caddy/Caddyfile
+
+if command -v ufw >/dev/null 2>&1; then
+  UFW_STATUS="$(ufw status 2>/dev/null || true)"
+  if [[ "${UFW_STATUS}" == Status:\ active* ]]; then
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+  fi
+fi
+
 systemctl enable --now christiania-oauth2-proxy.service
 systemctl reload caddy.service || systemctl restart caddy.service
 systemctl is-active --quiet christiania-oauth2-proxy.service
