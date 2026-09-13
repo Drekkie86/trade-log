@@ -26,6 +26,31 @@ class GARCH11Fit:
         return asdict(self)
 
 
+def _garch_parameters_from_unconstrained(x: Sequence[float]) -> tuple[float, float, float]:
+    """Map unconstrained optimizer coordinates to stationary GARCH parameters."""
+    if len(x) != 3:
+        raise QuantInputError("GARCH parameter transform requires exactly three coordinates")
+    coords = np.asarray(x, dtype=float)
+    if np.any(~np.isfinite(coords)):
+        raise QuantInputError("GARCH parameter transform requires finite coordinates")
+
+    try:
+        omega = math.exp(float(coords[0]))
+    except OverflowError:
+        omega = math.inf
+
+    alpha_logit = float(coords[1])
+    beta_logit = float(coords[2])
+    max_logit = max(0.0, alpha_logit, beta_logit)
+    anchor = math.exp(-max_logit)
+    a_raw = math.exp(alpha_logit - max_logit)
+    b_raw = math.exp(beta_logit - max_logit)
+    denom = anchor + a_raw + b_raw
+    alpha = 0.999 * a_raw / denom
+    beta = 0.999 * b_raw / denom
+    return omega, alpha, beta
+
+
 def require_usable_garch_fit(fit: GARCH11Fit) -> GARCH11Fit:
     """Fail closed before a fitted GARCH model is used as research evidence."""
     if not fit.converged:
@@ -76,24 +101,7 @@ def fit_garch11(returns: Sequence[float]) -> GARCH11Fit:
     sample_var = max(float(np.var(r, ddof=1)), 1e-12)
 
     def unpack(x: np.ndarray) -> tuple[float, float, float]:
-        # Transform to positive omega and alpha/beta with alpha+beta < 0.999.
-        # The alpha/beta map is a three-way softmax with an anchor logit of
-        # zero. Subtracting the maximum logit is algebraically equivalent but
-        # prevents optimizer excursions from overflowing exp().
-        try:
-            omega = math.exp(float(x[0]))
-        except OverflowError:
-            omega = math.inf
-        alpha_logit = float(x[1])
-        beta_logit = float(x[2])
-        max_logit = max(0.0, alpha_logit, beta_logit)
-        anchor = math.exp(-max_logit)
-        a_raw = math.exp(alpha_logit - max_logit)
-        b_raw = math.exp(beta_logit - max_logit)
-        denom = anchor + a_raw + b_raw
-        alpha = 0.999 * a_raw / denom
-        beta = 0.999 * b_raw / denom
-        return omega, alpha, beta
+        return _garch_parameters_from_unconstrained(x)
 
     def variance_path(omega: float, alpha: float, beta: float) -> np.ndarray:
         var = np.empty_like(r)
