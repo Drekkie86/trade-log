@@ -1,6 +1,6 @@
 # Christiania Roadmap — authoritative current plan
 
-Status baseline: the Control Plane Reset is complete in production at commit `fa5a3c645c6e752d8bfb354959fc1442e5ad6cd0`. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. The production status surface reports release identity, supervisor freshness, research progress, resource policy and core-service state together.
+Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14.
 
 This document supersedes earlier package numbering where it conflicts with the current plan. Historical package documents remain evidence of what was built, not instructions for what comes next.
 
@@ -49,29 +49,34 @@ Multiplicity is first-class evidence. A new hypothesis family may not quietly en
 
 Main Engine and Casino evidence remain architecturally separate.
 
-## Package A — Research Command Deck + Programme Family Governance
+## Package A — Research Command Deck + Programme Family Governance — COMPLETE / DEPLOYED
 
-Goal: make the existing research programme legible and prevent multiplicity from outrunning the science.
+Package A is live in production at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`.
 
-- compose the existing runtime/read model into a dedicated Research Command Deck;
-- expose daemon heartbeat, prospective accumulation, model freeze, hypothesis state, research funnel and shadow evidence;
-- turn `PROGRAMME_FAMILY_BUDGET_V1.json` into a runtime-visible fail-closed gate;
-- derive family usage from the append-only hypothesis log and observed runtime scanner families;
-- keep p-values, FDR and decision use disabled unless persisted calibration evidence explicitly enables them;
-- allow existing prospective research to continue while blocking unallocated new families.
+Delivered:
 
-## Package B — Forecasting + Surface Intelligence
+- dedicated Research Command Deck over the existing runtime/read model;
+- daemon heartbeat, prospective accumulation, model freeze, hypothesis state, research funnel and shadow evidence visibility;
+- runtime-visible programme-family governance;
+- family usage derived from append-only hypothesis evidence and observed runtime scanner families;
+- fail-closed calibration/inference flags;
+- no activation of new edge families while the programme budget remains `UNFROZEN`.
 
-Goal: strengthen the actual forecasting substrate before opening new edge families.
+## Package B — Forecasting + Surface Intelligence — ACTIVE BUILD
 
-Build on the quant library already present in the repository rather than reimplementing it:
+Goal: strengthen the forecasting substrate before opening new edge families.
 
-- realized-volatility forecast evaluation and uncertainty;
-- forecast-vs-realized scoring by horizon/regime;
-- surface-residual challenger diagnostics;
-- incumbent/challenger prospective comparison;
-- timing/data-quality conditioning;
-- explicit forecast error bars for later edge ranking.
+Package B builds on the existing quant library and adds:
+
+- common realized-variance forecast scoring with bias, MAE, RMSE and QLIKE;
+- bootstrap uncertainty around forecast loss;
+- interval coverage/calibration diagnostics;
+- rolling-origin historical variance, EWMA and GARCH(1,1) tournaments;
+- trailing-only regime classification to avoid look-ahead contamination;
+- frozen `LOCAL_SURFACE_QUADRATIC_V2` versus research-only `NEAREST_BRACKET_LINEAR_V1` leave-one-out comparison;
+- read-only runtime evaluation over existing session-level underlying prices and Theta IV surfaces;
+- Forecasting & Surface Intelligence browser page;
+- explicit `NONE_RESEARCH_ONLY` decision authority.
 
 `LOCAL_SURFACE_QUADRATIC_V2` remains frozen unless prospective evidence supports promotion of a challenger.
 
@@ -165,6 +170,6 @@ Keep this lane separate from intelligence work unless operational evidence makes
 
 ## Near-term execution order
 
-**Research Command Deck / family governance → Forecasting / surface intelligence → Edge Library / risk mathematics → Calibration / model tournament / shadow → Decision / discipline → Casino / 0DTE.**
+**Package A deployed → Package B Forecasting / Surface Intelligence → Package C Edge Library / Risk Mathematics → Package D Calibration / Model Tournament / Shadow → Package E Decision / Discipline → Package F Casino / 0DTE.**
 
 The target is to deploy these as large coherent packages over days while prospective calibration continues in parallel.
