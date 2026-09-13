@@ -20,6 +20,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
+ReadWritePaths=/var/lib/christiania/data
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
