@@ -4,7 +4,7 @@
 
 Christiania has completed the core collection, persistence, shadow, quantitative-model, decision-read-model and appliance-style deployment foundations needed to continue scientific development without treating the production VM as a development workstation.
 
-Historical V1 package continuity remains explicit: **Package 7: advanced quantitative model library/research bench** is complete and supplies the pricing, volatility, simulation, scenario and model-disagreement foundations used by the current roadmap. The newer A–F package sequence describes the next intelligence-development pipeline rather than replacing completed package history.
+Historical V1 package continuity remains explicit: **Package 7: advanced quantitative model library/research bench** is complete and supplies the pricing, volatility, simulation, scenario and model-disagreement foundations used by the current roadmap. Its non-primary models remain **research-only challengers/diagnostics** unless prospective governance explicitly grants a later role. The newer A–F package sequence describes the next intelligence-development pipeline rather than replacing completed package history.
 
 The Control Plane Reset is complete in production at commit `fa5a3c645c6e752d8bfb354959fc1442e5ad6cd0`.
 
@@ -33,7 +33,7 @@ New development should extend and prospectively test these components rather tha
 
 ## Scientific state
 
-Scientific maturity remains deliberately independent from product maturity.
+Scientific maturity is deliberately independent from product maturity.
 
 The frozen local-surface programme continues collecting prospective evidence. The persisted calibration-validity layer keeps p-values, FDR and decision use disabled unless its own evidence explicitly permits a later state transition.
 
