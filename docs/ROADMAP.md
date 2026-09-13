@@ -1,69 +1,170 @@
-# Christiania V1.0 Roadmap — authoritative current plan
+# Christiania Roadmap — authoritative current plan
 
-Status baseline: Package 6 (`c4a9a5a`) completed the secure authenticated web edge and V1 documentation/security consolidation.
-This document supersedes the earlier pre-Cohort implementation roadmap. Historical documents remain useful evidence but are not current implementation instructions.
+Status baseline: the Control Plane Reset is complete in production at commit `fa5a3c645c6e752d8bfb354959fc1442e5ad6cd0`. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. The production status surface reports release identity, supervisor freshness, research progress, resource policy and core-service state together.
 
-## V1 goal
+This document supersedes earlier package numbering where it conflicts with the current plan. Historical package documents remain evidence of what was built, not instructions for what comes next.
 
-Christiania V1.0 is an operationally complete quantitative options-research workstation that can run unattended on one Linux VM, expose a securely authenticated browser UI, preserve evidence/provenance/recovery, and host a serious versioned mathematical model library.
+## Completed foundation and historical numbering
 
-V1.0 does **not** claim a proven trading edge and contains no broker-order path.
+The earlier V1 sequence remains part of Christiania's implementation history. In particular, **Package 7 — Advanced Quantitative Model Library & Research Bench** delivered the serious pricing, volatility, scenario and model-disagreement foundations that the current intelligence roadmap now extends.
 
-## Completed
+**Package 8 — clean-VM Release Candidate / Copenhagen acceptance** delivered the clean-host acceptance, deployment, reboot/recovery and burn-in framework that preceded the later Control Plane Reset. The current A–F package names below describe the next development pipeline; they do not erase or renumber completed historical work.
 
-- Packages 1–6: recovery provenance, SQLite WAL/read-only UI, verified backup/restore, XNYS scheduling, one-VM systemd runtime, Theta control plane, per-slot Theta gating, audit exports, operational readiness, Copenhagen recovery tooling and the secure OIDC/HTTPS web edge.
-- Package 7: advanced quantitative model library and Quant Bench, while keeping every new model research-only.
-- Frozen prospective-science governance remains observational-only.
+## Product goal
 
-## Package 6 — Secure Web Edge & Documentation Consolidation — COMPLETE
+Christiania is a quantitative options-research workstation that runs unattended, collects prospective evidence, scrutinises option risk mathematically, and may surface bounded-risk opportunities for manual review.
 
-- Caddy automatic HTTPS reverse proxy.
-- oauth2-proxy generic OIDC authentication gateway.
-- explicit per-user email allowlist; no Christiania password database.
-- Streamlit remains loopback-only.
-- bounded app/auth-gateway restart behavior and service sandbox hardening.
-- secure-edge/deployment preflights with explicit env-file loading.
-- recursive audit-export secret redaction.
-- migration 021–025 governance audit converted into regression contracts.
-- authoritative V1 architecture/status documentation and stale-doc cleanup.
+Christiania is a **risk-selection machine, not a risk-avoidance machine**. Risk is acceptable when downside is bounded, the payoff distribution is quantified, and the estimated compensation is adequate after costs and uncertainty.
 
-## Package 7 — Advanced Quantitative Model Library & Research Bench — COMPLETE IN THIS PACKAGE
+Christiania does **not** claim a proven trading edge merely because an anomaly is published, backtested or statistically interesting. `NO TRADE` remains a first-class successful outcome. V1 contains no automatic broker-order path.
 
-Build serious mathematical infrastructure without promoting unvalidated challengers into trading decisions:
+## Current operational baseline
 
-- production-grade BSM/implied-vol/Greeks foundations;
-- numerical cross-checks and higher-order Greeks;
-- arbitrage-aware volatility-surface diagnostics;
-- binomial/trinomial and finite-difference cross-validation;
-- Heston/stochastic-vol challenger infrastructure;
-- local-vol and jump-diffusion research models;
-- Monte Carlo/scenario engine with convergence diagnostics;
-- realized-volatility estimators and EWMA/GARCH-family baselines;
-- model calibration quality/stability metrics;
-- explicit transaction-cost/slippage EV layer;
-- model-disagreement research surface.
+- artifact-based, commit-addressed production releases;
+- `/opt/christiania` points to the active immutable release;
+- no production Git checkout or GitHub credentials are required;
+- centralized resource policy covers all 14 Christiania services;
+- `christiania-status` fails on stale supervisor evidence;
+- Theta, daemon and app are the core active runtime;
+- research progress is monitored separately from process liveness;
+- burn-in, legacy health and V1-readiness timers remain intentionally disabled until redesigned;
+- oauth2-proxy is resource-governed but deliberately disabled; a secure public browser edge is not currently an active dependency of the research programme;
+- prospective calibration continues while product development proceeds.
 
-Frozen primary/prospective hypotheses remain frozen. Challengers are research instruments, not automatic BUY/SELL authorities.
+## Scientific doctrine
 
-## Package 8 — Clean-VM Release Candidate / Copenhagen acceptance
+The promotion ladder is:
 
-- provision a clean Linux VM;
-- deploy Christiania + Theta JAR + persistent SQLite;
-- configure DNS, HTTPS and OIDC identity;
-- demonstrate unattended reboot recovery;
-- demonstrate Theta readiness and scheduled collection;
-- verify browser login from a remote location;
-- verify backup, restore drill, audit export and timers;
-- run multi-day burn-in and fix only evidence-backed reliability defects;
-- execute final migration/security/deployment review.
+1. literature claim or research idea;
+2. Christiania reproduction;
+3. realistic costs/slippage;
+4. out-of-sample evidence;
+5. prospective shadow evidence;
+6. calibration and robustness;
+7. eligibility for manual review.
 
-## V1.0 release condition
+Academic evidence means that an effect existed in the studied sample, not that it remains tradable now. Published anomalies may decay.
 
-V1.0 can be declared when the clean-VM acceptance gate passes. Scientific maturity is shown separately and may still be `PROSPECTIVE_CALIBRATION_ACCUMULATING`.
+Multiplicity is first-class evidence. A new hypothesis family may not quietly enter the programme simply because the implementation exists.
 
-Post-V1 decisions about live broker execution require a separate explicit architecture/safety project and are not implied by V1.0.
+Main Engine and Casino evidence remain architecturally separate.
 
+## Package A — Research Command Deck + Programme Family Governance
 
-## Package 9 — V1 Product Interface
+Goal: make the existing research programme legible and prevent multiplicity from outrunning the science.
 
-Branded browser interface using the official Christiania logo, with clear separation of core research, Shadow Lab, Casino / 0DTE Lab, readiness and release status.
+- compose the existing runtime/read model into a dedicated Research Command Deck;
+- expose daemon heartbeat, prospective accumulation, model freeze, hypothesis state, research funnel and shadow evidence;
+- turn `PROGRAMME_FAMILY_BUDGET_V1.json` into a runtime-visible fail-closed gate;
+- derive family usage from the append-only hypothesis log and observed runtime scanner families;
+- keep p-values, FDR and decision use disabled unless persisted calibration evidence explicitly enables them;
+- allow existing prospective research to continue while blocking unallocated new families.
+
+## Package B — Forecasting + Surface Intelligence
+
+Goal: strengthen the actual forecasting substrate before opening new edge families.
+
+Build on the quant library already present in the repository rather than reimplementing it:
+
+- realized-volatility forecast evaluation and uncertainty;
+- forecast-vs-realized scoring by horizon/regime;
+- surface-residual challenger diagnostics;
+- incumbent/challenger prospective comparison;
+- timing/data-quality conditioning;
+- explicit forecast error bars for later edge ranking.
+
+`LOCAL_SURFACE_QUADRATIC_V2` remains frozen unless prospective evidence supports promotion of a challenger.
+
+## Package C — Edge Library V1 + Risk Mathematics
+
+Goal: encode credible edge hypotheses while measuring the actual risk being purchased or sold.
+
+Initial library:
+
+- variance risk premium — **defined-risk structures only**;
+- normalized IV versus forecast realized-volatility gap;
+- demand pressure / intermediary constraints;
+- idiosyncratic-volatility effect;
+- option momentum;
+- quarterly variance seasonality;
+- earnings/event volatility premium.
+
+Dispersion remains research-only and capital-incompatible with the current experimental bankroll. Internet strategies enter as `UNVERIFIED CLAIM` until independently reproduced.
+
+The risk engine should quantify, where applicable:
+
+- full payoff distribution;
+- net expected value after costs/slippage;
+- maximum defined loss;
+- probability and magnitude of loss;
+- expected shortfall / tail loss;
+- Greeks and scenario sensitivities;
+- jump/event exposure;
+- model/parameter uncertainty;
+- historical replay and Monte Carlo distributions;
+- bankroll impairment / ruin metrics;
+- conservative sizing candidates.
+
+A high win rate is not an edge if the tail dominates. A trade with meaningful loss probability may still be rational when the loss is bounded and the compensation is adequate.
+
+## Package D — Calibration + Model Tournament + Prospective Shadow
+
+Goal: make models earn trust prospectively.
+
+- track `P(thesis correct)` separately from `P(trade profitable)`;
+- calibration curves and proper scoring rules;
+- prospective incumbent/challenger tournament;
+- robustness to worse assumptions and poorer fills;
+- explicit sample/date sufficiency gates;
+- immutable shadow decision-time records;
+- outcome collection without hindsight contamination;
+- formal promotion/demotion states.
+
+## Package E — Decision Engine + Discipline Leakage
+
+Goal: distinguish model quality from operator behaviour.
+
+- `NO TRADE`;
+- `CONTINUE SHADOW`;
+- `ELIGIBLE FOR MANUAL REVIEW`;
+- separate model-approved and discretionary trades;
+- separate expectancy/P&L for approved versus unapproved behaviour;
+- identify strategy failure versus operator failure;
+- track discipline leakage after winning periods;
+- rank opportunities by risk compensation, evidence quality, robustness and calibration rather than win rate alone.
+
+## Package F — Casino + 0DTE Lab V1
+
+Goal: permit deliberately high-variance research without contaminating Main Engine standards.
+
+Charter: **Casino in spirit, quant in discipline.**
+
+- tiny/capped risk allocation;
+- hard maximum loss;
+- separate statistics/evidence namespace;
+- intraday implied versus realized volatility;
+- gamma/theta interaction;
+- skew and jump/event structure;
+- liquidity/microstructure and transaction costs;
+- scenario EV;
+- dealer-positioning inputs only where measurable and appropriately sourced;
+- `NO TRADE` remains valid.
+
+Spectacular historical returns are not evidence of edge.
+
+## Parallel infrastructure backlog
+
+Keep this lane separate from intelligence work unless operational evidence makes it urgent:
+
+- redesign burn-in so it cannot recreate the resource incident;
+- redesign strict/deep backup verification independently from frequent health checks;
+- external observability;
+- offsite encrypted backup and restore maturation;
+- optional secure browser edge;
+- measure swap behaviour before changing host `vm.swappiness`.
+
+## Near-term execution order
+
+**Research Command Deck / family governance → Forecasting / surface intelligence → Edge Library / risk mathematics → Calibration / model tournament / shadow → Decision / discipline → Casino / 0DTE.**
+
+The target is to deploy these as large coherent packages over days while prospective calibration continues in parallel.
