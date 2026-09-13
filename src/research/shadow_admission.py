@@ -23,6 +23,7 @@ SIZING_POLICY_VERSION = (
     "SIZING_POLICY_V1_FIXED_500_EUR_ONE_UNIT"
 )
 BANKROLL_CAP_EUR_MINOR = 50_000
+PORTFOLIO_BANKROLL_GUARD_VERSION = "ACTIVE_PORTFOLIO_BANKROLL_GUARD_V1"
 
 # Saxo Belgium currently publishes USD 2.00 / contract for the highest
 # standard account-price category. Shadow research reserves an additional
@@ -67,6 +68,16 @@ class ShadowAdmissionResult:
     admitted_count: int
     blocked_count: int
     decisions: tuple[ShadowAdmissionDecision, ...]
+
+
+@dataclass(frozen=True)
+class ActiveBankrollExposure:
+    candidate_count: int
+    reserved_risk_eur_minor: int
+
+    @property
+    def remaining_capacity_eur_minor(self) -> int:
+        return max(0, BANKROLL_CAP_EUR_MINOR - self.reserved_risk_eur_minor)
 
 
 def _now_utc() -> str:
@@ -385,6 +396,37 @@ def _universe_status(
     return "DISAGREEMENT_RECORDED"
 
 
+def active_bankroll_exposure(*, db_path=None) -> ActiveBankrollExposure:
+    """Return aggregate reserved risk for currently tracked candidates.
+
+    The fixed EUR 500 research bankroll is a portfolio constraint, not a
+    per-candidate allowance. Only candidates whose latest lifecycle state is
+    SHADOW_TRACKED consume active capacity; closed/scored/rejected candidates
+    release their reservation.
+    """
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS candidate_count,
+                COALESCE(SUM(sad.reserved_risk_eur_minor), 0) AS reserved_risk_eur_minor
+            FROM shadow_admission_decisions AS sad
+            JOIN v_shadow_current_state AS state
+              ON state.candidate_id = sad.candidate_id
+            WHERE sad.decision = 'ADMITTED'
+              AND state.current_state = 'SHADOW_TRACKED';
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    return ActiveBankrollExposure(
+        candidate_count=int(row["candidate_count"] or 0),
+        reserved_risk_eur_minor=int(row["reserved_risk_eur_minor"] or 0),
+    )
+
+
 def _persist_decision(
     *,
     proposal: dict[str, Any],
@@ -399,6 +441,7 @@ def _persist_decision(
     estimated_cost_eur_minor: int,
     reserved_risk_eur_minor: int,
     fx: EcbFxObservation,
+    active_exposure_before: ActiveBankrollExposure,
     db_path=None,
 ) -> int:
     evidence = json.dumps(
@@ -428,8 +471,21 @@ def _persist_decision(
                         "EUR",
                     "cap_minor":
                         BANKROLL_CAP_EUR_MINOR,
-                    "active_units":
-                        1,
+                    "portfolio_guard_version":
+                        PORTFOLIO_BANKROLL_GUARD_VERSION,
+                    "active_candidate_count_before":
+                        active_exposure_before.candidate_count,
+                    "active_reserved_risk_before_minor":
+                        active_exposure_before.reserved_risk_eur_minor,
+                    "proposed_reserved_risk_minor":
+                        reserved_risk_eur_minor,
+                    "projected_reserved_risk_if_admitted_minor":
+                        (
+                            active_exposure_before.reserved_risk_eur_minor
+                            + reserved_risk_eur_minor
+                        ),
+                    "remaining_capacity_before_minor":
+                        active_exposure_before.remaining_capacity_eur_minor,
                     "automatic_replenishment":
                         False,
                 },
@@ -623,6 +679,10 @@ def admit_shadow_proposals(
             )
             continue
 
+        active_exposure_before = active_bankroll_exposure(
+            db_path=db_path,
+        )
+
         max_loss_usd_minor = int(
             proposal[
                 "max_theoretical_loss_minor"
@@ -729,6 +789,14 @@ def admit_shadow_proposals(
             block_reason = (
                 "ONE_UNIT_EXCEEDS_EUR_500_BANKROLL"
             )
+        elif (
+            active_exposure_before.reserved_risk_eur_minor
+            + reserved_eur_minor
+            > BANKROLL_CAP_EUR_MINOR
+        ):
+            block_reason = (
+                "ACTIVE_PORTFOLIO_EXCEEDS_EUR_500_BANKROLL"
+            )
 
         if block_reason is not None:
             _persist_decision(
@@ -751,6 +819,7 @@ def admit_shadow_proposals(
                 reserved_risk_eur_minor=
                     reserved_eur_minor,
                 fx=fx,
+                active_exposure_before=active_exposure_before,
                 db_path=db_path,
             )
 
@@ -971,6 +1040,7 @@ def admit_shadow_proposals(
             reserved_risk_eur_minor=
                 reserved_eur_minor,
             fx=fx,
+            active_exposure_before=active_exposure_before,
             db_path=db_path,
         )
 
