@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from src.quant.bench import run_vanilla_bench
 from src.quant.disagreement import summarize
 from src.quant.types import VanillaOption
@@ -16,9 +18,33 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_model_disagreement_summary_with_market_price():
     result = summarize({"A": 10.0, "B": 11.0, "C": 12.0}, market_price=13.0)
     assert result.mean == 11.0
+    assert result.median == 11.0
     assert result.absolute_range == 2.0
     assert result.market_minus_consensus == 2.0
-    assert result.market_z_score is not None
+    assert result.market_minus_model_median == 2.0
+    assert result.market_distance_in_model_standard_deviations is not None
+    assert result.statistical_inference_valid is False
+    assert "market_z_score" not in result.as_dict()
+
+
+def test_model_disagreement_exposes_one_model_diverging_from_tight_cluster():
+    result = summarize(
+        {
+            "BSM": 10.43,
+            "TREE": 10.44,
+            "FINITE_DIFFERENCE": 10.45,
+            "MONTE_CARLO": 10.46,
+            "HESTON": 12.10,
+        },
+        market_price=10.40,
+    )
+
+    assert result.median == pytest.approx(10.45)
+    assert result.median_absolute_deviation == pytest.approx(0.02)
+    assert result.most_distant_model_from_median == "HESTON"
+    assert result.most_distant_model_abs_deviation == pytest.approx(1.65)
+    assert result.market_minus_model_median == pytest.approx(-0.05)
+    assert result.statistical_inference_valid is False
 
 
 def test_vanilla_bench_runs_five_models_and_is_research_only():
@@ -32,6 +58,8 @@ def test_vanilla_bench_runs_five_models_and_is_research_only():
     assert result["governance"]["decision_enabled"] is False
     assert result["governance"]["admission_enabled"] is False
     assert "not a trade signal" in result["governance"]["warning"]
+    assert result["disagreement"]["statistical_inference_valid"] is False
+    assert "market_z_score" not in result["disagreement"]
 
 
 def test_quant_cli_registry_json():
@@ -72,6 +100,8 @@ def test_quant_cli_bench_json():
     payload = json.loads(cp.stdout)
     assert payload["governance"]["state"] == "RESEARCH_ONLY"
     assert "HESTON" in payload["model_prices"]
+    assert payload["disagreement"]["statistical_inference_valid"] is False
+    assert "market_z_score" not in payload["disagreement"]
 
 
 def test_command_deck_has_quant_bench_and_research_warning():
