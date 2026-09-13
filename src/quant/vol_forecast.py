@@ -26,6 +26,55 @@ class GARCH11Fit:
         return asdict(self)
 
 
+def _garch_parameters_from_unconstrained(x: Sequence[float]) -> tuple[float, float, float]:
+    """Map unconstrained optimizer coordinates to stationary GARCH parameters."""
+    if len(x) != 3:
+        raise QuantInputError("GARCH parameter transform requires exactly three coordinates")
+    coords = np.asarray(x, dtype=float)
+    if np.any(~np.isfinite(coords)):
+        raise QuantInputError("GARCH parameter transform requires finite coordinates")
+
+    try:
+        omega = math.exp(float(coords[0]))
+    except OverflowError:
+        omega = math.inf
+
+    alpha_logit = float(coords[1])
+    beta_logit = float(coords[2])
+    max_logit = max(0.0, alpha_logit, beta_logit)
+    anchor = math.exp(-max_logit)
+    a_raw = math.exp(alpha_logit - max_logit)
+    b_raw = math.exp(beta_logit - max_logit)
+    denom = anchor + a_raw + b_raw
+    alpha = 0.999 * a_raw / denom
+    beta = 0.999 * b_raw / denom
+    return omega, alpha, beta
+
+
+def require_usable_garch_fit(fit: GARCH11Fit) -> GARCH11Fit:
+    """Fail closed before a fitted GARCH model is used as research evidence."""
+    if not fit.converged:
+        raise QuantInputError(
+            f"GARCH(1,1) optimizer did not converge: {fit.message or 'no optimizer message'}"
+        )
+    numeric = (
+        fit.omega,
+        fit.alpha,
+        fit.beta,
+        fit.unconditional_variance,
+        fit.last_variance,
+        fit.next_variance,
+        fit.log_likelihood,
+    )
+    if any(not math.isfinite(float(value)) for value in numeric):
+        raise QuantInputError("GARCH(1,1) fit contains non-finite diagnostics")
+    if fit.omega <= 0 or fit.unconditional_variance <= 0 or fit.last_variance <= 0 or fit.next_variance <= 0:
+        raise QuantInputError("GARCH(1,1) fit contains non-positive variance parameters")
+    if not (0 <= fit.alpha < 1 and 0 <= fit.beta < 1 and fit.alpha + fit.beta < 0.999):
+        raise QuantInputError("GARCH(1,1) fit violates the stationary parameter contract")
+    return fit
+
+
 def ewma_variance(
     returns: Sequence[float],
     *,
@@ -52,14 +101,7 @@ def fit_garch11(returns: Sequence[float]) -> GARCH11Fit:
     sample_var = max(float(np.var(r, ddof=1)), 1e-12)
 
     def unpack(x: np.ndarray) -> tuple[float, float, float]:
-        # Transform to positive omega and alpha/beta with alpha+beta < 0.999.
-        omega = math.exp(float(x[0]))
-        a_raw = math.exp(float(x[1]))
-        b_raw = math.exp(float(x[2]))
-        denom = 1.0 + a_raw + b_raw
-        alpha = 0.999 * a_raw / denom
-        beta = 0.999 * b_raw / denom
-        return omega, alpha, beta
+        return _garch_parameters_from_unconstrained(x)
 
     def variance_path(omega: float, alpha: float, beta: float) -> np.ndarray:
         var = np.empty_like(r)
@@ -72,6 +114,8 @@ def fit_garch11(returns: Sequence[float]) -> GARCH11Fit:
 
     def objective(x: np.ndarray) -> float:
         omega, alpha, beta = unpack(x)
+        if not math.isfinite(omega) or omega <= 0:
+            return math.inf
         var = variance_path(omega, alpha, beta)
         ll = -0.5 * np.sum(np.log(2.0 * math.pi) + np.log(var) + (r * r) / var)
         return float(-ll)

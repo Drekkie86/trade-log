@@ -7,7 +7,7 @@ import numpy as np
 
 from src.quant.forecast_validation import ForecastObservation
 from src.quant.types import QuantInputError
-from src.quant.vol_forecast import ewma_variance, fit_garch11
+from src.quant.vol_forecast import ewma_variance, fit_garch11, require_usable_garch_fit
 
 
 HISTORICAL_VARIANCE_MODEL_ID = "HISTORICAL_VARIANCE_V1"
@@ -119,7 +119,7 @@ def rolling_variance_forecasts(
         )
 
         if config.include_garch:
-            fit = fit_garch11(training)
+            fit = require_usable_garch_fit(fit_garch11(training))
             garch = _garch_horizon_average_variance(
                 omega=fit.omega,
                 alpha=fit.alpha,

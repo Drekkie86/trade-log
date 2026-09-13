@@ -12,6 +12,7 @@ import numpy as np
 from src.database.repository import resolve_db_path
 from src.operations.sqlite_runtime import open_readonly_connection
 from src.quant.forecast_validation import tournament
+from src.quant.types import QuantInputError
 from src.quant.rolling_variance_forecast import (
     EWMA_MODEL_ID,
     GARCH11_MODEL_ID,
@@ -19,7 +20,7 @@ from src.quant.rolling_variance_forecast import (
     RollingForecastConfig,
     rolling_variance_forecasts,
 )
-from src.quant.vol_forecast import ewma_variance, fit_garch11
+from src.quant.vol_forecast import ewma_variance, fit_garch11, require_usable_garch_fit
 from src.research.edge_library_v1 import edge_registry, variance_gap_diagnostic
 
 
@@ -134,7 +135,7 @@ def _current_forecast(
     if model_id == EWMA_MODEL_ID:
         return max(float(ewma_variance(training, decay=ewma_decay)), float(np.finfo(float).tiny))
     if model_id == GARCH11_MODEL_ID:
-        fit = fit_garch11(training)
+        fit = require_usable_garch_fit(fit_garch11(training))
         return max(_garch_horizon_average(fit, horizon_days=horizon_days), float(np.finfo(float).tiny))
     raise ValueError(f"unsupported forecast model: {model_id}")
 
@@ -258,7 +259,26 @@ def load_edge_risk_runtime(
                 )
                 continue
 
-            rows = rolling_variance_forecasts(returns, config=config)
+            try:
+                rows = rolling_variance_forecasts(returns, config=config)
+            except QuantInputError as exc:
+                observations.append(
+                    EdgeRuntimeObservation(
+                        underlying=underlying,
+                        state="FORECAST_MODEL_FIT_FAILED_CLOSED",
+                        detail=f"Forecast experiment refused an unusable model fit: {exc}",
+                        session_price_count=len(prices),
+                        return_count=len(returns),
+                        forecast_model_id=None,
+                        forecast_daily_variance=None,
+                        matched_expiration=None,
+                        matched_dte=None,
+                        surface_median_iv=None,
+                        variance_gap=None,
+                    )
+                )
+                continue
+
             ranked = tournament(rows, scoring_rule="QLIKE", bootstrap_samples=bootstrap_samples)
             winner = ranked.winner
             if winner is None:
@@ -279,13 +299,32 @@ def load_edge_risk_runtime(
                 )
                 continue
 
-            forecast_variance = _current_forecast(
-                returns,
-                model_id=winner,
-                train_window=train_window,
-                horizon_days=horizon_days,
-                ewma_decay=config.ewma_decay,
-            )
+            try:
+                forecast_variance = _current_forecast(
+                    returns,
+                    model_id=winner,
+                    train_window=train_window,
+                    horizon_days=horizon_days,
+                    ewma_decay=config.ewma_decay,
+                )
+            except QuantInputError as exc:
+                observations.append(
+                    EdgeRuntimeObservation(
+                        underlying=underlying,
+                        state="FORECAST_WINNER_FIT_FAILED_CLOSED",
+                        detail=f"Winning forecast model was not usable on the current window: {exc}",
+                        session_price_count=len(prices),
+                        return_count=len(returns),
+                        forecast_model_id=winner,
+                        forecast_daily_variance=None,
+                        matched_expiration=None,
+                        matched_dte=None,
+                        surface_median_iv=None,
+                        variance_gap=None,
+                    )
+                )
+                continue
+
             error_std = _forecast_error_std(rows, model_id=winner)
             expiration, dte, iv = _matched_surface_iv(
                 conn,
