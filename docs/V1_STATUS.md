@@ -4,6 +4,8 @@
 
 Christiania has completed the core collection, persistence, shadow, quantitative-model, decision-read-model and appliance-style deployment foundations needed to continue scientific development without treating the production VM as a development workstation.
 
+Historical V1 package continuity remains explicit: **Package 7: advanced quantitative model library/research bench** is complete and supplies the pricing, volatility, simulation, scenario and model-disagreement foundations used by the current roadmap. The newer A–F package sequence describes the next intelligence-development pipeline rather than replacing completed package history.
+
 The Control Plane Reset is complete in production at commit `fa5a3c645c6e752d8bfb354959fc1442e5ad6cd0`.
 
 Current product-development sequence is maintained in `docs/ROADMAP.md`. The active next layer is the Research Command Deck + programme-family governance package, followed by forecasting/surface intelligence, Edge Library/risk mathematics, calibration/model tournament/shadow promotion, decision/discipline and the separate Casino/0DTE Lab.
