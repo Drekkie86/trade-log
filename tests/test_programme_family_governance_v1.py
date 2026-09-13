@@ -30,7 +30,13 @@ def _write_governance(
     (directory / "HYPOTHESIS_EVALUATION_LOG.jsonl").write_text(payload, encoding="utf-8")
 
 
-def _write_calibration_db(path: Path, *, readiness: str, dates: int) -> None:
+def _write_calibration_db(
+    path: Path,
+    *,
+    readiness: str,
+    dates: int,
+    runtime_families: list[str] | None = None,
+) -> None:
     conn = sqlite3.connect(path)
     try:
         conn.executescript(
@@ -42,6 +48,10 @@ def _write_calibration_db(path: Path, *, readiness: str, dates: int) -> None:
                 p_values_enabled INTEGER NOT NULL,
                 fdr_enabled INTEGER NOT NULL,
                 decision_enabled INTEGER NOT NULL
+            );
+            CREATE TABLE hypothesis_scanner_runs (
+                id INTEGER PRIMARY KEY,
+                hypothesis_family TEXT
             );
             """
         )
@@ -56,6 +66,10 @@ def _write_calibration_db(path: Path, *, readiness: str, dates: int) -> None:
             ) VALUES (?, ?, 0, 0, 0);
             """,
             (readiness, dates),
+        )
+        conn.executemany(
+            "INSERT INTO hypothesis_scanner_runs(hypothesis_family) VALUES (?);",
+            [(family_id,) for family_id in (runtime_families or [])],
         )
         conn.commit()
     finally:
@@ -77,7 +91,12 @@ def test_unfrozen_budget_blocks_new_family_but_keeps_discovery_fail_closed(tmp_p
         },
     )
     db = tmp_path / "research.db"
-    _write_calibration_db(db, readiness="EXPLORATORY_VALIDITY_ONLY", dates=7)
+    _write_calibration_db(
+        db,
+        readiness="EXPLORATORY_VALIDITY_ONLY",
+        dates=7,
+        runtime_families=["LOCAL_SURFACE_IV_RESIDUAL"] * 4,
+    )
 
     snapshot = load_programme_governance_snapshot(db, repository_root=tmp_path)
 
@@ -88,6 +107,12 @@ def test_unfrozen_budget_blocks_new_family_but_keeps_discovery_fail_closed(tmp_p
     assert snapshot.fdr_enabled is False
     assert snapshot.decision_enabled is False
     assert snapshot.calibration_distinct_dates == 7
+    assert snapshot.runtime_family_ids == ("LOCAL_SURFACE_IV_RESIDUAL",)
+    assert snapshot.opened_family_ids == ("LOCAL_SURFACE_IV_RESIDUAL",)
+    assert snapshot.opened_family_count == 1
+    assert snapshot.runtime_scanner_run_count == 4
+    assert snapshot.family_usage[0].runtime_scanner_runs == 4
+    assert snapshot.family_usage[0].observed_in_runtime is True
 
 
 def test_frozen_budget_allows_only_allocated_family_space(tmp_path: Path) -> None:
@@ -126,13 +151,43 @@ def test_frozen_budget_allows_only_allocated_family_space(tmp_path: Path) -> Non
     assert any("alpha_or_q_budget" in warning for warning in snapshot.budget_warnings)
 
 
-def test_logged_family_outside_frozen_allocation_fails_closed(tmp_path: Path) -> None:
+def test_runtime_family_outside_frozen_allocation_fails_closed(tmp_path: Path) -> None:
     _write_governance(
         tmp_path,
         budget={
             "schema_version": "1.0",
             "status": "FROZEN",
             "period_id": "EDGE_PROGRAMME_003",
+            "period_start": "2026-09-14",
+            "period_end": "2026-12-31",
+            "max_families": 2,
+            "alpha_or_q_budget": 0.05,
+            "allocation_method": "PREALLOCATED",
+            "family_ids": ["FAMILY_A", "FAMILY_B"],
+        },
+    )
+    db = tmp_path / "research.db"
+    _write_calibration_db(
+        db,
+        readiness="EXPLORATORY_VALIDITY_ONLY",
+        dates=6,
+        runtime_families=["FAMILY_C"],
+    )
+
+    snapshot = load_programme_governance_snapshot(db, repository_root=tmp_path)
+
+    assert snapshot.activation_state == ACTIVATION_BLOCKED_INVALID
+    assert snapshot.ready_for_new_family_activation is False
+    assert "FAMILY_C" in snapshot.activation_detail
+
+
+def test_logged_family_outside_frozen_allocation_fails_closed(tmp_path: Path) -> None:
+    _write_governance(
+        tmp_path,
+        budget={
+            "schema_version": "1.0",
+            "status": "FROZEN",
+            "period_id": "EDGE_PROGRAMME_004",
             "period_start": "2026-09-14",
             "period_end": "2026-12-31",
             "max_families": 2,
