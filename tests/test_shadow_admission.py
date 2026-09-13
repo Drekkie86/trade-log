@@ -635,3 +635,82 @@ def test_requested_proposal_filter_scales_beyond_sqlite_parameter_limit(db_path)
     )
 
     assert [int(row["id"]) for row in rows] == [proposal_id]
+
+
+def test_active_portfolio_bankroll_cap_blocks_second_candidate(db_path):
+    first = seed_proposal(db_path, max_loss_usd_minor=30_000)
+    second = seed_proposal(db_path, max_loss_usd_minor=30_000)
+
+    result = admit_shadow_proposals(
+        fx=fx(),
+        proposal_ids=[first["proposal_id"], second["proposal_id"]],
+        db_path=db_path,
+    )
+
+    assert result.admitted_count == 1
+    assert result.blocked_count == 1
+    assert result.decisions[0].decision == "ADMITTED"
+    assert result.decisions[1].decision == "BLOCKED"
+    assert result.decisions[1].reason_code == "ACTIVE_PORTFOLIO_EXCEEDS_EUR_500_BANKROLL"
+
+    from src.research.shadow_admission import active_bankroll_exposure
+
+    exposure = active_bankroll_exposure(db_path=db_path)
+    assert exposure.candidate_count == 1
+    assert exposure.reserved_risk_eur_minor <= 50_000
+
+    conn = get_connection(db_path)
+    try:
+        evidence = json.loads(
+            conn.execute(
+                "SELECT evidence_json FROM shadow_admission_decisions WHERE proposal_id = ?",
+                (second["proposal_id"],),
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+    bankroll = evidence["bankroll"]
+    assert bankroll["active_candidate_count_before"] == 1
+    assert bankroll["active_reserved_risk_before_minor"] > 0
+    assert bankroll["projected_reserved_risk_if_admitted_minor"] > bankroll["cap_minor"]
+
+
+def test_closed_candidate_releases_active_bankroll_capacity(db_path):
+    from src.database.repository import append_shadow_state_event
+    from src.research.shadow_admission import active_bankroll_exposure
+
+    first = seed_proposal(db_path, max_loss_usd_minor=30_000)
+    second = seed_proposal(db_path, max_loss_usd_minor=30_000)
+
+    admitted = admit_shadow_proposals(
+        fx=fx(),
+        proposal_ids=[first["proposal_id"]],
+        db_path=db_path,
+    ).decisions[0]
+    assert admitted.decision == "ADMITTED"
+    assert admitted.candidate_id is not None
+
+    before = active_bankroll_exposure(db_path=db_path)
+    assert before.candidate_count == 1
+
+    append_shadow_state_event(
+        admitted.candidate_id,
+        to_state="CLOSED_OR_EXPIRED",
+        occurred_at="2026-09-01T19:00:00Z",
+        actor="SYSTEM",
+        reason_code="TEST_RELEASE_CAPACITY",
+        db_path=db_path,
+    )
+
+    released = active_bankroll_exposure(db_path=db_path)
+    assert released.candidate_count == 0
+    assert released.reserved_risk_eur_minor == 0
+
+    next_result = admit_shadow_proposals(
+        fx=fx(),
+        proposal_ids=[second["proposal_id"]],
+        db_path=db_path,
+    )
+    assert next_result.admitted_count == 1
+    assert next_result.decisions[0].decision == "ADMITTED"
