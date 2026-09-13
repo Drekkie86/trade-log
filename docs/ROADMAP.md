@@ -1,6 +1,6 @@
 # Christiania Roadmap — authoritative current plan
 
-Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14.
+Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14. Package B is merged to `main` at `41dd5377cacbdae634164c1f95e945d30562f1d1` and awaits the next deployment cycle.
 
 This document supersedes earlier package numbering where it conflicts with the current plan. Historical package documents remain evidence of what was built, not instructions for what comes next.
 
@@ -62,11 +62,11 @@ Delivered:
 - fail-closed calibration/inference flags;
 - no activation of new edge families while the programme budget remains `UNFROZEN`.
 
-## Package B — Forecasting + Surface Intelligence — ACTIVE BUILD
+## Package B — Forecasting + Surface Intelligence — COMPLETE / MERGED
 
-Goal: strengthen the forecasting substrate before opening new edge families.
+Package B is merged to `main` at `41dd5377cacbdae634164c1f95e945d30562f1d1`.
 
-Package B builds on the existing quant library and adds:
+Delivered:
 
 - common realized-variance forecast scoring with bias, MAE, RMSE and QLIKE;
 - bootstrap uncertainty around forecast loss;
@@ -80,37 +80,44 @@ Package B builds on the existing quant library and adds:
 
 `LOCAL_SURFACE_QUADRATIC_V2` remains frozen unless prospective evidence supports promotion of a challenger.
 
-## Package C — Edge Library V1 + Risk Mathematics
+## Package C — Edge Library V1 + Risk Mathematics — ACTIVE BUILD
 
 Goal: encode credible edge hypotheses while measuring the actual risk being purchased or sold.
 
+Package C builds on the existing risk, scenario and forecasting libraries and adds:
+
+- a governed Edge Library with explicit scientific, capital and activation states;
+- variance risk premium marked **defined-risk only**;
+- normalized IV versus forecast-RV diagnostics in variance units;
+- read-only live diagnostics using Package B forecast tournaments plus approximately horizon-matched near-spot Theta IV;
+- assumption-conditioned terminal P&L simulation for multi-leg option structures;
+- optional jump-mixture scenarios;
+- exact bounded/unbounded expiry loss detection;
+- net expected P&L after costs/slippage under explicit assumptions;
+- P&L percentiles, probability of profit/loss, VaR and CVaR;
+- bankroll impairment and hard maximum-loss budget checks;
+- conservative whole-structure sizing from maximum-loss budget;
+- expected-P&L-to-max-loss and expected-P&L-to-CVaR compensation ratios;
+- dedicated Edge Library & Risk Lab browser page;
+- explicit `NONE_RESEARCH_ONLY` decision authority and no family activation.
+
 Initial library:
 
-- variance risk premium — **defined-risk structures only**;
-- normalized IV versus forecast realized-volatility gap;
-- demand pressure / intermediary constraints;
-- idiosyncratic-volatility effect;
-- option momentum;
-- quarterly variance seasonality;
-- earnings/event volatility premium.
+- variance risk premium — `RESEARCHABLE_DEFINED_RISK_ONLY`;
+- normalized IV versus forecast realized-volatility gap — `CORE_CANDIDATE_REQUIRES_FORECAST_MODEL`;
+- demand pressure / intermediary constraints — `CANDIDATE_REQUIRES_DATA_BASELINES`;
+- idiosyncratic-volatility effect — `CANDIDATE_REQUIRES_FACTOR_MODEL`;
+- option momentum — `SHADOW_ONLY`;
+- quarterly variance seasonality — `SHADOW_ONLY`;
+- earnings/event volatility premium — `EVENT_RESEARCH`;
+- dispersion — `RESEARCH_ONLY_CAPITAL_INCOMPATIBLE`;
+- 0DTE — `CASINO_UNVERIFIED_UNTIL_PROVEN`.
 
-Dispersion remains research-only and capital-incompatible with the current experimental bankroll. Internet strategies enter as `UNVERIFIED CLAIM` until independently reproduced.
-
-The risk engine should quantify, where applicable:
-
-- full payoff distribution;
-- net expected value after costs/slippage;
-- maximum defined loss;
-- probability and magnitude of loss;
-- expected shortfall / tail loss;
-- Greeks and scenario sensitivities;
-- jump/event exposure;
-- model/parameter uncertainty;
-- historical replay and Monte Carlo distributions;
-- bankroll impairment / ruin metrics;
-- conservative sizing candidates.
+Internet strategies enter as `UNVERIFIED CLAIM` until independently reproduced.
 
 A high win rate is not an edge if the tail dominates. A trade with meaningful loss probability may still be rational when the loss is bounded and the compensation is adequate.
+
+Package C's expected-P&L outputs are explicitly assumption-conditioned. They are not labelled alpha, forecast truth or trade recommendations.
 
 ## Package D — Calibration + Model Tournament + Prospective Shadow
 
@@ -170,6 +177,6 @@ Keep this lane separate from intelligence work unless operational evidence makes
 
 ## Near-term execution order
 
-**Package A deployed → Package B Forecasting / Surface Intelligence → Package C Edge Library / Risk Mathematics → Package D Calibration / Model Tournament / Shadow → Package E Decision / Discipline → Package F Casino / 0DTE.**
+**Package A deployed → Package B merged → Package C Edge Library / Risk Mathematics → Package D Calibration / Model Tournament / Shadow → Package E Decision / Discipline → Package F Casino / 0DTE.**
 
 The target is to deploy these as large coherent packages over days while prospective calibration continues in parallel.
