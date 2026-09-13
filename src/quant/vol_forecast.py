@@ -26,6 +26,30 @@ class GARCH11Fit:
         return asdict(self)
 
 
+def require_usable_garch_fit(fit: GARCH11Fit) -> GARCH11Fit:
+    """Fail closed before a fitted GARCH model is used as research evidence."""
+    if not fit.converged:
+        raise QuantInputError(
+            f"GARCH(1,1) optimizer did not converge: {fit.message or 'no optimizer message'}"
+        )
+    numeric = (
+        fit.omega,
+        fit.alpha,
+        fit.beta,
+        fit.unconditional_variance,
+        fit.last_variance,
+        fit.next_variance,
+        fit.log_likelihood,
+    )
+    if any(not math.isfinite(float(value)) for value in numeric):
+        raise QuantInputError("GARCH(1,1) fit contains non-finite diagnostics")
+    if fit.omega <= 0 or fit.unconditional_variance <= 0 or fit.last_variance <= 0 or fit.next_variance <= 0:
+        raise QuantInputError("GARCH(1,1) fit contains non-positive variance parameters")
+    if not (0 <= fit.alpha < 1 and 0 <= fit.beta < 1 and fit.alpha + fit.beta < 0.999):
+        raise QuantInputError("GARCH(1,1) fit violates the stationary parameter contract")
+    return fit
+
+
 def ewma_variance(
     returns: Sequence[float],
     *,
