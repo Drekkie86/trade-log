@@ -1,14 +1,14 @@
 # Christiania Roadmap — authoritative current plan
 
-Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14. Packages B and C are merged to `main`; Package C merged at `3ffd7b09d59625dda7581f85cf963043af98c927`. The newer merged code awaits the next deployment cycle.
+Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14. Packages B through F are merged to `main` and await the next reviewed deployment cycle. The current intelligence stack on `main` culminates in Package F at `a0839f04119c42436f9f77d1c54c6cca2a39924f`.
 
 This document supersedes earlier package numbering where it conflicts with the current plan. Historical package documents remain evidence of what was built, not instructions for what comes next.
 
 ## Completed foundation and historical numbering
 
-The earlier V1 sequence remains part of Christiania's implementation history. In particular, **Package 7 — Advanced Quantitative Model Library & Research Bench** delivered the serious pricing, volatility, scenario and model-disagreement foundations that the current intelligence roadmap now extends.
+The earlier V1 sequence remains part of Christiania's implementation history. In particular, **Package 7 — Advanced Quantitative Model Library & Research Bench** delivered the serious pricing, volatility, scenario and model-disagreement foundations that the current intelligence roadmap extends.
 
-**Package 8 — clean-VM Release Candidate / Copenhagen acceptance** delivered the clean-host acceptance, deployment, reboot/recovery and burn-in framework that preceded the later Control Plane Reset. The current A–F package names below describe the next development pipeline; they do not erase or renumber completed historical work.
+**Package 8 — clean-VM Release Candidate / Copenhagen acceptance** delivered the clean-host acceptance, deployment, reboot/recovery and burn-in framework that preceded the later Control Plane Reset. The A–F package sequence below describes the completed intelligence-development pipeline; it does not erase or renumber completed historical work.
 
 ## Product goal
 
@@ -86,7 +86,7 @@ Package C is merged to `main` at `3ffd7b09d59625dda7581f85cf963043af98c927`.
 
 Delivered:
 
-- a governed Edge Library with explicit scientific, capital and activation states;
+- governed Edge Library with explicit scientific, capital and activation states;
 - variance risk premium marked **defined-risk only**;
 - normalized IV versus forecast-RV diagnostics in variance units;
 - read-only live diagnostics using Package B forecast tournaments plus approximately horizon-matched near-spot Theta IV;
@@ -102,77 +102,66 @@ Delivered:
 - dedicated Edge Library & Risk Lab browser page;
 - explicit `NONE_RESEARCH_ONLY` decision authority and no family activation.
 
-Initial library:
+Initial library includes VRP, IV-versus-forecast-RV, demand pressure, idiosyncratic volatility, momentum, variance seasonality, earnings/event volatility, dispersion and a separately governed 0DTE research concept. Internet strategies enter as `UNVERIFIED CLAIM` until independently reproduced.
 
-- variance risk premium — `RESEARCHABLE_DEFINED_RISK_ONLY`;
-- normalized IV versus forecast realized-volatility gap — `CORE_CANDIDATE_REQUIRES_FORECAST_MODEL`;
-- demand pressure / intermediary constraints — `CANDIDATE_REQUIRES_DATA_BASELINES`;
-- idiosyncratic-volatility effect — `CANDIDATE_REQUIRES_FACTOR_MODEL`;
-- option momentum — `SHADOW_ONLY`;
-- quarterly variance seasonality — `SHADOW_ONLY`;
-- earnings/event volatility premium — `EVENT_RESEARCH`;
-- dispersion — `RESEARCH_ONLY_CAPITAL_INCOMPATIBLE`;
-- 0DTE — `CASINO_UNVERIFIED_UNTIL_PROVEN`.
+## Package D — Calibration + Model Tournament + Prospective Shadow — COMPLETE / MERGED
 
-Internet strategies enter as `UNVERIFIED CLAIM` until independently reproduced.
+Package D is merged to `main` at `2a8c7b3d06923a71078734e8986b4bae65b76773`.
 
-A high win rate is not an edge if the tail dominates. A trade with meaningful loss probability may still be rational when the loss is bounded and the compensation is adequate.
-
-Package C's expected-P&L outputs are explicitly assumption-conditioned. They are not labelled alpha, forecast truth or trade recommendations.
-
-## Package D — Calibration + Model Tournament + Prospective Shadow — ACTIVE BUILD
-
-Goal: make models earn trust prospectively.
-
-Package D builds on the existing prospective-freeze and shadow infrastructure and adds:
+Delivered:
 
 - strict separation of `P(thesis correct)` from `P(trade profitable)`;
-- Brier score, log loss and reliability/calibration bins;
-- calibration-in-the-large and expected calibration error;
-- paired incumbent/challenger tournaments on common immutable observation keys;
-- bootstrap uncertainty around paired Brier-loss differences;
-- explicit observation-count and independent-date sufficiency;
+- Brier score, log loss, calibration-in-the-large, reliability bins and expected calibration error;
+- paired incumbent/challenger Brier tournaments over common prospective observations;
+- bootstrap uncertainty around paired score differences;
+- explicit observation-count and independent-date sufficiency gates;
 - robustness as a mandatory promotion-review input;
-- `CONTINUE_SHADOW` versus `ELIGIBLE_FOR_PROMOTION_REVIEW` states;
+- `CONTINUE_SHADOW` versus `ELIGIBLE_FOR_PROMOTION_REVIEW` review states;
 - read-only prospective/shadow runtime over the existing database;
-- visibility of prospective dates, frozen hypotheses, shadow lifecycle and outcome marks;
-- explicit reporting when decision-time probabilities were not immutably captured, rather than hindsight reconstruction;
+- explicit visibility when immutable decision-time probabilities are missing rather than reconstructing them with hindsight;
 - dedicated Calibration & Prospective Shadow browser page;
-- no automatic model promotion or trading authority.
+- no automatic promotion or broker authority.
 
-Existing p-value/FDR/admission/decision firewalls remain off unless separately governed.
+## Package E — Decision Engine + Discipline Leakage — COMPLETE / MERGED
 
-## Package E — Decision Engine + Discipline Leakage
+Package E is merged to `main` in PR #5 after a successful full Christiania Quality Gate.
 
-Goal: distinguish model quality from operator behaviour.
+Delivered:
 
-- `NO TRADE`;
-- `CONTINUE SHADOW`;
-- `ELIGIBLE FOR MANUAL REVIEW`;
-- separate model-approved and discretionary trades;
-- separate expectancy/P&L for approved versus unapproved behaviour;
-- identify strategy failure versus operator failure;
-- track discipline leakage after winning periods;
-- rank opportunities by risk compensation, evidence quality, robustness and calibration rather than win rate alone.
+- fail-closed `NO_TRADE`, `CONTINUE_SHADOW` and `ELIGIBLE_FOR_MANUAL_REVIEW` states;
+- manual-review gates for defined risk, explicit family activation, calibration, robustness, sample sufficiency and tail compensation;
+- ranking by evidence quality, calibration, robustness and risk compensation rather than win rate;
+- explicit separation of model-approved versus discretionary/unapproved execution evidence;
+- separate P&L and expectancy diagnostics for approved and discretionary behaviour;
+- post-win discipline-leakage detection;
+- strategy/model-failure versus operator-discipline-failure attribution;
+- read-only runtime that refuses to infer missing approval provenance from ambiguous historical fields;
+- dedicated Decision & Discipline browser page;
+- no automatic execution authority.
 
-## Package F — Casino + 0DTE Lab V1
+## Package F — Casino + 0DTE Lab V1 — COMPLETE / MERGED
 
-Goal: permit deliberately high-variance research without contaminating Main Engine standards.
+Package F is merged to `main` at `a0839f04119c42436f9f77d1c54c6cca2a39924f` after a successful full Christiania Quality Gate.
 
 Charter: **Casino in spirit, quant in discipline.**
 
-- tiny/capped risk allocation;
-- hard maximum loss;
-- separate statistics/evidence namespace;
-- intraday implied versus realized volatility;
-- gamma/theta interaction;
-- skew and jump/event structure;
-- liquidity/microstructure and transaction costs;
-- scenario EV;
-- dealer-positioning inputs only where measurable and appropriately sourced;
-- `NO TRADE` remains valid.
+Delivered:
 
-Spectacular historical returns are not evidence of edge.
+- explicit `CASINO_V1` namespace separate from the Main Engine;
+- authority fixed at `RESEARCH_SHADOW_ONLY_NO_EXECUTION`;
+- hard experiment loss budget using bankroll fraction and Casino capital cap;
+- friction-adjusted effective maximum loss including transaction costs and slippage;
+- 0DTE implied-versus-forecast variance comparison over remaining time;
+- explicit jump variance, IV-skew and gamma/theta diagnostics;
+- liquidity as an independent fail-closed gate;
+- dealer-positioning inputs only when explicitly measured and sourced; otherwise `NOT_MEASURED_DO_NOT_INFER`;
+- probability-weighted scenario EV after transaction costs/slippage;
+- discrete loss CVaR and expected-P&L-to-max-loss diagnostics;
+- read-only runtime counting existing same-session-expiration evidence;
+- separate Casino 0DTE browser page;
+- no edge-family activation, automatic promotion, live DB mutation or broker execution.
+
+Spectacular historical returns and high win rate are not evidence of edge.
 
 ## Parallel infrastructure backlog
 
@@ -187,6 +176,8 @@ Keep this lane separate from intelligence work unless operational evidence makes
 
 ## Near-term execution order
 
-**Package A deployed → Package B merged → Package C merged → Package D Calibration / Model Tournament / Shadow → Package E Decision / Discipline → Package F Casino / 0DTE.**
+The A–F intelligence build is complete in GitHub. The next controlled step is:
 
-The target is to deploy these as large coherent packages over days while prospective calibration continues in parallel.
+**review merged B–F → one reviewed batch deployment to Hetzner → verify `christiania-status`/research health → continue prospective evidence accumulation → only then consider further promotion or new research packages.**
+
+Production remains deliberately behind `main` until that deployment review occurs.
