@@ -6,7 +6,11 @@ import pytest
 import src.quant.rolling_variance_forecast as rolling
 import src.research.edge_risk_runtime_v1 as edge_runtime
 from src.quant.types import QuantInputError
-from src.quant.vol_forecast import GARCH11Fit, require_usable_garch_fit
+from src.quant.vol_forecast import (
+    GARCH11Fit,
+    _garch_parameters_from_unconstrained,
+    require_usable_garch_fit,
+)
 
 
 def _failed_fit() -> GARCH11Fit:
@@ -21,6 +25,14 @@ def _failed_fit() -> GARCH11Fit:
         log_likelihood=-123.0,
         message="forced optimizer failure",
     )
+
+
+def test_garch_parameter_transform_is_stable_for_extreme_optimizer_logits() -> None:
+    omega, alpha, beta = _garch_parameters_from_unconstrained((0.0, 1000.0, -1000.0))
+    assert omega == pytest.approx(1.0)
+    assert 0 <= alpha < 0.9991
+    assert 0 <= beta < 0.9991
+    assert alpha + beta < 0.9991
 
 
 def test_failed_garch_fit_is_not_usable_research_evidence() -> None:
