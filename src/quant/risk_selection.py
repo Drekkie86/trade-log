@@ -10,7 +10,8 @@ from src.quant.risk import OptionLeg
 from src.quant.types import QuantInputError
 
 
-RISK_SELECTION_VERSION = "1.0.0"
+RISK_SELECTION_VERSION = "1.1.0"
+DEFAULT_CONTRACT_MULTIPLIER = 100
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class RiskBudget:
 class RiskSelectionResult:
     version: str
     structure_defined_risk: bool
+    contract_multiplier: int
     entry_debit: float
     total_costs: float
     max_loss: float | None
@@ -87,7 +89,15 @@ class RiskSelectionResult:
         return payload
 
 
-def _terminal_payoff(legs: Sequence[OptionLeg], terminal: np.ndarray) -> np.ndarray:
+def _validate_contract_multiplier(contract_multiplier: int) -> int:
+    if isinstance(contract_multiplier, bool) or not isinstance(contract_multiplier, int):
+        raise QuantInputError("contract_multiplier must be an integer")
+    if contract_multiplier <= 0:
+        raise QuantInputError("contract_multiplier must be positive")
+    return contract_multiplier
+
+
+def _terminal_payoff_per_unit(legs: Sequence[OptionLeg], terminal: np.ndarray) -> np.ndarray:
     payoff = np.zeros_like(terminal, dtype=float)
     for leg in legs:
         leg.validate()
@@ -99,22 +109,37 @@ def _terminal_payoff(legs: Sequence[OptionLeg], terminal: np.ndarray) -> np.ndar
     return payoff
 
 
+def _terminal_payoff_cash(
+    legs: Sequence[OptionLeg],
+    terminal: np.ndarray,
+    *,
+    contract_multiplier: int,
+) -> np.ndarray:
+    return _terminal_payoff_per_unit(legs, terminal) * contract_multiplier
+
+
 def payoff_bounds(
     legs: Sequence[OptionLeg],
     *,
     total_costs: float = 0.0,
+    contract_multiplier: int = DEFAULT_CONTRACT_MULTIPLIER,
 ) -> tuple[float, float | None, float | None, bool]:
     if not legs:
         raise QuantInputError("structure requires at least one leg")
     if not math.isfinite(total_costs) or total_costs < 0:
         raise QuantInputError("total_costs must be finite and non-negative")
+    multiplier = _validate_contract_multiplier(contract_multiplier)
     for leg in legs:
         leg.validate()
 
-    entry_debit = float(sum(leg.quantity * leg.entry_premium for leg in legs))
+    entry_debit = float(sum(leg.quantity * leg.entry_premium for leg in legs) * multiplier)
     strikes = sorted({float(leg.strike) for leg in legs})
     candidates = np.asarray([0.0, *strikes], dtype=float)
-    pnl = _terminal_payoff(legs, candidates) - entry_debit - total_costs
+    pnl = (
+        _terminal_payoff_cash(legs, candidates, contract_multiplier=multiplier)
+        - entry_debit
+        - total_costs
+    )
 
     net_call_slope = sum(leg.quantity for leg in legs if leg.right.upper() == "CALL")
     defined_risk = net_call_slope >= 0
@@ -172,6 +197,7 @@ def evaluate_structure_distribution(
     risk_budget: RiskBudget | None = None,
     simulation_paths: int = 100_000,
     seed: int = 4242,
+    contract_multiplier: int = DEFAULT_CONTRACT_MULTIPLIER,
 ) -> RiskSelectionResult:
     if not math.isfinite(transaction_costs) or transaction_costs < 0:
         raise QuantInputError("transaction_costs must be finite and non-negative")
@@ -179,11 +205,13 @@ def evaluate_structure_distribution(
         raise QuantInputError("slippage must be finite and non-negative")
     if risk_budget is not None:
         risk_budget.validate()
+    multiplier = _validate_contract_multiplier(contract_multiplier)
 
     total_costs = float(transaction_costs + slippage)
     entry_debit, max_loss, max_profit, defined_risk = payoff_bounds(
         legs,
         total_costs=total_costs,
+        contract_multiplier=multiplier,
     )
     terminal = simulate_terminal_prices(
         spot=spot,
@@ -192,7 +220,11 @@ def evaluate_structure_distribution(
         simulation_paths=simulation_paths,
         seed=seed,
     )
-    pnl = _terminal_payoff(legs, terminal) - entry_debit - total_costs
+    pnl = (
+        _terminal_payoff_cash(legs, terminal, contract_multiplier=multiplier)
+        - entry_debit
+        - total_costs
+    )
 
     losses = -pnl
     loss_var_95 = float(np.quantile(losses, 0.95))
@@ -235,6 +267,7 @@ def evaluate_structure_distribution(
     return RiskSelectionResult(
         version=RISK_SELECTION_VERSION,
         structure_defined_risk=defined_risk,
+        contract_multiplier=multiplier,
         entry_debit=entry_debit,
         total_costs=total_costs,
         max_loss=max_loss,
