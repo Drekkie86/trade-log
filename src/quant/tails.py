@@ -21,16 +21,20 @@ class TailDiagnostics:
     cvar_95: float
     var_99: float
     cvar_99: float
+    var_95_tail_observations: int
+    var_99_tail_observations: int
+    empirical_probability_resolution: float
+    sampling_note: str
     hill_tail_index: float | None
 
     def as_dict(self) -> dict:
         return asdict(self)
 
 
-def _var_cvar(losses: np.ndarray, level: float) -> tuple[float, float]:
+def _var_cvar(losses: np.ndarray, level: float) -> tuple[float, float, int]:
     var = float(np.quantile(losses, level))
     tail = losses[losses >= var]
-    return var, float(np.mean(tail)) if len(tail) else var
+    return var, float(np.mean(tail)) if len(tail) else var, int(len(tail))
 
 
 def hill_tail_index(losses: Sequence[float], *, tail_fraction: float = 0.1) -> float | None:
@@ -55,8 +59,15 @@ def diagnose(returns: Sequence[float]) -> TailDiagnostics:
     if len(r) < 20 or np.any(~np.isfinite(r)):
         raise QuantInputError("tail diagnostics require >=20 finite returns")
     losses = -r
-    var95, cvar95 = _var_cvar(losses, 0.95)
-    var99, cvar99 = _var_cvar(losses, 0.99)
+    var95, cvar95, tail95 = _var_cvar(losses, 0.95)
+    var99, cvar99, tail99 = _var_cvar(losses, 0.99)
+    resolution = 1.0 / len(r)
+    sampling_note = (
+        "Empirical VaR/CVaR are descriptive order-statistic estimates. "
+        f"With n={len(r)}, probability resolution is {resolution:.6f}; "
+        f"the reported 95% and 99% tails contain {tail95} and {tail99} observations. "
+        "Do not infer precision from decimal formatting alone."
+    )
     return TailDiagnostics(
         observations=len(r),
         mean=float(np.mean(r)),
@@ -67,5 +78,9 @@ def diagnose(returns: Sequence[float]) -> TailDiagnostics:
         cvar_95=cvar95,
         var_99=var99,
         cvar_99=cvar99,
+        var_95_tail_observations=tail95,
+        var_99_tail_observations=tail99,
+        empirical_probability_resolution=resolution,
+        sampling_note=sampling_note,
         hill_tail_index=hill_tail_index(losses),
     )

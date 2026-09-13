@@ -10,7 +10,7 @@ from src.quant.risk import OptionLeg
 from src.quant.types import QuantInputError
 
 
-RISK_SELECTION_VERSION = "1.1.0"
+RISK_SELECTION_VERSION = "1.2.0"
 DEFAULT_CONTRACT_MULTIPLIER = 100
 
 
@@ -66,7 +66,7 @@ class RiskSelectionResult:
     pnl_standard_deviation: float
     probability_of_profit: float
     probability_of_loss: float
-    probability_of_bankroll_ruin: float | None
+    single_structure_bankroll_ruin_probability: float | None
     loss_var_95: float
     loss_cvar_95: float
     pnl_p05: float
@@ -83,10 +83,39 @@ class RiskSelectionResult:
     decision_authority: str
     assumptions: DistributionAssumptions
 
+    @property
+    def probability_of_bankroll_ruin(self) -> float | None:
+        """Backward-compatible alias for the single-structure metric.
+
+        This is *not* a portfolio ruin probability. It answers only whether
+        this one structure, in isolation, loses at least the full bankroll in
+        a simulated scenario.
+        """
+        return self.single_structure_bankroll_ruin_probability
+
     def as_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["assumptions"] = asdict(self.assumptions)
+        payload["probability_of_bankroll_ruin"] = (
+            self.single_structure_bankroll_ruin_probability
+        )
         return payload
+
+
+@dataclass(frozen=True)
+class PortfolioScenarioRiskResult:
+    bankroll: float
+    scenario_count: int
+    structure_count: int
+    expected_portfolio_pnl: float
+    worst_scenario_pnl: float
+    probability_of_bankroll_ruin: float
+    loss_var_95: float
+    loss_cvar_95: float
+    scenario_alignment_required: bool = True
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 def _validate_contract_multiplier(contract_multiplier: int) -> int:
@@ -277,7 +306,7 @@ def evaluate_structure_distribution(
         pnl_standard_deviation=float(np.std(pnl, ddof=1)),
         probability_of_profit=float(np.mean(pnl > 0)),
         probability_of_loss=float(np.mean(pnl < 0)),
-        probability_of_bankroll_ruin=bankroll_ruin_probability,
+        single_structure_bankroll_ruin_probability=bankroll_ruin_probability,
         loss_var_95=loss_var_95,
         loss_cvar_95=loss_cvar_95,
         pnl_p05=float(quantiles[0]),
@@ -293,4 +322,53 @@ def evaluate_structure_distribution(
         budget_state=budget_state,
         decision_authority="NONE_RESEARCH_ONLY",
         assumptions=assumptions,
+    )
+
+
+def evaluate_portfolio_scenarios(
+    structure_pnl_scenarios: Sequence[Sequence[float] | np.ndarray],
+    *,
+    bankroll: float,
+) -> PortfolioScenarioRiskResult:
+    """Aggregate *aligned joint scenarios* into portfolio ruin/tail risk.
+
+    The function deliberately does not manufacture dependence assumptions.
+    Every structure must be represented on the same scenario rows (for
+    example, from a joint market simulation). Passing independent per-trade
+    simulations and treating row numbers as if they were joint scenarios would
+    be statistically invalid and is explicitly outside this contract.
+    """
+    if not math.isfinite(bankroll) or bankroll <= 0:
+        raise QuantInputError("portfolio bankroll must be finite and positive")
+    if not structure_pnl_scenarios:
+        raise QuantInputError("portfolio risk requires at least one structure")
+
+    arrays = [np.asarray(series, dtype=float) for series in structure_pnl_scenarios]
+    scenario_count = len(arrays[0])
+    if scenario_count < 10_000:
+        raise QuantInputError("portfolio scenario risk requires >=10000 aligned scenarios")
+    if any(arr.ndim != 1 for arr in arrays):
+        raise QuantInputError("portfolio P&L scenarios must be one-dimensional")
+    if any(len(arr) != scenario_count for arr in arrays):
+        raise QuantInputError("portfolio P&L scenarios must be aligned and equal length")
+    if any(np.any(~np.isfinite(arr)) for arr in arrays):
+        raise QuantInputError("portfolio P&L scenarios must be finite")
+
+    portfolio_pnl = np.sum(np.vstack(arrays), axis=0)
+    losses = -portfolio_pnl
+    loss_var_95 = float(np.quantile(losses, 0.95))
+    tail = losses[losses >= loss_var_95]
+    loss_cvar_95 = float(np.mean(tail)) if len(tail) else loss_var_95
+
+    return PortfolioScenarioRiskResult(
+        bankroll=float(bankroll),
+        scenario_count=int(scenario_count),
+        structure_count=len(arrays),
+        expected_portfolio_pnl=float(np.mean(portfolio_pnl)),
+        worst_scenario_pnl=float(np.min(portfolio_pnl)),
+        probability_of_bankroll_ruin=float(
+            np.mean(portfolio_pnl <= -float(bankroll))
+        ),
+        loss_var_95=loss_var_95,
+        loss_cvar_95=loss_cvar_95,
     )
