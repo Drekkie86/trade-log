@@ -15,10 +15,21 @@ def _positive_array(values: Sequence[float], name: str) -> np.ndarray:
     return arr
 
 
+def _validated_annualization(annualization: float) -> float:
+    value = float(annualization)
+    if not math.isfinite(value) or value <= 0:
+        raise QuantInputError("annualization must be finite and positive")
+    return value
+
+
+def _validate_ohlc_ranges(o: np.ndarray, h: np.ndarray, l: np.ndarray, c: np.ndarray) -> None:
+    if np.any(h < l) or np.any(h < np.maximum(o, c)) or np.any(l > np.minimum(o, c)):
+        raise QuantInputError("OHLC ranges are inconsistent")
+
+
 def close_to_close(closes: Sequence[float], *, annualization: float = 252.0) -> float:
     c = _positive_array(closes, "closes")
-    if annualization <= 0:
-        raise QuantInputError("annualization must be positive")
+    annualization = _validated_annualization(annualization)
     returns = np.diff(np.log(c))
     if len(returns) < 2:
         return 0.0
@@ -28,6 +39,7 @@ def close_to_close(closes: Sequence[float], *, annualization: float = 252.0) -> 
 def parkinson(highs: Sequence[float], lows: Sequence[float], *, annualization: float = 252.0) -> float:
     h = _positive_array(highs, "highs")
     l = _positive_array(lows, "lows")
+    annualization = _validated_annualization(annualization)
     if len(h) != len(l) or np.any(h < l):
         raise QuantInputError("highs/lows must be matched and high >= low")
     variance = np.mean(np.log(h / l) ** 2) / (4.0 * math.log(2.0))
@@ -41,10 +53,10 @@ def garman_klass(
     h = _positive_array(highs, "highs")
     l = _positive_array(lows, "lows")
     c = _positive_array(closes, "closes")
+    annualization = _validated_annualization(annualization)
     if not (len(o) == len(h) == len(l) == len(c)):
         raise QuantInputError("OHLC arrays must have equal lengths")
-    if np.any(h < np.maximum(o, c)) or np.any(l > np.minimum(o, c)):
-        raise QuantInputError("OHLC ranges are inconsistent")
+    _validate_ohlc_ranges(o, h, l, c)
     term = 0.5 * np.log(h / l) ** 2 - (2.0 * math.log(2.0) - 1.0) * np.log(c / o) ** 2
     return float(math.sqrt(max(float(np.mean(term)) * annualization, 0.0)))
 
@@ -56,8 +68,10 @@ def rogers_satchell(
     h = _positive_array(highs, "highs")
     l = _positive_array(lows, "lows")
     c = _positive_array(closes, "closes")
+    annualization = _validated_annualization(annualization)
     if not (len(o) == len(h) == len(l) == len(c)):
         raise QuantInputError("OHLC arrays must have equal lengths")
+    _validate_ohlc_ranges(o, h, l, c)
     rs = np.log(h / o) * np.log(h / c) + np.log(l / o) * np.log(l / c)
     return float(math.sqrt(max(float(np.mean(rs)) * annualization, 0.0)))
 
@@ -69,9 +83,11 @@ def yang_zhang(
     h = _positive_array(highs, "highs")
     l = _positive_array(lows, "lows")
     c = _positive_array(closes, "closes")
+    annualization = _validated_annualization(annualization)
     n = len(c)
     if n < 3 or not (len(o) == len(h) == len(l) == n):
         raise QuantInputError("Yang-Zhang requires >=3 matched OHLC observations")
+    _validate_ohlc_ranges(o, h, l, c)
     overnight = np.log(o[1:] / c[:-1])
     open_close = np.log(c / o)
     rs = np.log(h / o) * np.log(h / c) + np.log(l / o) * np.log(l / c)
