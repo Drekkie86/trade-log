@@ -79,18 +79,20 @@ Inputs include:
 - optional Poisson jump intensity;
 - mean log jump;
 - jump volatility;
-- transaction costs;
-- slippage;
+- explicit option contract multiplier, defaulting to 100;
+- transaction costs and slippage as cash amounts per whole structure;
 - bankroll and maximum-loss fraction.
+
+Option premiums remain quoted per underlying unit, as in standard option-chain conventions. The risk engine converts payoff and premium into cash using the contract multiplier **before** comparing loss to bankroll. This is essential for small-bankroll governance: a 4.00 debit on a standard 100-multiplier contract is 400 of cash at risk before costs, not 4.
 
 For a multi-leg option structure it reports:
 
 - exact expiry payoff bounds where finite;
 - bounded/unbounded-loss state;
-- assumption-conditioned expected P&L;
-- median and standard deviation of P&L;
+- assumption-conditioned expected cash P&L;
+- median and standard deviation of cash P&L;
 - probability of profit and loss;
-- 5/25/50/75/95 P&L percentiles;
+- 5/25/50/75/95 cash P&L percentiles;
 - 95% VaR and CVaR of loss;
 - maximum loss / bankroll fraction;
 - probability of losing at least the entire bankroll under the simulated distribution;
@@ -121,7 +123,8 @@ This distinction is important: risk governance and expected-value quality are se
 - current read-only IV/forecast-RV diagnostics;
 - a manual two-leg bounded-risk sandbox;
 - explicit distribution assumptions and jump inputs;
-- bankroll-budget diagnostics.
+- an explicit contract multiplier;
+- bankroll-budget diagnostics in cash terms.
 
 The page cannot submit an order or activate an edge family.
 
