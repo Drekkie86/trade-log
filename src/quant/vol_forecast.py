@@ -77,10 +77,20 @@ def fit_garch11(returns: Sequence[float]) -> GARCH11Fit:
 
     def unpack(x: np.ndarray) -> tuple[float, float, float]:
         # Transform to positive omega and alpha/beta with alpha+beta < 0.999.
-        omega = math.exp(float(x[0]))
-        a_raw = math.exp(float(x[1]))
-        b_raw = math.exp(float(x[2]))
-        denom = 1.0 + a_raw + b_raw
+        # The alpha/beta map is a three-way softmax with an anchor logit of
+        # zero. Subtracting the maximum logit is algebraically equivalent but
+        # prevents optimizer excursions from overflowing exp().
+        try:
+            omega = math.exp(float(x[0]))
+        except OverflowError:
+            omega = math.inf
+        alpha_logit = float(x[1])
+        beta_logit = float(x[2])
+        max_logit = max(0.0, alpha_logit, beta_logit)
+        anchor = math.exp(-max_logit)
+        a_raw = math.exp(alpha_logit - max_logit)
+        b_raw = math.exp(beta_logit - max_logit)
+        denom = anchor + a_raw + b_raw
         alpha = 0.999 * a_raw / denom
         beta = 0.999 * b_raw / denom
         return omega, alpha, beta
@@ -96,6 +106,8 @@ def fit_garch11(returns: Sequence[float]) -> GARCH11Fit:
 
     def objective(x: np.ndarray) -> float:
         omega, alpha, beta = unpack(x)
+        if not math.isfinite(omega) or omega <= 0:
+            return math.inf
         var = variance_path(omega, alpha, beta)
         ll = -0.5 * np.sum(np.log(2.0 * math.pi) + np.log(var) + (r * r) / var)
         return float(-ll)
