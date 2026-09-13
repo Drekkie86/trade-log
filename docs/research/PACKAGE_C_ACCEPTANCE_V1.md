@@ -15,9 +15,10 @@ Package C may merge only when the full Christiania Quality Gate is green.
 - No p-value/FDR path is enabled.
 - No hypothesis-family allocation is silently frozen or consumed.
 - Structure mathematics distinguishes bounded from unbounded loss.
+- Standard option cash risk uses an explicit contract multiplier; the default is 100 and bankroll checks operate on cash P&L, not per-unit premium.
+- Transaction costs and slippage are treated as cash amounts per whole structure and applied before risk-compensation ratios are reported.
 - Risk-budget rejection does not masquerade as a statement about trade expectancy.
 - Expected P&L is explicitly conditional on supplied distribution assumptions.
-- Costs and slippage are included before risk-compensation ratios are reported.
 - VaR/CVaR and bankroll-impairment outputs are tested.
 - Existing Package B forecast machinery is reused rather than duplicated conceptually.
 - Decision authority remains `NONE_RESEARCH_ONLY`.
