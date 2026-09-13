@@ -7,7 +7,6 @@ from typing import Iterable
 
 CASINO_ENGINE_VERSION = "1.0.0"
 CASINO_NAMESPACE = "CASINO_V1"
-
 CASINO_NO_TRADE = "NO_TRADE"
 CASINO_SHADOW_CANDIDATE = "CASINO_SHADOW_CANDIDATE"
 
@@ -101,20 +100,14 @@ def evaluate_0dte_diagnostics(inputs: ZeroDteDiagnostics) -> ZeroDteDiagnosticRe
     )
     gap = implied - forecast
     ratio = None if forecast <= 0 else float(implied / forecast)
-    skew = (
-        None
-        if inputs.call_iv is None or inputs.put_iv is None
-        else float(inputs.put_iv - inputs.call_iv)
-    )
+    skew = None if inputs.call_iv is None or inputs.put_iv is None else float(inputs.put_iv - inputs.call_iv)
     gamma_theta = None
     if (
         inputs.gamma_exposure_cash is not None
         and inputs.theta_decay_cash_per_day is not None
         and abs(inputs.theta_decay_cash_per_day) > 0
     ):
-        gamma_theta = float(
-            abs(inputs.gamma_exposure_cash) / abs(inputs.theta_decay_cash_per_day)
-        )
+        gamma_theta = float(abs(inputs.gamma_exposure_cash) / abs(inputs.theta_decay_cash_per_day))
 
     if inputs.bid_ask_spread_fraction is None:
         liquidity = "LIQUIDITY_UNKNOWN"
@@ -130,7 +123,6 @@ def evaluate_0dte_diagnostics(inputs: ZeroDteDiagnostics) -> ZeroDteDiagnosticRe
         if inputs.dealer_positioning_value is not None
         else "NOT_MEASURED_DO_NOT_INFER"
     )
-
     return ZeroDteDiagnosticResult(
         version=CASINO_ENGINE_VERSION,
         namespace=CASINO_NAMESPACE,
@@ -202,6 +194,7 @@ def evaluate_casino_experiment(
         raise ValueError("max_loss must be finite and non-negative when supplied")
 
     total_costs = float(transaction_costs + slippage)
+    effective_max_loss = None if max_loss is None else float(max_loss + total_costs)
     net_pnls = [row.pnl_before_costs - total_costs for row in rows]
     expected = float(sum(row.probability * pnl for row, pnl in zip(rows, net_pnls)))
     p_profit = float(sum(row.probability for row, pnl in zip(rows, net_pnls) if pnl > 0))
@@ -211,8 +204,7 @@ def evaluate_casino_experiment(
         key=lambda item: item[0],
         reverse=True,
     )
-    tail_mass = 0.05
-    remaining = tail_mass
+    remaining = 0.05
     tail_loss_sum = 0.0
     for loss, probability in weighted_losses:
         take = min(remaining, probability)
@@ -220,13 +212,13 @@ def evaluate_casino_experiment(
         remaining -= take
         if remaining <= 1e-12:
             break
-    cvar95 = float(tail_loss_sum / tail_mass) if tail_mass > 0 else 0.0
+    cvar95 = float(tail_loss_sum / 0.05)
 
     budget = risk_policy.experiment_loss_budget
     reasons: list[str] = []
-    if not defined_risk or max_loss is None:
+    if not defined_risk or effective_max_loss is None:
         reasons.append("UNBOUNDED_OR_UNKNOWN_MAX_LOSS")
-    elif max_loss > budget:
+    elif effective_max_loss > budget:
         reasons.append("EXCEEDS_CASINO_EXPERIMENT_LOSS_BUDGET")
     if liquidity_state in {"LIQUIDITY_UNKNOWN", "LIQUIDITY_POOR", "LIQUIDITY_REJECT"}:
         reasons.append(liquidity_state)
@@ -235,15 +227,15 @@ def evaluate_casino_experiment(
 
     state = CASINO_NO_TRADE if reasons else CASINO_SHADOW_CANDIDATE
     ratio = None
-    if max_loss is not None and max_loss > 0:
-        ratio = float(expected / max_loss)
+    if effective_max_loss is not None and effective_max_loss > 0:
+        ratio = float(expected / effective_max_loss)
 
     return CasinoExperimentResult(
         version=CASINO_ENGINE_VERSION,
         namespace=CASINO_NAMESPACE,
         state=state,
         risk_budget=budget,
-        max_loss=max_loss,
+        max_loss=effective_max_loss,
         expected_pnl_net=expected,
         probability_of_profit_net=p_profit,
         loss_cvar95=cvar95,
