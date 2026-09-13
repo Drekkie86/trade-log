@@ -23,7 +23,7 @@ Environment=OAUTH2_PROXY_COOKIE_HTTPONLY=true
 Environment=OAUTH2_PROXY_COOKIE_SAMESITE=lax
 Environment=OAUTH2_PROXY_COOKIE_NAME=__Host-christiania
 Environment=OAUTH2_PROXY_COOKIE_PATH=/
-Environment=OAUTH2_PROXY_SCOPE=openid email profile
+Environment="OAUTH2_PROXY_SCOPE=openid email profile"
 Environment=OAUTH2_PROXY_SKIP_PROVIDER_BUTTON=true
 Environment=OAUTH2_PROXY_PROXY_WEBSOCKETS=true
 Environment=OAUTH2_PROXY_SESSION_STORE_TYPE=cookie
