@@ -31,3 +31,17 @@ Package 7 adds the research-only quantitative model library and Quant Bench: BSM
 ## Governance
 
 Surfaced anomalies are observational evidence, not validated edge. Prospective evidence remains separated from discovery evidence. Model decision/admission flags remain disabled under the frozen V1 protocol. The V1 application contains no broker-order path.
+
+## External hostile review
+
+For a complete adversarial review bundle covering every tracked file, code path, quantitative model, research protocol, test, migration and deployment asset, use:
+
+```powershell
+python .\build_claude_hostile_review_package.py
+```
+
+The canonical workflow and reviewer contract are documented in:
+
+- `docs/CLAUDE_HOSTILE_REVIEW_PACKAGE.md`;
+- `docs/CLAUDE_HOSTILE_REVIEW_FULL_PROMPT.md`;
+- `docs/CLAUDE_HOSTILE_REVIEW_DECLARED_INVARIANTS.md`.
