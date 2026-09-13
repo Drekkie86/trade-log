@@ -8,6 +8,7 @@ ENV_FILE="/etc/christiania/christiania.env"
 SYSTEMD_ROOT="/etc/systemd/system"
 LOCAL_BIN="/usr/local/bin"
 SERVICE_USER="christiania"
+SECURE_EDGE_SERVICE="christiania-oauth2-proxy.service"
 
 CORE_SERVICES=(
   "christiania-theta.service"
@@ -118,6 +119,7 @@ LEGACY_MOVED=0
 ACTIVATED=0
 UNITS_BACKED_UP=0
 STATUS_WRAPPER_HAD_PREVIOUS=0
+SECURE_EDGE_WAS_ACTIVE=0
 
 rollback() {
   local original_exit="$1"
@@ -163,6 +165,10 @@ rollback() {
     for service in "${CORE_SERVICES[@]}"; do
       systemctl start "${service}" >/dev/null 2>&1 || true
     done
+
+    if [[ "${SECURE_EDGE_WAS_ACTIVE}" -eq 1 ]]; then
+      systemctl start "${SECURE_EDGE_SERVICE}" >/dev/null 2>&1 || true
+    fi
   fi
 
   exit "${original_exit}"
@@ -235,6 +241,10 @@ if [[ -e "${LOCAL_BIN}/christiania-status" ]]; then
   STATUS_WRAPPER_HAD_PREVIOUS=1
 fi
 
+if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}"; then
+  SECURE_EDGE_WAS_ACTIVE=1
+fi
+
 for service in "${CORE_SERVICES[@]}"; do
   systemctl stop "${service}"
 done
@@ -283,6 +293,15 @@ for service in "${CORE_SERVICES[@]}"; do
     fail "${service} did not become active after deployment"
   fi
 done
+
+if [[ "${SECURE_EDGE_WAS_ACTIVE}" -eq 1 ]]; then
+  echo "Restoring secure edge after application restart."
+  systemctl start "${SECURE_EDGE_SERVICE}"
+  edge_state="$(systemctl is-active "${SECURE_EDGE_SERVICE}")"
+  if [[ "${edge_state}" != "active" ]]; then
+    fail "${SECURE_EDGE_SERVICE} did not become active after deployment"
+  fi
+fi
 
 echo "Running post-activation deployment preflight."
 
