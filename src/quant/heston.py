@@ -169,7 +169,7 @@ def _probability(
 
 def price(
     option: VanillaOption,
-    params: Heston@arameters,
+    params: HestonParameters,
     *,
     integration_limit: float = 120.0,
 ) -> float:
@@ -254,13 +254,13 @@ def calibrate(
         initial.theta,
         initial.vol_of_vol,
         initial.rho,
-        v0,
+        initial.v0,
     ])
     lower = np.array([0.05, 0.001, 0.01, -0.98, 0.001])
     upper = np.array([10.0, 1.0, 3.0, 0.98, 1.0])
     scales = np.maximum(np.asarray(market_prices, dtype=float), 0.25)
 
-    def residuals(x: np.darray) -> np.ndarray:
+    def residuals(x: np.ndarray) -> np.ndarray:
         p = HestonParameters(*map(float, x))
         model = np.array([
             price(option, p, integration_limit=integration_limit)
