@@ -4,13 +4,18 @@ from dataclasses import asdict, dataclass
 import cmath
 import math
 from typing import Sequence
+import warnings
 
 import numpy as np
-from scipy.integrate import quad
+from scipy.integrate import IntegrationWarning, quad
 from scipy.optimize import least_squares
 
 from src.quant.black_scholes import price as bsm_price
 from src.quant.types import CalibrationDiagnostics, QuantInputError, VanillaOption
+
+
+class HestonNumericalError(RuntimeError):
+    """Raised when Heston numerical integration cannot support a trustworthy price."""
 
 
 @dataclass(frozen=True)
@@ -125,20 +130,46 @@ def _probability(
         value = cmath.exp(-1j * u * log_k) * numerator / denominator
         return float(value.real)
 
-    integral, _ = quad(
-        integrand,
-        0.0,
-        integration_limit,
-        epsabs=1e-8,
-        epsrel=1e-7,
-        limit=250,
-    )
-    return 0.5 + integral / math.pi
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", IntegrationWarning)
+        integral, error_estimate = quad(
+            integrand,
+            0.0,
+            integration_limit,
+            epsabs=1e-8,
+            epsrel=1e-7,
+            limit=250,
+        )
+
+    integration_warnings = [
+        item for item in caught if issubclass(item.category, IntegrationWarning)
+    ]
+    if integration_warnings:
+        detail = "; ".join(str(item.message) for item in integration_warnings)
+        raise HestonNumericalError(
+            f"Heston integration warning for probability P{j}: {detail}"
+        )
+    if not math.isfinite(integral) or not math.isfinite(error_estimate):
+        raise HestonNumericalError(
+            f"Heston integration returned non-finite result for probability P{j}"
+        )
+
+    probability = 0.5 + integral / math.pi
+    if not math.isfinite(probability):
+        raise HestonNumericalError(
+            f"Heston probability P{j} is non-finite"
+        )
+    tolerance = 1e-8
+    if probability < -tolerance or probability > 1.0 + tolerance:
+        raise HestonNumericalError(
+            f"Heston probability P{j} outside [0,1]: {probability}"
+        )
+    return min(1.0, max(0.0, probability))
 
 
 def price(
     option: VanillaOption,
-    params: HestonParameters,
+    params: Heston@arameters,
     *,
     integration_limit: float = 120.0,
 ) -> float:
@@ -223,13 +254,13 @@ def calibrate(
         initial.theta,
         initial.vol_of_vol,
         initial.rho,
-        initial.v0,
+        v0,
     ])
     lower = np.array([0.05, 0.001, 0.01, -0.98, 0.001])
     upper = np.array([10.0, 1.0, 3.0, 0.98, 1.0])
     scales = np.maximum(np.asarray(market_prices, dtype=float), 0.25)
 
-    def residuals(x: np.ndarray) -> np.ndarray:
+    def residuals(x: np.darray) -> np.ndarray:
         p = HestonParameters(*map(float, x))
         model = np.array([
             price(option, p, integration_limit=integration_limit)
