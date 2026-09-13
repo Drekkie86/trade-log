@@ -64,8 +64,24 @@ def test_positive_ev_defined_risk_liquid_experiment_can_enter_shadow_only() -> N
     )
     assert result.state == CASINO_SHADOW_CANDIDATE
     assert result.risk_budget == pytest.approx(25.0)
+    assert result.max_loss == pytest.approx(22.0)
     assert result.expected_pnl_net > 0
     assert result.decision_authority == "CASINO_RESEARCH_SHADOW_ONLY_NO_EXECUTION"
+
+
+def test_friction_is_included_in_hard_loss_budget() -> None:
+    result = evaluate_casino_experiment(
+        [ScenarioOutcome(0.9, 10.0), ScenarioOutcome(0.1, -24.0)],
+        risk_policy=CasinoRiskPolicy(bankroll=500.0, casino_cap=500.0, max_loss_fraction=0.05),
+        defined_risk=True,
+        max_loss=24.0,
+        transaction_costs=1.0,
+        slippage=1.0,
+        liquidity_state="LIQUIDITY_ACCEPTABLE_FOR_RESEARCH",
+    )
+    assert result.max_loss == pytest.approx(26.0)
+    assert result.state == CASINO_NO_TRADE
+    assert "EXCEEDS_CASINO_EXPERIMENT_LOSS_BUDGET" in result.reasons
 
 
 def test_experiment_over_hard_loss_budget_is_no_trade() -> None:
