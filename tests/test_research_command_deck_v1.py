@@ -105,5 +105,6 @@ def test_degraded_daemon_is_not_hidden_by_governance(monkeypatch) -> None:
 
     state = command_deck.load_research_command_deck()
 
+    assert state.ready is False
     assert state.operating_state == "RESEARCH_RUNTIME_DEGRADED"
     assert "STALE" in state.operating_detail
