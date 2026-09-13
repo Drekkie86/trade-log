@@ -23,8 +23,20 @@ def _bull_call_spread() -> list[OptionLeg]:
     ]
 
 
-def test_payoff_bounds_for_debit_call_spread_are_exact() -> None:
+def test_payoff_bounds_for_debit_call_spread_use_standard_contract_multiplier() -> None:
     entry, max_loss, max_profit, defined = payoff_bounds(_bull_call_spread(), total_costs=0.50)
+    assert entry == pytest.approx(400.0)
+    assert defined is True
+    assert max_loss == pytest.approx(400.50)
+    assert max_profit == pytest.approx(599.50)
+
+
+def test_payoff_bounds_can_use_explicit_unit_multiplier_for_research() -> None:
+    entry, max_loss, max_profit, defined = payoff_bounds(
+        _bull_call_spread(),
+        total_costs=0.50,
+        contract_multiplier=1,
+    )
     assert entry == pytest.approx(4.0)
     assert defined is True
     assert max_loss == pytest.approx(4.50)
@@ -33,10 +45,11 @@ def test_payoff_bounds_for_debit_call_spread_are_exact() -> None:
 
 def test_naked_short_call_is_rejected_as_unbounded_loss() -> None:
     legs = [OptionLeg("CALL", 100.0, -1, 3.0)]
-    _, max_loss, max_profit, defined = payoff_bounds(legs)
+    entry, max_loss, max_profit, defined = payoff_bounds(legs)
+    assert entry == pytest.approx(-300.0)
     assert defined is False
     assert max_loss is None
-    assert max_profit == pytest.approx(3.0)
+    assert max_profit == pytest.approx(300.0)
 
     result = evaluate_structure_distribution(
         legs,
@@ -51,7 +64,7 @@ def test_naked_short_call_is_rejected_as_unbounded_loss() -> None:
     assert result.max_contracts_at_budget is None
 
 
-def test_distribution_evaluation_reports_costs_tail_and_budget() -> None:
+def test_distribution_evaluation_reports_cash_contract_risk_costs_tail_and_budget() -> None:
     result = evaluate_structure_distribution(
         _bull_call_spread(),
         spot=100.0,
@@ -59,36 +72,39 @@ def test_distribution_evaluation_reports_costs_tail_and_budget() -> None:
         assumptions=DistributionAssumptions(annual_drift=0.05, annual_volatility=0.20),
         transaction_costs=0.25,
         slippage=0.25,
-        risk_budget=RiskBudget(bankroll=500.0, max_loss_fraction=0.02),
+        risk_budget=RiskBudget(bankroll=500.0, max_loss_fraction=1.0),
         simulation_paths=30_000,
         seed=17,
     )
     assert result.structure_defined_risk is True
-    assert result.max_loss == pytest.approx(4.50)
-    assert result.max_profit == pytest.approx(5.50)
+    assert result.contract_multiplier == 100
+    assert result.max_loss == pytest.approx(400.50)
+    assert result.max_profit == pytest.approx(599.50)
     assert result.total_costs == pytest.approx(0.50)
     assert 0.0 <= result.probability_of_profit <= 1.0
     assert 0.0 <= result.probability_of_loss <= 1.0
     assert result.loss_cvar_95 >= result.loss_var_95
-    assert result.max_loss_bankroll_fraction == pytest.approx(4.5 / 500.0)
-    assert result.risk_budget_amount == pytest.approx(10.0)
-    assert result.max_contracts_at_budget == 2
+    assert result.max_loss_bankroll_fraction == pytest.approx(400.5 / 500.0)
+    assert result.risk_budget_amount == pytest.approx(500.0)
+    assert result.max_contracts_at_budget == 1
     assert result.budget_state == "WITHIN_BOUNDED_RISK_BUDGET"
     assert result.decision_authority == "NONE_RESEARCH_ONLY"
     assert result.pnl_p05 <= result.pnl_p25 <= result.pnl_p50 <= result.pnl_p75 <= result.pnl_p95
 
 
-def test_single_structure_can_exceed_budget_without_being_called_bad_trade() -> None:
+def test_small_bankroll_correctly_rejects_standard_contract_that_exceeds_budget() -> None:
     result = evaluate_structure_distribution(
         _bull_call_spread(),
         spot=100.0,
         time_to_expiry=30 / 365,
         assumptions=DistributionAssumptions(annual_drift=0.0, annual_volatility=0.20),
-        risk_budget=RiskBudget(bankroll=100.0, max_loss_fraction=0.02),
+        risk_budget=RiskBudget(bankroll=500.0, max_loss_fraction=0.02),
         simulation_paths=20_000,
         seed=4,
     )
     assert result.structure_defined_risk is True
+    assert result.max_loss == pytest.approx(400.0)
+    assert result.risk_budget_amount == pytest.approx(10.0)
     assert result.budget_state == "EXCEEDS_SINGLE_STRUCTURE_RISK_BUDGET"
     assert result.max_contracts_at_budget == 0
 
@@ -133,6 +149,10 @@ def test_invalid_risk_inputs_fail_closed() -> None:
             simulation_paths=9999,
             seed=1,
         )
+    with pytest.raises(QuantInputError):
+        payoff_bounds(_bull_call_spread(), contract_multiplier=0)
+    with pytest.raises(QuantInputError):
+        payoff_bounds(_bull_call_spread(), contract_multiplier=1.5)  # type: ignore[arg-type]
 
 
 def test_expected_pnl_ratio_is_not_fabricated_when_max_loss_is_zero() -> None:
