@@ -4,6 +4,10 @@ Status baseline: the Control Plane Reset is complete in production at commit `fa
 
 This document supersedes earlier package numbering where it conflicts with the current plan. Historical package documents remain evidence of what was built, not instructions for what comes next.
 
+## Completed foundation and historical numbering
+
+The earlier V1 sequence remains part of Christiania's implementation history. In particular, **Package 7 — Advanced Quantitative Model Library & Research Bench** delivered the serious pricing, volatility, scenario and model-disagreement foundations that the current intelligence roadmap now extends. The current A–F package names below describe the next development pipeline; they do not erase or renumber completed historical work.
+
 ## Product goal
 
 Christiania is a quantitative options-research workstation that runs unattended, collects prospective evidence, scrutinises option risk mathematically, and may surface bounded-risk opportunities for manual review.
