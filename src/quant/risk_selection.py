@@ -324,6 +324,7 @@ def evaluate_structure_distribution(
         assumptions=assumptions,
     )
 
+
 def evaluate_portfolio_scenarios(
     structure_pnl_scenarios: Sequence[Sequence[float] | np.ndarray],
     *,
@@ -354,7 +355,7 @@ def evaluate_portfolio_scenarios(
         raise QuantInputError("portfolio P&L scenarios must be finite")
 
     portfolio_pnl = np.sum(np.vstack(arrays), axis=0)
-    losses = -portfolin_pnl
+    losses = -portfolio_pnl
     loss_var_95 = float(np.quantile(losses, 0.95))
     tail = losses[losses >= loss_var_95]
     loss_cvar_95 = float(np.mean(tail)) if len(tail) else loss_var_95
@@ -371,4 +372,3 @@ def evaluate_portfolio_scenarios(
         loss_var_95=loss_var_95,
         loss_cvar_95=loss_cvar_95,
     )
-
