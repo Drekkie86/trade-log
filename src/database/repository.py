@@ -24,7 +24,7 @@ def resolve_db_path(db_path=None) -> Path:
 
     return DB_PATH
 
-EXPECTED_SCHEMA_VERSION = 27
+EXPECTED_SCHEMA_VERSION = 28
 
 
 PROVENANCE_VALUES = {
@@ -114,7 +114,7 @@ def get_schema_version(db_path=None) -> int:
             FROM schema_version
             ORDER BY version DESC
             LIMIT 1;
-            """
+            """,
         ).fetchone()
 
     if row is None:
@@ -149,7 +149,7 @@ def get_table_names(db_path=None) -> list[str]:
             FROM sqlite_master
             WHERE type = 'table'
             ORDER BY name;
-            """
+            """,
         ).fetchall()
 
     return [
