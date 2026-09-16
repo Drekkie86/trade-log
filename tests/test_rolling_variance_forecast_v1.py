@@ -28,10 +28,20 @@ def test_rolling_forecast_builds_three_comparable_models() -> None:
     assert len(rows) == (80 - 40 - 5 + 1) * 3
     assert all(item.forecast_variance > 0 for item in rows)
     assert all(item.realized_variance > 0 for item in rows)
+    assert all(item.origin_index is not None for item in rows)
 
     result = tournament(rows, bootstrap_samples=50)
     assert result.comparable_model_count == 3
-    assert result.winner in model_ids
+    assert set(result.ranking) == model_ids
+    if result.winner is None:
+        assert result.selection_state in {
+            "NO_SIGNIFICANT_WINNER",
+            "INSUFFICIENT_COMPARISON_EVIDENCE",
+        }
+    else:
+        assert result.winner in model_ids
+        assert result.selection_state == "EVIDENCE_SUPPORTED_WINNER"
+        assert all(item.supports_candidate for item in result.comparisons)
 
 
 def test_regime_labels_use_only_trailing_training_window() -> None:
