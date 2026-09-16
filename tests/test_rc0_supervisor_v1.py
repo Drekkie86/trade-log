@@ -16,7 +16,7 @@ def _healthy_deck():
     return {
         "ready": True,
         "database": {
-            "schema_version": 27,
+            "schema_version": rc0_supervisor.EXPECTED_SCHEMA_VERSION,
             "journal_mode": "wal",
         },
         "daemon_health": {

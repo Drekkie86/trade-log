@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations import release_manifest as rm
 
 
@@ -16,8 +17,8 @@ def test_release_manifest_fingerprints_schema_migrations_and_quant_registry(db_p
 
     assert result.version == "1.0.0-rc1"
     assert result.release_channel == "release-candidate"
-    assert result.schema_version == 27
-    assert result.expected_schema_version == 27
+    assert result.schema_version == EXPECTED_SCHEMA_VERSION
+    assert result.expected_schema_version == EXPECTED_SCHEMA_VERSION
     assert len(result.migration_chain_sha256) == 64
     assert len(result.quant_registry_sha256) == 64
     assert result.dependencies["numpy"]
