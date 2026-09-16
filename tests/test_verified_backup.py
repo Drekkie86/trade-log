@@ -1,6 +1,7 @@
 import sqlite3
 import time
 
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import (
     create_verified_backup,
 )
@@ -26,8 +27,9 @@ def _seed_source(path):
                 version,
                 applied_at
             )
-            VALUES(27, '2026-09-05T00:00:00Z');
-            '''
+            VALUES(?, '2026-09-05T00:00:00Z');
+            ''',
+            (EXPECTED_SCHEMA_VERSION,),
         )
         conn.execute(
             '''
@@ -61,7 +63,7 @@ def test_verified_backup_preserves_committed_wal_data(
         retention=3,
     )
 
-    assert result.schema_version == 27
+    assert result.schema_version == EXPECTED_SCHEMA_VERSION
     assert result.integrity_check == "ok"
     assert (
         result.foreign_key_violation_count
@@ -123,6 +125,7 @@ def test_backup_retention_prunes_oldest(
 
     assert len(backups) == 2
     assert result.pruned_count == 2
+
 
 def test_verified_backup_rejects_stale_schema(
     tmp_path,
