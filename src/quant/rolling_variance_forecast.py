@@ -101,6 +101,7 @@ def rolling_variance_forecasts(
                 realized_variance=realized_variance,
                 horizon_days=config.horizon_days,
                 regime=regime,
+                origin_index=origin,
             )
         )
 
@@ -115,6 +116,7 @@ def rolling_variance_forecasts(
                 realized_variance=realized_variance,
                 horizon_days=config.horizon_days,
                 regime=regime,
+                origin_index=origin,
             )
         )
 
@@ -134,6 +136,7 @@ def rolling_variance_forecasts(
                     realized_variance=realized_variance,
                     horizon_days=config.horizon_days,
                     regime=regime,
+                    origin_index=origin,
                 )
             )
 
