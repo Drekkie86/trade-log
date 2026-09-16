@@ -15,7 +15,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Apply deterministic research-only shadow "
-            "admission to pending defined-risk proposals."
+            "admission to explicitly selected defined-risk proposals."
         )
     )
 
@@ -25,9 +25,19 @@ def main() -> int:
         action="append",
         dest="proposal_ids",
         default=None,
+        help=(
+            "Proposal id to evaluate. Repeat this option to evaluate "
+            "multiple proposals. At least one explicit id is required."
+        ),
     )
 
     args = parser.parse_args()
+
+    if not args.proposal_ids:
+        parser.error(
+            "at least one --proposal-id is required; "
+            "unscoped admission sweeps are disabled"
+        )
 
     print(
         "Christiania Shadow Admission v1"
