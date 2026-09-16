@@ -13,6 +13,7 @@ from src.quant.types import VanillaOption
 class VanillaBenchResult:
     input: dict
     model_prices: dict[str, float]
+    model_diagnostics: dict[str, dict]
     disagreement: dict
     greeks: dict
     implied_volatility: dict | None
@@ -50,16 +51,21 @@ def run_vanilla_bench(
     )
 
     mc = monte_carlo.price(option, paths=mc_paths, seed=seed)
+    fd = finite_difference.crank_nicolson_diagnostic(
+        option,
+        spot_steps=240,
+        time_steps=240,
+    )
     prices = {
         "BLACK_SCHOLES_MERTON": black_scholes.price(option),
         "CRR_BINOMIAL": trees.crr_price(option, steps=tree_steps),
-        "CRANK_NICOLSON_BSM": finite_difference.crank_nicolson_price(
-            option, spot_steps=240, time_steps=240
-        ),
         "MONTE_CARLO_GBM": mc.price,
         "HESTON": heston.price(option, heston_params),
         "MERTON_JUMP_DIFFUSION": merton_jump.price(option, merton_params),
     }
+    if fd.converged:
+        prices["CRANK_NICOLSON_BSM"] = fd.price
+
     iv = None
     if market_price is not None:
         iv = implied_vol.solve(market_price, option).as_dict()
@@ -68,6 +74,7 @@ def run_vanilla_bench(
     return VanillaBenchResult(
         input=asdict(option),
         model_prices=prices,
+        model_diagnostics={"CRANK_NICOLSON_BSM": fd.as_dict()},
         disagreement=summarize(prices, market_price=market_price).as_dict(),
         greeks={} if g is None else g.as_dict(),
         implied_volatility=iv,
@@ -78,6 +85,9 @@ def run_vanilla_bench(
             "state": "RESEARCH_ONLY",
             "decision_enabled": False,
             "admission_enabled": False,
-            "warning": "Model disagreement is diagnostic evidence, not a trade signal.",
+            "warning": (
+                "Model disagreement is diagnostic evidence, not a trade signal. "
+                "Numerically inadequate challenger models are omitted from model_prices rather than consumed as valid evidence."
+            ),
         },
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 import math
 
 import numpy as np
@@ -8,27 +9,47 @@ from scipy.linalg import solve_banded
 from src.quant.types import QuantInputError, VanillaOption
 
 
-def crank_nicolson_price(
-    option: VanillaOption,
-    *,
-    spot_steps: int = 400,
-    time_steps: int = 400,
-    spot_max_multiple: float = 4.0,
-) -> float:
-    """Price a European vanilla under the BSM PDE using Crank-Nicolson.
+@dataclass(frozen=True)
+class FiniteDifferenceConvergence:
+    price: float
+    converged: bool
+    state: str
+    initial_spot_max_multiple: float
+    final_spot_max_multiple: float
+    base_spot_steps: int
+    final_spot_steps: int
+    final_time_steps: int
+    domain_refinements: int
+    domain_shift: float | None
+    resolution_shift: float | None
 
-    This is a cross-validation engine, not the primary production pricer.
-    """
-    option.validate()
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def _validate_grid(
+    *,
+    spot_steps: int,
+    time_steps: int,
+    spot_max_multiple: float,
+    max_domain_refinements: int,
+) -> None:
     if spot_steps < 40 or time_steps < 40:
         raise QuantInputError("finite-difference grid requires >=40 spot/time steps")
-    if spot_max_multiple <= 1.2:
-        raise QuantInputError("spot_max_multiple must exceed 1.2")
-    if option.time_to_expiry == 0.0:
-        if option.normalized_right() == "CALL":
-            return max(option.spot - option.strike, 0.0)
-        return max(option.strike - option.spot, 0.0)
+    if not math.isfinite(float(spot_max_multiple)) or spot_max_multiple <= 1.2:
+        raise QuantInputError("spot_max_multiple must be finite and exceed 1.2")
+    if max_domain_refinements < 1:
+        raise QuantInputError("max_domain_refinements must be positive")
 
+
+def _crank_nicolson_on_grid(
+    option: VanillaOption,
+    *,
+    spot_steps: int,
+    time_steps: int,
+    spot_max_multiple: float,
+) -> float:
+    """Solve the BSM PDE on one explicit finite computational domain."""
     s_max = max(
         option.spot * spot_max_multiple,
         option.strike * spot_max_multiple,
@@ -101,4 +122,159 @@ def crank_nicolson_price(
         values[m] = high_new
         values[1:m] = solved
 
-    return float(np.interp(option.spot, grid_s, values))
+    result = float(np.interp(option.spot, grid_s, values))
+    if not math.isfinite(result) or result < 0:
+        raise QuantInputError("finite-difference solver produced an invalid price")
+    return result
+
+
+def crank_nicolson_diagnostic(
+    option: VanillaOption,
+    *,
+    spot_steps: int = 400,
+    time_steps: int = 400,
+    spot_max_multiple: float = 4.0,
+    max_domain_refinements: int = 5,
+) -> FiniteDifferenceConvergence:
+    """Price with an explicit numerical-adequacy check for domain truncation.
+
+    The BSM PDE itself is unchanged. The computational domain is doubled while
+    the original spatial step size is preserved. At each widened domain, the
+    same domain is also solved at twice the spatial and temporal resolution.
+    Domain truncation is considered resolved only when the price sensitivity to
+    another domain widening is no larger than the observed grid-resolution
+    sensitivity. This uses the solver's own numerical evidence rather than a
+    volatility cutoff or a hand-picked pricing-error threshold.
+    """
+    option.validate()
+    _validate_grid(
+        spot_steps=spot_steps,
+        time_steps=time_steps,
+        spot_max_multiple=spot_max_multiple,
+        max_domain_refinements=max_domain_refinements,
+    )
+
+    if option.time_to_expiry == 0.0:
+        price = (
+            max(option.spot - option.strike, 0.0)
+            if option.normalized_right() == "CALL"
+            else max(option.strike - option.spot, 0.0)
+        )
+        return FiniteDifferenceConvergence(
+            price=float(price),
+            converged=True,
+            state="EXACT_EXPIRY_PAYOFF",
+            initial_spot_max_multiple=float(spot_max_multiple),
+            final_spot_max_multiple=float(spot_max_multiple),
+            base_spot_steps=int(spot_steps),
+            final_spot_steps=int(spot_steps),
+            final_time_steps=int(time_steps),
+            domain_refinements=0,
+            domain_shift=0.0,
+            resolution_shift=0.0,
+        )
+
+    previous = _crank_nicolson_on_grid(
+        option,
+        spot_steps=spot_steps,
+        time_steps=time_steps,
+        spot_max_multiple=spot_max_multiple,
+    )
+    last_refined = previous
+    last_domain_shift: float | None = None
+    last_resolution_shift: float | None = None
+    last_multiple = float(spot_max_multiple)
+    last_spot_steps = int(spot_steps)
+    last_time_steps = int(time_steps)
+
+    for refinement in range(1, max_domain_refinements + 1):
+        scale = 2**refinement
+        current_multiple = float(spot_max_multiple) * scale
+        current_spot_steps = int(spot_steps) * scale
+
+        # The domain widens while ds is held constant, isolating sensitivity to
+        # the far-field truncation from ordinary spatial-grid refinement.
+        current = _crank_nicolson_on_grid(
+            option,
+            spot_steps=current_spot_steps,
+            time_steps=time_steps,
+            spot_max_multiple=current_multiple,
+        )
+
+        # Independently estimate the numerical resolution scale on this same
+        # domain by refining both spatial and temporal grids.
+        refined = _crank_nicolson_on_grid(
+            option,
+            spot_steps=current_spot_steps * 2,
+            time_steps=time_steps * 2,
+            spot_max_multiple=current_multiple,
+        )
+        domain_shift = abs(current - previous)
+        resolution_shift = abs(refined - current)
+        roundoff_allowance = np.finfo(float).eps * max(1.0, abs(refined), abs(current))
+
+        last_refined = refined
+        last_domain_shift = domain_shift
+        last_resolution_shift = resolution_shift
+        last_multiple = current_multiple
+        last_spot_steps = current_spot_steps * 2
+        last_time_steps = int(time_steps) * 2
+
+        if domain_shift <= resolution_shift + roundoff_allowance:
+            return FiniteDifferenceConvergence(
+                price=float(refined),
+                converged=True,
+                state="CONVERGED_DOMAIN_AND_RESOLUTION",
+                initial_spot_max_multiple=float(spot_max_multiple),
+                final_spot_max_multiple=current_multiple,
+                base_spot_steps=int(spot_steps),
+                final_spot_steps=current_spot_steps * 2,
+                final_time_steps=int(time_steps) * 2,
+                domain_refinements=refinement,
+                domain_shift=float(domain_shift),
+                resolution_shift=float(resolution_shift),
+            )
+
+        previous = current
+
+    return FiniteDifferenceConvergence(
+        price=float(last_refined),
+        converged=False,
+        state="DOMAIN_CONVERGENCE_NOT_DEMONSTRATED",
+        initial_spot_max_multiple=float(spot_max_multiple),
+        final_spot_max_multiple=last_multiple,
+        base_spot_steps=int(spot_steps),
+        final_spot_steps=last_spot_steps,
+        final_time_steps=last_time_steps,
+        domain_refinements=max_domain_refinements,
+        domain_shift=last_domain_shift,
+        resolution_shift=last_resolution_shift,
+    )
+
+
+def crank_nicolson_price(
+    option: VanillaOption,
+    *,
+    spot_steps: int = 400,
+    time_steps: int = 400,
+    spot_max_multiple: float = 4.0,
+    max_domain_refinements: int = 5,
+) -> float:
+    """Price a European vanilla under the BSM PDE using Crank-Nicolson.
+
+    This cross-validation engine fails closed unless its own domain-truncation
+    check demonstrates that widening the far-field boundary no longer matters
+    more than ordinary grid-resolution error.
+    """
+    result = crank_nicolson_diagnostic(
+        option,
+        spot_steps=spot_steps,
+        time_steps=time_steps,
+        spot_max_multiple=spot_max_multiple,
+        max_domain_refinements=max_domain_refinements,
+    )
+    if not result.converged:
+        raise QuantInputError(
+            "Crank-Nicolson domain convergence was not demonstrated within the configured refinement budget"
+        )
+    return result.price
