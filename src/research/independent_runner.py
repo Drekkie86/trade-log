@@ -442,7 +442,7 @@ def _finish_underlying(
     with get_connection(
         db_path
     ) as conn:
-        conn.execute(
+        child_cursor = conn.execute(
             """
             UPDATE research_run_underlyings
             SET
@@ -451,7 +451,8 @@ def _finish_underlying(
                 failure_code = ?,
                 failure_reason = ?
             WHERE run_id = ?
-              AND underlying = ?;
+              AND underlying = ?
+              AND status = 'ATTEMPTED';
             """,
             (
                 completed_at,
@@ -467,7 +468,12 @@ def _finish_underlying(
             ),
         )
 
-        conn.execute(
+        if child_cursor.rowcount != 1:
+            raise IndependentResearchRunnerError(
+                "Underlying research state could not be terminalized exactly once."
+            )
+
+        parent_cursor = conn.execute(
             """
             UPDATE research_runs
             SET
@@ -483,6 +489,11 @@ def _finish_underlying(
                 run_id,
             ),
         )
+
+        if parent_cursor.rowcount != 1:
+            raise IndependentResearchRunnerError(
+                "Parent research run could not be updated after underlying terminalization."
+            )
 
         conn.commit()
 
