@@ -55,6 +55,8 @@ def test_vanilla_bench_runs_five_models_and_is_research_only():
         mc_paths=20_000,
     ).as_dict()
     assert len(result["model_prices"]) == 6
+    assert result["model_diagnostics"]["CRANK_NICOLSON_BSM"]["converged"] is True
+    assert result["model_diagnostics"]["CRANK_NICOLSON_BSM"]["state"] == "CONVERGED_DOMAIN_AND_RESOLUTION"
     assert result["governance"]["decision_enabled"] is False
     assert result["governance"]["admission_enabled"] is False
     assert "not a trade signal" in result["governance"]["warning"]
@@ -99,6 +101,7 @@ def test_quant_cli_bench_json():
     payload = json.loads(cp.stdout)
     assert payload["governance"]["state"] == "RESEARCH_ONLY"
     assert "HESTON" in payload["model_prices"]
+    assert payload["model_diagnostics"]["CRANK_NICOLSON_BSM"]["converged"] is True
     assert payload["disagreement"]["statistical_inference_valid"] is False
     assert "market_z_score" not in payload["disagreement"]
 
