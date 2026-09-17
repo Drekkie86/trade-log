@@ -1,5 +1,7 @@
 from pathlib import Path
+import shutil
 import sqlite3
+import tempfile
 
 import pytest
 
@@ -10,68 +12,92 @@ PROJECT_ROOT = (
     .parents[1]
 )
 
+_V7_TEMPLATE_DIR = tempfile.TemporaryDirectory(
+    prefix="christiania-migration-007-"
+)
+_V7_TEMPLATE_PATH = (
+    Path(_V7_TEMPLATE_DIR.name)
+    / "migration_007_template.db"
+)
+_V7_TEMPLATE_READY = False
+
 
 def build_v7_database(
     tmp_path,
 ):
+    """Clone one pristine v7 schema instead of rebuilding it per test."""
+    global _V7_TEMPLATE_READY
+
+    if not _V7_TEMPLATE_READY:
+        schema = (
+            PROJECT_ROOT
+            / "trade_log_schema.sql"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        migration = (
+            PROJECT_ROOT
+            / "migrations"
+            / "007_selection_universe_integrity.sql"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        template_connection = sqlite3.connect(
+            _V7_TEMPLATE_PATH
+        )
+        template_connection.row_factory = sqlite3.Row
+        template_connection.execute(
+            "PRAGMA foreign_keys = ON;"
+        )
+
+        try:
+            template_connection.executescript(
+                schema
+            )
+
+            before = template_connection.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0]
+            assert before == 6
+
+            template_connection.executescript(
+                migration
+            )
+
+            after = template_connection.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0]
+            assert after == 7
+            template_connection.commit()
+        finally:
+            template_connection.close()
+
+        _V7_TEMPLATE_READY = True
+
     db_path = (
         tmp_path
         / "migration_007.db"
     )
-
-    schema = (
-        PROJECT_ROOT
-        / "trade_log_schema.sql"
-    ).read_text(
-        encoding="utf-8"
-    )
-
-    migration = (
-        PROJECT_ROOT
-        / "migrations"
-        / "007_selection_universe_integrity.sql"
-    ).read_text(
-        encoding="utf-8"
+    shutil.copy2(
+        _V7_TEMPLATE_PATH,
+        db_path,
     )
 
     connection = sqlite3.connect(
         db_path
     )
-
-    connection.row_factory = (
-        sqlite3.Row
-    )
-
+    connection.row_factory = sqlite3.Row
     connection.execute(
         "PRAGMA foreign_keys = ON;"
     )
-
-    connection.executescript(
-        schema
-    )
-
-    before = connection.execute(
-        """
-        SELECT MAX(version)
-        FROM schema_version;
-        """
-    ).fetchone()[0]
-
-    assert before == 6
-
-    connection.executescript(
-        migration
-    )
-
-    after = connection.execute(
-        """
-        SELECT MAX(version)
-        FROM schema_version;
-        """
-    ).fetchone()[0]
-
-    assert after == 7
-
     return connection
 
 

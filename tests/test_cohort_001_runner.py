@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
+import shutil
 import sqlite3
+import tempfile
 
 from src.providers.saxo import (
     QuoteQuality,
@@ -16,65 +18,90 @@ PROJECT_ROOT = (
     .parents[1]
 )
 
+_V7_TEMPLATE_DIR = tempfile.TemporaryDirectory(
+    prefix="christiania-cohort-runner-"
+)
+_V7_TEMPLATE_PATH = (
+    Path(_V7_TEMPLATE_DIR.name)
+    / "cohort_runner_v7_template.db"
+)
+_V7_TEMPLATE_READY = False
+
 
 def build_database(
     tmp_path,
 ):
+    """Clone one pristine v7 cohort schema instead of rebuilding per test."""
+    global _V7_TEMPLATE_READY
+
+    if not _V7_TEMPLATE_READY:
+        schema = (
+            PROJECT_ROOT
+            / "trade_log_schema.sql"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        template_connection = sqlite3.connect(
+            _V7_TEMPLATE_PATH
+        )
+        template_connection.row_factory = sqlite3.Row
+        template_connection.execute(
+            "PRAGMA foreign_keys = ON;"
+        )
+
+        try:
+            template_connection.executescript(
+                schema
+            )
+
+            version = template_connection.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0]
+
+            if version == 6:
+                migration = (
+                    PROJECT_ROOT
+                    / "migrations"
+                    / "007_selection_universe_integrity.sql"
+                ).read_text(
+                    encoding="utf-8"
+                )
+                template_connection.executescript(
+                    migration
+                )
+
+            assert template_connection.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0] == 7
+            template_connection.commit()
+        finally:
+            template_connection.close()
+
+        _V7_TEMPLATE_READY = True
+
     db_path = (
         tmp_path
         / "cohort_runner.db"
     )
-
-    schema = (
-        PROJECT_ROOT
-        / "trade_log_schema.sql"
-    ).read_text(
-        encoding="utf-8"
+    shutil.copy2(
+        _V7_TEMPLATE_PATH,
+        db_path,
     )
 
     connection = sqlite3.connect(
         db_path
     )
-
-    connection.row_factory = (
-        sqlite3.Row
-    )
-
+    connection.row_factory = sqlite3.Row
     connection.execute(
         "PRAGMA foreign_keys = ON;"
     )
-
-    connection.executescript(
-        schema
-    )
-
-    version = connection.execute(
-        """
-        SELECT MAX(version)
-        FROM schema_version;
-        """
-    ).fetchone()[0]
-
-    if version == 6:
-        migration = (
-            PROJECT_ROOT
-            / "migrations"
-            / "007_selection_universe_integrity.sql"
-        ).read_text(
-            encoding="utf-8"
-        )
-
-        connection.executescript(
-            migration
-        )
-
-    assert connection.execute(
-        """
-        SELECT MAX(version)
-        FROM schema_version;
-        """
-    ).fetchone()[0] == 7
-
     return connection
 
 

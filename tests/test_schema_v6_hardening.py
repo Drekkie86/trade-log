@@ -1,5 +1,7 @@
 from pathlib import Path
+import shutil
 import sqlite3
+import tempfile
 
 
 PROJECT_ROOT = (
@@ -8,40 +10,71 @@ PROJECT_ROOT = (
     .parents[1]
 )
 
+_V6_TEMPLATE_DIR = tempfile.TemporaryDirectory(
+    prefix="christiania-schema-v6-"
+)
+_V6_TEMPLATE_PATH = (
+    Path(_V6_TEMPLATE_DIR.name)
+    / "christiania_v6_template.db"
+)
+_V6_TEMPLATE_READY = False
+
 
 def build_v6_database(
     tmp_path,
 ):
+    """Clone one pristine v6 schema instead of rebuilding it per test."""
+    global _V6_TEMPLATE_READY
+
+    if not _V6_TEMPLATE_READY:
+        schema_sql = (
+            PROJECT_ROOT
+            / "trade_log_schema.sql"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        template_connection = sqlite3.connect(
+            _V6_TEMPLATE_PATH
+        )
+        template_connection.row_factory = sqlite3.Row
+        template_connection.execute(
+            "PRAGMA foreign_keys = ON;"
+        )
+
+        try:
+            template_connection.executescript(
+                schema_sql
+            )
+            template_connection.commit()
+            version = template_connection.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0]
+            assert version == 6
+        finally:
+            template_connection.close()
+
+        _V6_TEMPLATE_READY = True
+
     db_path = (
         tmp_path
         / "christiania_v6.db"
     )
-
-    schema_sql = (
-        PROJECT_ROOT
-        / "trade_log_schema.sql"
-    ).read_text(
-        encoding="utf-8"
+    shutil.copy2(
+        _V6_TEMPLATE_PATH,
+        db_path,
     )
 
     connection = sqlite3.connect(
         db_path
     )
-
-    connection.row_factory = (
-        sqlite3.Row
-    )
-
+    connection.row_factory = sqlite3.Row
     connection.execute(
         "PRAGMA foreign_keys = ON;"
     )
-
-    connection.executescript(
-        schema_sql
-    )
-
-    connection.commit()
-
     return connection
 
 

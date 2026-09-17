@@ -1,4 +1,6 @@
+import shutil
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,6 +20,15 @@ MIGRATION = (
     / "026_shadow_risk_plan_lifecycle.sql"
 )
 
+_RISK_TEMPLATE_DIR = tempfile.TemporaryDirectory(
+    prefix="christiania-shadow-risk-"
+)
+_RISK_TEMPLATE_PATH = (
+    Path(_RISK_TEMPLATE_DIR.name)
+    / "shadow_risk_template.db"
+)
+_RISK_TEMPLATE_READY = False
+
 
 def _after_recorded(plan, *, minutes: int) -> str:
     recorded = datetime.fromisoformat(
@@ -29,44 +40,64 @@ def _after_recorded(plan, *, minutes: int) -> str:
 
 
 def seed(db):
-    conn = sqlite3.connect(db)
-    conn.executescript(
-        """
-        CREATE TABLE schema_version(
-            version INTEGER PRIMARY KEY,
-            applied_at TEXT
-        );
-        INSERT INTO schema_version VALUES(25,'x');
+    """Clone one migrated shadow-risk fixture instead of reseeding per test."""
+    global _RISK_TEMPLATE_READY
 
-        CREATE TABLE shadow_candidates(
-            id INTEGER PRIMARY KEY,
-            surfaced_at TEXT,
-            max_theoretical_loss_minor INTEGER
-        );
+    if not _RISK_TEMPLATE_READY:
+        conn = sqlite3.connect(
+            _RISK_TEMPLATE_PATH
+        )
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE schema_version(
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT
+                );
+                INSERT INTO schema_version VALUES(25,'x');
 
-        CREATE TABLE shadow_mark_observations(
-            id INTEGER PRIMARY KEY,
-            candidate_id INTEGER,
-            observed_at TEXT,
-            estimated_net_pnl_eur_minor INTEGER,
-            measurement_role TEXT NOT NULL DEFAULT 'INDEPENDENT_LEG_LIQUIDATION_STRESS',
-            outcome_eligible INTEGER NOT NULL DEFAULT 0
-        );
+                CREATE TABLE shadow_candidates(
+                    id INTEGER PRIMARY KEY,
+                    surfaced_at TEXT,
+                    max_theoretical_loss_minor INTEGER
+                );
 
-        INSERT INTO shadow_candidates
-        VALUES(1,'2026-09-08T14:00:00+00:00',5000);
+                CREATE TABLE shadow_mark_observations(
+                    id INTEGER PRIMARY KEY,
+                    candidate_id INTEGER,
+                    observed_at TEXT,
+                    estimated_net_pnl_eur_minor INTEGER,
+                    measurement_role TEXT NOT NULL DEFAULT 'INDEPENDENT_LEG_LIQUIDATION_STRESS',
+                    outcome_eligible INTEGER NOT NULL DEFAULT 0
+                );
 
-        INSERT INTO shadow_candidates
-        VALUES(2,'2026-09-08T14:00:00+00:00',5000);
-        """
+                INSERT INTO shadow_candidates
+                VALUES(1,'2026-09-08T14:00:00+00:00',5000);
+
+                INSERT INTO shadow_candidates
+                VALUES(2,'2026-09-08T14:00:00+00:00',5000);
+                """
+            )
+            conn.executescript(
+                MIGRATION.read_text(
+                    encoding="utf-8"
+                )
+            )
+            conn.executescript((
+                Path(__file__).resolve().parents[1]
+                / "migrations"
+                / "027_pre_rc_integrity_hardening.sql"
+            ).read_text(encoding="utf-8"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        _RISK_TEMPLATE_READY = True
+
+    shutil.copy2(
+        _RISK_TEMPLATE_PATH,
+        db,
     )
-    conn.executescript(MIGRATION.read_text(encoding="utf-8"))
-    conn.executescript((
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "027_pre_rc_integrity_hardening.sql"
-    ).read_text(encoding="utf-8"))
-    conn.close()
 
 
 def test_price_and_time_stop(tmp_path):
@@ -175,9 +206,12 @@ def test_assessment_cannot_predate_plan(tmp_path):
         created_at="2026-09-08T14:10:00+00:00",
         db_path=db,
     )
-    from datetime import timedelta
-    recorded = __import__("datetime").datetime.fromisoformat(plan.recorded_at.replace("Z", "+00:00"))
-    before = (recorded - timedelta(seconds=1)).isoformat()
+    recorded = datetime.fromisoformat(
+        plan.recorded_at.replace("Z", "+00:00")
+    )
+    before = (
+        recorded - timedelta(seconds=1)
+    ).isoformat()
     with pytest.raises(ValueError, match="cannot predate"):
         evaluate_risk_plan(plan, observed_at=before)
 
