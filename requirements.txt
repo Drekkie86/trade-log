@@ -1,6 +1,6 @@
-numpy
-requests
-streamlit>=1.50,<2
-exchange_calendars>=4.13,<5
-scipy>=1.14,<2
-pandas>=2.2,<3
+numpy==2.5.3
+requests==2.34.2
+streamlit==1.64.0
+exchange_calendars==4.13.2
+scipy==1.18.1
+pandas==2.3.3
