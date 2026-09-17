@@ -86,7 +86,7 @@ def test_release_receiver_restores_database_before_restarting_old_services():
 
     rollback_start = receiver.index("rollback() {")
     restore = receiver.index(
-        'restore \\\n      --backup "${ROLLBACK_DB_BACKUP}"',
+        '--backup "${ROLLBACK_DB_BACKUP}"',
         rollback_start,
     )
     daemon_reload = receiver.index(
