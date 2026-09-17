@@ -131,6 +131,7 @@ def test_readonly_connection_refuses_write(
     finally:
         conn.close()
 
+
 def test_health_cli_returns_nonzero_for_missing_database(
     tmp_path,
 ):
@@ -154,17 +155,41 @@ def test_health_cli_returns_nonzero_for_missing_database(
 
 
 def test_health_cli_strict_daemon_returns_three_without_lease(
-    db_path,
+    monkeypatch,
 ):
     import sys
 
     import christiania_health
 
+    monkeypatch.setattr(
+        christiania_health,
+        "load_command_deck",
+        lambda *args, **kwargs: {
+            "ready": True,
+            "theta_health": {"state": "READY"},
+            "daemon_health": {"state": "UNHEALTHY"},
+        },
+    )
+    monkeypatch.setattr(
+        christiania_health,
+        "inventory_backups_fast",
+        lambda: type(
+            "Inventory",
+            (),
+            {
+                "as_dict": lambda self: {
+                    "total_files": 0,
+                    "valid_files": 0,
+                    "latest_valid_age_hours": None,
+                }
+            },
+        )(),
+    )
+
     old = sys.argv
     sys.argv = [
         "christiania_health.py",
-        "--db",
-        str(db_path),
+        "--json",
         "--strict-daemon",
     ]
 
@@ -312,6 +337,7 @@ def test_health_cli_strict_backup_accepts_fresh_verified_backup(monkeypatch):
     finally:
         sys.argv = old
 
+
 def test_health_cli_non_strict_uses_metadata_only_backup_inventory(monkeypatch):
     import sys
     import christiania_health
@@ -419,4 +445,3 @@ def test_health_cli_strict_backup_uses_deep_backup_inventory(monkeypatch):
         sys.argv = old
 
     assert calls == {"fast": 0, "deep": 1}
-

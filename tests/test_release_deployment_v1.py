@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,7 +65,7 @@ def test_release_receiver_prepares_database_before_atomic_activation():
     ).read_text(encoding="utf-8")
 
     quiesce = receiver.index(
-        'echo "Quiescing Christiania database consumers for release migration."'
+        'echo "Quiescing Christiania scheduled jobs and database consumers for release migration."'
     )
     rollback_guard = receiver.index(
         "DATABASE_PREPARED=1",
@@ -97,7 +101,7 @@ def test_release_receiver_restores_database_before_restarting_old_services():
         restore,
     )
     restart = receiver.index(
-        'systemctl start "${service}" >/dev/null 2>&1 || true',
+        'systemctl start "${service}" >/dev/null 2>&1',
         daemon_reload,
     )
 
@@ -143,3 +147,199 @@ def test_release_receiver_can_restore_app_link_if_new_link_creation_fails():
     assert rollback_link_guard < rollback_restore_link
     assert activation_start < first_mutation_guard < second_mutation_guard < new_link < activated
     assert receiver.count("APP_LINK_MUTATED=1") == 2
+
+
+def test_release_receiver_treats_empty_pointer_as_pre_mutation_interrupt():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "Database preparation stopped before the rollback pointer was committed; "
+        "no migration could have started."
+    ) in receiver
+    assert "DATABASE ROLLBACK METADATA MISSING" not in receiver
+    assert 'if [[ -s "${DB_ROLLBACK_POINTER}" ]]; then' in receiver
+
+
+def test_release_receiver_gives_atomic_pointer_writer_private_workspace():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'install -d -m 0750 -o root -g "${SERVICE_USER}" "${ROLLBACK_ROOT}"' in receiver
+    assert 'DB_ROLLBACK_DIR="${ROLLBACK_ROOT}/${ACTIVATION_ID}-database"' in receiver
+    assert 'DB_ROLLBACK_POINTER="${DB_ROLLBACK_DIR}/rollback.txt"' in receiver
+    assert (
+        'install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" '
+        '"${DB_ROLLBACK_DIR}"'
+    ) in receiver
+    assert (
+        'install -m 0600 -o "${SERVICE_USER}" -g "${SERVICE_USER}" '
+        '/dev/null "${DB_ROLLBACK_POINTER}"'
+    ) in receiver
+
+    prepare = receiver.index('DB_PREP_OUTPUT="$(')
+    harden = receiver.index(
+        'chown -R root:root "${DB_ROLLBACK_DIR}"',
+        prepare,
+    )
+    target_preflight = receiver.index(
+        'echo "Running target-release preflight against the migrated database."',
+        harden,
+    )
+
+    assert prepare < harden < target_preflight
+    assert 'chmod 0700 "${DB_ROLLBACK_DIR}"' in receiver[harden:target_preflight]
+    assert 'chmod 0600 "${DB_ROLLBACK_POINTER}"' in receiver[harden:target_preflight]
+
+
+def test_release_receiver_quarantines_incomplete_same_commit_retry():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'FAILED_RELEASE_ROOT="${RELEASE_ROOT}/failed"' in receiver
+    assert 'if [[ -e "${RELEASE_DIR}" || -L "${RELEASE_DIR}" ]]; then' in receiver
+    assert 'echo "Quarantining incomplete prior attempt for ${EXPECTED_COMMIT}' in receiver
+    assert 'mv -- "${RELEASE_DIR}" "${QUARANTINED_RELEASE}"' in receiver
+    assert 'rm -rf -- "${RELEASE_DIR}"' not in receiver
+    assert "requested release is already the active release" in receiver
+    assert 'ACTIVATION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"' in receiver
+
+
+def test_release_receiver_quiesces_all_scheduled_jobs_before_migration():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    quiesce = receiver.index(
+        'echo "Quiescing Christiania scheduled jobs and database consumers for release migration."'
+    )
+    quiesce_guard = receiver.index(
+        "SERVICES_QUIESCED=1",
+        quiesce,
+    )
+    timer_stop = receiver.index(
+        'for timer in "${QUIESCE_TIMER_UNITS[@]}"; do',
+        quiesce_guard,
+    )
+    oneshot_stop = receiver.index(
+        'for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do',
+        timer_stop,
+    )
+    app_daemon_stop = receiver.index(
+        'for service in "${QUIESCE_SERVICES[@]}"; do',
+        oneshot_stop,
+    )
+    theta_guard = receiver.index(
+        'systemctl is-active christiania-theta.service',
+        app_daemon_stop,
+    )
+    prepare = receiver.index(
+        'DB_PREP_OUTPUT="$(' ,
+        theta_guard,
+    )
+    restore_timers = receiver.index(
+        'echo "Restoring scheduled Christiania timers."',
+        prepare,
+    )
+
+    assert (
+        quiesce
+        < quiesce_guard
+        < timer_stop
+        < oneshot_stop
+        < app_daemon_stop
+        < theta_guard
+        < prepare
+        < restore_timers
+    )
+
+    for timer in (
+        "christiania-audit.timer",
+        "christiania-backup.timer",
+        "christiania-burn-in.timer",
+        "christiania-health.timer",
+        "christiania-restore-drill.timer",
+        "christiania-supervisor.timer",
+        "christiania-theta-refresh.timer",
+        "christiania-theta-watchdog.timer",
+        "christiania-v1-readiness.timer",
+    ):
+        assert f'  "{timer}"' in receiver
+
+    for service in (
+        "christiania-audit.service",
+        "christiania-backup.service",
+        "christiania-burn-in.service",
+        "christiania-health.service",
+        "christiania-restore-drill.service",
+        "christiania-supervisor.service",
+        "christiania-theta-refresh.service",
+        "christiania-theta-watchdog.service",
+        "christiania-theta-recover.service",
+        "christiania-v1-readiness.service",
+    ):
+        assert f'  "{service}"' in receiver
+
+    assert 'ACTIVE_QUIESCE_TIMERS+=("${timer}")' in receiver
+    assert 'stop_unit_for_release "${timer}"' in receiver
+    assert 'stop_unit_for_release "${service}"' in receiver
+    assert 'systemctl start "${timer}"' in receiver
+
+
+def test_release_receiver_has_complete_command_prerequisite_checks():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    required_block = receiver.split("for required in", 1)[1].split("; do", 1)[0]
+    required_commands = set(required_block.replace("\\", " ").split())
+
+    assert {
+        "awk",
+        "basename",
+        "chmod",
+        "chown",
+        "cp",
+        "date",
+        "find",
+        "id",
+        "install",
+        "ln",
+        "mktemp",
+        "mv",
+        "python3",
+        "readlink",
+        "rm",
+        "sha256sum",
+        "sudo",
+        "systemctl",
+        "tar",
+        "tr",
+    }.issubset(required_commands)
+
+
+def test_release_receiver_warns_that_full_current_health_check_can_take_time():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "SQLite integrity check can take several minutes" in receiver
+    assert "must not be interrupted" in receiver
+
+
+def test_release_receiver_has_valid_bash_syntax():
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this test host")
+
+    completed = subprocess.run(
+        [bash, "-n", str(ROOT / "deploy/receive_release.sh")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr

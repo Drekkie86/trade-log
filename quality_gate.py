@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -417,29 +418,108 @@ def build_fresh_database() -> GateResult:
             conn.close()
 
 
+def _runtime_budget_seconds(
+    env_name: str,
+) -> float | None:
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return None
+
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{env_name} must be a positive number of seconds."
+        ) from exc
+
+    if value <= 0:
+        raise ValueError(
+            f"{env_name} must be a positive number of seconds."
+        )
+
+    return value
+
+
 def run_pytest() -> GateResult:
     # Run deterministic/core tests separately from timing-sensitive slow tests.
     # Use inherited stdout/stderr instead of PIPE capture: some integration
     # tests spawn child processes that can keep captured pipe handles open on
     # POSIX even after pytest itself has completed.
+    try:
+        core_budget = _runtime_budget_seconds(
+            "CHRISTIANIA_CORE_TEST_BUDGET_SECONDS"
+        )
+        slow_budget = _runtime_budget_seconds(
+            "CHRISTIANIA_SLOW_TEST_BUDGET_SECONDS"
+        )
+    except ValueError as exc:
+        return GateResult(
+            "full pytest suite",
+            False,
+            str(exc),
+        )
+
+    core_started = time.perf_counter()
     core = run(
         sys.executable, "-m", "pytest", "-q", "-m", "not slow",
         capture=False,
     )
-    if core.returncode != 0:
-        return GateResult("full pytest suite", False, "core pytest population failed")
+    core_seconds = time.perf_counter() - core_started
 
+    if core.returncode != 0:
+        return GateResult(
+            "full pytest suite",
+            False,
+            f"core pytest population failed after {core_seconds:.2f}s",
+        )
+
+    if (
+        core_budget is not None
+        and core_seconds > core_budget
+    ):
+        return GateResult(
+            "full pytest suite",
+            False,
+            (
+                f"core pytest runtime {core_seconds:.2f}s exceeded "
+                f"the CI budget of {core_budget:.2f}s"
+            ),
+        )
+
+    slow_started = time.perf_counter()
     slow = run(
         sys.executable, "-m", "pytest", "-q", "-m", "slow",
         capture=False,
     )
+    slow_seconds = time.perf_counter() - slow_started
+
     if slow.returncode != 0:
-        return GateResult("full pytest suite", False, "slow pytest population failed")
+        return GateResult(
+            "full pytest suite",
+            False,
+            f"slow pytest population failed after {slow_seconds:.2f}s",
+        )
+
+    if (
+        slow_budget is not None
+        and slow_seconds > slow_budget
+    ):
+        return GateResult(
+            "full pytest suite",
+            False,
+            (
+                f"slow pytest runtime {slow_seconds:.2f}s exceeded "
+                f"the CI budget of {slow_budget:.2f}s"
+            ),
+        )
 
     return GateResult(
         "full pytest suite",
         True,
-        "core and slow pytest populations passed separately",
+        (
+            "core and slow pytest populations passed separately; "
+            f"core={core_seconds:.2f}s; slow={slow_seconds:.2f}s"
+        ),
     )
 
 

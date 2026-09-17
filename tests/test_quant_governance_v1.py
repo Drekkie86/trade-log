@@ -78,10 +78,12 @@ def test_quant_validation_standard_requires_redundant_methods():
         assert phrase in doc
 
 
-def test_scipy_dependency_is_declared_for_runtime_and_ci():
-    for name in ("requirements.txt", "requirements-ci.txt"):
-        req = (ROOT / name).read_text(encoding="utf-8")
-        assert "scipy>=1.14,<2" in req
+def test_scipy_dependency_is_pinned_for_runtime_and_inherited_by_ci():
+    runtime = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    ci = (ROOT / "requirements-ci.txt").read_text(encoding="utf-8")
+
+    assert "scipy==1.18.1" in runtime
+    assert "-r requirements.txt" in ci
 
 
 def test_quant_library_is_documented_as_side_effect_free():

@@ -1,3 +1,4 @@
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -44,40 +45,44 @@ def apply_pending_migrations(
     apply_migrations_atomically(connection, MIGRATIONS_DIR)
 
 
-@pytest.fixture
-def db_path(tmp_path):
+@pytest.fixture(scope="session")
+def migrated_db_template(tmp_path_factory):
     """
-    Every test gets its own disposable database.
+    Build the fully migrated empty test database once per pytest session.
 
-    Your real trade_log.db is never touched.
+    Individual tests still receive their own database file; the expensive
+    schema + migration setup is not repeated hundreds of times.
     """
-    path = (
-        tmp_path
-        / "test_trade_log.db"
-    )
+    template_dir = tmp_path_factory.mktemp("christiania-db-template")
+    path = template_dir / "template_trade_log.db"
 
     schema_sql = SCHEMA_PATH.read_text(
         encoding="utf-8"
     )
 
-    connection = get_connection(
-        path
-    )
+    connection = get_connection(path)
 
     try:
-        connection.executescript(
-            schema_sql
-        )
-
-        apply_pending_migrations(
-            connection
-        )
-
+        connection.executescript(schema_sql)
+        apply_pending_migrations(connection)
         connection.commit()
-
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE);")
     finally:
         connection.close()
 
+    return path
+
+
+@pytest.fixture
+def db_path(tmp_path, migrated_db_template):
+    """
+    Every test gets its own disposable database cloned from a clean,
+    fully migrated session template.
+
+    Test isolation is preserved and the real trade_log.db is never touched.
+    """
+    path = tmp_path / "test_trade_log.db"
+    shutil.copy2(migrated_db_template, path)
     return path
 
 
