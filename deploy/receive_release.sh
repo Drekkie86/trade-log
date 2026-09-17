@@ -76,18 +76,23 @@ if [[ ! "${EXPECTED_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
 fi
 
 for required in \
-  sha256sum \
-  tar \
-  python3 \
-  systemctl \
-  install \
-  readlink \
-  find \
+  awk \
+  basename \
   cp \
-  mv \
+  date \
+  find \
+  id \
+  install \
   ln \
+  mv \
+  python3 \
+  readlink \
   rm \
-  sudo; do
+  sha256sum \
+  sudo \
+  systemctl \
+  tar \
+  tr; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     fail "required command not found: ${required}"
   fi
@@ -123,7 +128,10 @@ install -d -m 0750 -o root -g "${SERVICE_USER}" "${RELEASE_ROOT}"
 PREVIOUS_TARGET=""
 LEGACY_SOURCE=0
 if [[ -L "${APP_LINK}" ]]; then
-  PREVIOUS_TARGET="$(readlink -f "${APP_LINK}")"
+  PREVIOUS_TARGET="$(readlink -f "${APP_LINK}" 2>/dev/null || true)"
+  if [[ -z "${PREVIOUS_TARGET}" || ! -d "${PREVIOUS_TARGET}" ]]; then
+    fail "current application symlink does not resolve to a release directory: ${APP_LINK}"
+  fi
 elif [[ -d "${APP_LINK}" ]]; then
   PREVIOUS_TARGET="${APP_LINK}"
   LEGACY_SOURCE=1
@@ -132,7 +140,7 @@ else
 fi
 
 ROLLBACK_ROOT="${STATE_ROOT}/release-rollbacks"
-FAILED_RELEASE_ROOT="${STATE_ROOT}/failed-releases"
+FAILED_RELEASE_ROOT="${RELEASE_ROOT}/failed"
 install -d -m 0750 -o root -g "${SERVICE_USER}" "${ROLLBACK_ROOT}"
 install -d -m 0750 -o root -g "${SERVICE_USER}" "${FAILED_RELEASE_ROOT}"
 
