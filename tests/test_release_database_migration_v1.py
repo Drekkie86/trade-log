@@ -160,6 +160,38 @@ def test_rollback_pointer_is_committed_before_migration_sql(
     assert result.schema_after == 28
 
 
+def test_rollback_directory_entries_are_synced_before_migration_sql(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(tmp_path)
+    backups = tmp_path / "backups"
+    pointer = tmp_path / "rollback-pointer.txt"
+
+    monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db))
+    monkeypatch.setenv("CHRISTIANIA_BACKUP_DIR", str(backups))
+
+    synced_directories: list[Path] = []
+    original = release_db.apply_pending_migrations
+
+    def record_fsync(path):
+        synced_directories.append(Path(path))
+
+    def guarded_apply(conn, migrations_dir):
+        assert backups in synced_directories
+        assert pointer.parent in synced_directories
+        return original(conn, migrations_dir)
+
+    monkeypatch.setattr(release_db, "_fsync_directory", record_fsync)
+    monkeypatch.setattr(release_db, "apply_pending_migrations", guarded_apply)
+
+    result = prepare_release_database(
+        migrations_dir=MIGRATIONS,
+        rollback_pointer=pointer,
+    )
+    assert result.schema_after == 28
+
+
 def test_keyboard_interrupt_during_migration_restores_v27(
     monkeypatch,
     tmp_path,
