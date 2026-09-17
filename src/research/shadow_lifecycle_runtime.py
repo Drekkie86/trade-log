@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from src.database.repository import (
     append_shadow_state_event,
@@ -94,6 +95,17 @@ def _validated_package_outcome_exists(candidate_id: int, *, db_path=None) -> boo
     return row is not None
 
 
+def _iso_date(value, *, field: str) -> date:
+    if value is None or not str(value).strip():
+        raise ValueError(f"Shadow lifecycle requires {field}.")
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ValueError(
+            f"Shadow lifecycle requires ISO date {field}; found {value!r}."
+        ) from exc
+
+
 def advance_shadow_lifecycle(
     *,
     research_run_id: int,
@@ -129,12 +141,18 @@ def advance_shadow_lifecycle(
     if run is None:
         raise ValueError(f"Unknown research run {research_run_id}.")
 
-    session_date = str(run["us_session_date"])
-    lifecycle_at = str(run["lifecycle_at"])
-    if not lifecycle_at:
+    session_day = _iso_date(
+        run["us_session_date"],
+        field="research run us_session_date",
+    )
+    session_date = session_day.isoformat()
+
+    lifecycle_value = run["lifecycle_at"]
+    if lifecycle_value is None or not str(lifecycle_value).strip():
         raise ValueError(
             f"Research run {research_run_id} has no lifecycle timestamp."
         )
+    lifecycle_at = str(lifecycle_value)
 
     closed = 0
     scored = 0
@@ -143,9 +161,12 @@ def advance_shadow_lifecycle(
     for row in _latest_state_rows(db_path=db_path):
         candidate_id = int(row["candidate_id"])
         current_state = str(row["current_state"])
-        expiration = str(row["expiration"])
+        expiration_day = _iso_date(
+            row["expiration"],
+            field=f"candidate {candidate_id} expiration",
+        )
 
-        if current_state == "SHADOW_TRACKED" and expiration < session_date:
+        if current_state == "SHADOW_TRACKED" and expiration_day < session_day:
             append_shadow_state_event(
                 candidate_id,
                 to_state="CLOSED_OR_EXPIRED",
