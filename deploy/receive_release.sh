@@ -124,6 +124,7 @@ install -m 0660 -o "${SERVICE_USER}" -g "${SERVICE_USER}" /dev/null "${DB_ROLLBA
 PREVIOUS_TARGET=""
 LEGACY_SOURCE=0
 LEGACY_MOVED=0
+APP_LINK_MUTATED=0
 ACTIVATED=0
 UNITS_BACKED_UP=0
 STATUS_WRAPPER_HAD_PREVIOUS=0
@@ -154,13 +155,15 @@ rollback() {
     done
   fi
 
-  if [[ "${ACTIVATED}" -eq 1 ]]; then
+  if [[ "${APP_LINK_MUTATED}" -eq 1 ]]; then
     rm -f "${APP_LINK}"
 
     if [[ -n "${PREVIOUS_TARGET}" ]]; then
       ln -s "${PREVIOUS_TARGET}" "${APP_LINK}"
     fi
+  fi
 
+  if [[ "${ACTIVATED}" -eq 1 ]]; then
     if [[ "${UNITS_BACKED_UP}" -eq 1 ]]; then
       find "${SYSTEMD_ROOT}" \
         -maxdepth 1 \
@@ -322,8 +325,10 @@ if [[ "${LEGACY_SOURCE}" -eq 1 ]]; then
   mv "${APP_LINK}" "${LEGACY_TARGET}"
   PREVIOUS_TARGET="${LEGACY_TARGET}"
   LEGACY_MOVED=1
+  APP_LINK_MUTATED=1
 elif [[ -L "${APP_LINK}" ]]; then
   rm "${APP_LINK}"
+  APP_LINK_MUTATED=1
 fi
 
 ln -s "${RELEASE_DIR}" "${APP_LINK}"
@@ -404,6 +409,7 @@ fi
 echo "Running Christiania control-plane status."
 "${LOCAL_BIN}/christiania-status" --json
 
+APP_LINK_MUTATED=0
 ACTIVATED=0
 SERVICES_QUIESCED=0
 DATABASE_PREPARED=0
