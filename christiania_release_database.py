@@ -5,14 +5,21 @@ import json
 import os
 import sqlite3
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, Thread
+from time import monotonic
+from typing import Iterator
 
 from src.config import load_runtime_env_file
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
 from src.operations.sqlite_runtime import inspect_database, resolve_backup_dir
+
+
+HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,32 @@ class ReleaseDatabaseResult:
 
 def _progress(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+@contextmanager
+def _heartbeat(label: str) -> Iterator[None]:
+    started = monotonic()
+    stopped = Event()
+
+    def emit() -> None:
+        while not stopped.wait(HEARTBEAT_INTERVAL_SECONDS):
+            elapsed = int(monotonic() - started)
+            _progress(f"{label}: still running; elapsed={elapsed}s")
+
+    _progress(f"{label}: started.")
+    thread = Thread(
+        target=emit,
+        name="christiania-release-db-progress",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=1.0)
+        elapsed = monotonic() - started
+        _progress(f"{label}: completed in {elapsed:.1f}s.")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -144,31 +177,32 @@ def restore_backup(*, database: Path, backup: Path, expected_version: int | None
     if not backup.is_file():
         raise FileNotFoundError(f"Rollback backup not found: {backup}")
 
-    source_uri = backup.resolve().as_uri() + "?mode=ro"
-    source = sqlite3.connect(source_uri, uri=True, timeout=30.0)
-    target = sqlite3.connect(database, timeout=30.0)
-    try:
-        backup_version = get_schema_version(source)
-        if expected_version is not None and backup_version != expected_version:
-            raise RuntimeError(
-                f"Rollback backup schema v{backup_version} does not match "
-                f"required v{expected_version}."
-            )
-        integrity = str(source.execute("PRAGMA integrity_check;").fetchone()[0])
-        fk_count = len(source.execute("PRAGMA foreign_key_check;").fetchall())
-        if integrity != "ok" or fk_count:
-            raise RuntimeError("Rollback backup failed integrity verification.")
+    with _heartbeat("Database rollback: verifying and restoring backup"):
+        source_uri = backup.resolve().as_uri() + "?mode=ro"
+        source = sqlite3.connect(source_uri, uri=True, timeout=30.0)
+        target = sqlite3.connect(database, timeout=30.0)
+        try:
+            backup_version = get_schema_version(source)
+            if expected_version is not None and backup_version != expected_version:
+                raise RuntimeError(
+                    f"Rollback backup schema v{backup_version} does not match "
+                    f"required v{expected_version}."
+                )
+            integrity = str(source.execute("PRAGMA integrity_check;").fetchone()[0])
+            fk_count = len(source.execute("PRAGMA foreign_key_check;").fetchall())
+            if integrity != "ok" or fk_count:
+                raise RuntimeError("Rollback backup failed integrity verification.")
 
-        target.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        source.backup(target)
-        target.commit()
-        target.execute("PRAGMA journal_mode = WAL;")
-        target.commit()
-    finally:
-        target.close()
-        source.close()
+            target.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            source.backup(target)
+            target.commit()
+            target.execute("PRAGMA journal_mode = WAL;")
+            target.commit()
+        finally:
+            target.close()
+            source.close()
 
-    _verify_database(database, expected_version=backup_version)
+        _verify_database(database, expected_version=backup_version)
     return backup_version
 
 
@@ -194,12 +228,14 @@ def prepare_release_database(
 
     schema_before = int(health.schema_version)
 
-    _progress("Database preparation: creating and fully verifying rollback backup.")
-    backup = _create_rollback_backup(
-        database,
-        backup_dir,
-        schema_version=schema_before,
-    )
+    with _heartbeat(
+        "Database preparation: creating and fully verifying rollback backup"
+    ):
+        backup = _create_rollback_backup(
+            database,
+            backup_dir,
+            schema_version=schema_before,
+        )
 
     if rollback_pointer is not None:
         _write_rollback_pointer(
@@ -212,12 +248,13 @@ def prepare_release_database(
         _progress("Database preparation: verified rollback backup committed; migration may now begin.")
 
     try:
-        connection = sqlite3.connect(database, timeout=30.0)
-        try:
-            connection.execute("PRAGMA foreign_keys = ON;")
-            after = apply_pending_migrations(connection, migrations_dir)
-        finally:
-            connection.close()
+        with _heartbeat("Database preparation: applying pending migrations"):
+            connection = sqlite3.connect(database, timeout=30.0)
+            try:
+                connection.execute("PRAGMA foreign_keys = ON;")
+                after = apply_pending_migrations(connection, migrations_dir)
+            finally:
+                connection.close()
 
         if after != EXPECTED_SCHEMA_VERSION:
             raise RuntimeError(
@@ -225,8 +262,10 @@ def prepare_release_database(
                 f"v{EXPECTED_SCHEMA_VERSION}."
             )
 
-        _progress("Database preparation: verifying migrated database integrity.")
-        _verify_database(database, expected_version=EXPECTED_SCHEMA_VERSION)
+        with _heartbeat(
+            "Database preparation: verifying migrated database integrity"
+        ):
+            _verify_database(database, expected_version=EXPECTED_SCHEMA_VERSION)
     except BaseException:
         _progress("Database preparation failed or was interrupted; restoring rollback backup.")
         restore_backup(
