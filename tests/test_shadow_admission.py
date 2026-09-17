@@ -135,7 +135,7 @@ def test_data_quality_still_blocks_admission_without_wallet_gate(db_path):
             conn.execute(
                 """
                 UPDATE provider_observation_availability
-                SET state = 'MISSING'
+                SET state = 'ABSENT'
                 WHERE id = ?;
                 """,
                 (seeded["quote_evidence_id"],),
