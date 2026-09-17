@@ -262,7 +262,10 @@ def test_release_receiver_has_complete_command_prerequisite_checks():
         ROOT / "deploy/receive_release.sh"
     ).read_text(encoding="utf-8")
 
-    for command in (
+    required_block = receiver.split("for required in", 1)[1].split("; do", 1)[0]
+    required_commands = set(required_block.replace("\\", " ").split())
+
+    assert {
         "awk",
         "basename",
         "chmod",
@@ -283,8 +286,7 @@ def test_release_receiver_has_complete_command_prerequisite_checks():
         "systemctl",
         "tar",
         "tr",
-    ):
-        assert f"  {command} \\\n" in receiver or f"  {command}; do" in receiver
+    }.issubset(required_commands)
 
 
 def test_release_receiver_warns_that_full_current_health_check_can_take_time():
