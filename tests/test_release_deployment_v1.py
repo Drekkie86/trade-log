@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -163,7 +167,7 @@ def test_release_receiver_quarantines_incomplete_same_commit_retry():
         ROOT / "deploy/receive_release.sh"
     ).read_text(encoding="utf-8")
 
-    assert 'FAILED_RELEASE_ROOT="${STATE_ROOT}/failed-releases"' in receiver
+    assert 'FAILED_RELEASE_ROOT="${RELEASE_ROOT}/failed"' in receiver
     assert 'if [[ -e "${RELEASE_DIR}" || -L "${RELEASE_DIR}" ]]; then' in receiver
     assert 'echo "Quarantining incomplete prior attempt for ${EXPECTED_COMMIT}' in receiver
     assert 'mv -- "${RELEASE_DIR}" "${QUARANTINED_RELEASE}"' in receiver
@@ -223,3 +227,18 @@ def test_release_receiver_warns_that_full_current_health_check_can_take_time():
 
     assert "SQLite integrity check can take several minutes" in receiver
     assert "must not be interrupted" in receiver
+
+
+def test_release_receiver_has_valid_bash_syntax():
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this test host")
+
+    completed = subprocess.run(
+        [bash, "-n", str(ROOT / "deploy/receive_release.sh")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
