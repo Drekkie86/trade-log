@@ -35,6 +35,16 @@ def _rows_to_dicts(rows) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _decode_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {"state": "INVALID_METRICS_JSON"}
+    return parsed if isinstance(parsed, dict) else {"state": "INVALID_METRICS_JSON"}
+
+
 def load_command_deck(
     db_path: str | Path | None = None,
     *,
@@ -415,14 +425,9 @@ def load_command_deck(
         )
 
         for checkpoint in checkpoint_evaluations:
-            try:
-                checkpoint["metrics"] = json.loads(
-                    str(checkpoint.get("metrics_json") or "{}")
-                )
-            except (json.JSONDecodeError, TypeError, ValueError):
-                checkpoint["metrics"] = {
-                    "state": "INVALID_METRICS_JSON"
-                }
+            checkpoint["metrics"] = _decode_json_object(
+                checkpoint.get("metrics_json")
+            )
 
         replay_latest_rows = _rows_to_dicts(
             conn.execute(
@@ -853,7 +858,6 @@ def load_command_deck(
             candidate["structure_legs"] = []
             candidate["model_input_complete"] = False
             try:
-                import json
                 structure = json.loads(candidate.get("structure_json") or "{}")
                 pricing = json.loads(candidate.get("entry_pricing_json") or "{}")
             except (TypeError, ValueError):
