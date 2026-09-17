@@ -53,3 +53,50 @@ def test_install_one_vm_will_install_new_burn_in_units_via_existing_glob():
 
     assert "deploy/systemd/christiania-*.service" in installer
     assert "deploy/systemd/christiania-*.timer" in installer
+
+
+def test_release_receiver_prepares_database_before_atomic_activation():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    quiesce = receiver.index(
+        'echo "Quiescing Christiania database consumers for release migration."'
+    )
+    prepare = receiver.index(
+        '"${RELEASE_DIR}/christiania_release_database.py"',
+        quiesce,
+    )
+    target_preflight = receiver.index(
+        'echo "Running target-release preflight against the migrated database."'
+    )
+    activation = receiver.index(
+        'ln -s "${RELEASE_DIR}" "${APP_LINK}"'
+    )
+
+    assert quiesce < prepare < target_preflight < activation
+    assert '--rollback-pointer "${DB_ROLLBACK_POINTER}"' in receiver
+    assert 'DATABASE_PREPARED=1' in receiver
+
+
+def test_release_receiver_restores_database_before_restarting_old_services():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    rollback_start = receiver.index("rollback() {")
+    restore = receiver.index(
+        'restore \\\n      --backup "${ROLLBACK_DB_BACKUP}"',
+        rollback_start,
+    )
+    daemon_reload = receiver.index(
+        "systemctl daemon-reload || true",
+        restore,
+    )
+    restart = receiver.index(
+        'systemctl start "${service}" >/dev/null 2>&1 || true',
+        daemon_reload,
+    )
+
+    assert rollback_start < restore < daemon_reload < restart
+    assert "DATABASE ROLLBACK FAILED; core services remain stopped." in receiver
