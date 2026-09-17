@@ -76,6 +76,42 @@ phase_done() {
   PHASE_STARTED_AT=0
 }
 
+validate_current_database_metadata() {
+  (
+    cd "${PREVIOUS_TARGET}"
+    sudo -u "${SERVICE_USER}" \
+      "${PREVIOUS_TARGET}/.venv/bin/python" \
+      - "${ENV_FILE}" <<'PY'
+import sys
+
+from src.config import load_runtime_env_file
+from src.database.repository import EXPECTED_SCHEMA_VERSION
+from src.operations.sqlite_runtime import inspect_database
+
+if not load_runtime_env_file(sys.argv[1], overwrite=False):
+    raise SystemExit(f"Environment file missing or empty: {sys.argv[1]}")
+
+health = inspect_database(deep_integrity=False)
+if not health.exists:
+    raise SystemExit("Current Christiania database is missing.")
+if health.schema_version != EXPECTED_SCHEMA_VERSION:
+    raise SystemExit(
+        f"Current database schema v{health.schema_version} does not match "
+        f"active release schema v{EXPECTED_SCHEMA_VERSION}."
+    )
+if health.journal_mode != "wal":
+    raise SystemExit(
+        f"Current database is not in WAL mode: {health.journal_mode}."
+    )
+
+print(
+    f"Current DB metadata: schema v{health.schema_version}; WAL; "
+    "deep integrity deferred to verified rollback-copy safety step."
+)
+PY
+  )
+}
+
 stop_unit_for_release() {
   local unit="$1"
   local state=""
@@ -363,6 +399,10 @@ else
     --env-file "${ENV_FILE}" \
     --require-theta-live
 fi
+phase_done
+
+phase_start "Validating current database schema/WAL metadata"
+validate_current_database_metadata
 phase_done
 
 echo "Deep database integrity is not repeated here. The release database safety step below fully verifies a fresh rollback copy before any migration SQL, then fully verifies the migrated database."
