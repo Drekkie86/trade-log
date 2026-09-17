@@ -115,7 +115,7 @@ def _install_readonly_compatibility_views(
         """
         CREATE TEMP VIEW shadow_admission_decisions AS
         SELECT
-            id,
+            decision_id AS id,
             proposal_id,
             fx_observation_id,
             candidate_id,
