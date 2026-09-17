@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
+import christiania_release_database as release_db
 from christiania_release_database import (
     DEFAULT_RELEASE_ROLLBACK_RETENTION,
     _prune_release_rollback_backups,
 )
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.control_plane_status import (
     _deployment_supervisor_state,
 )
@@ -16,27 +19,67 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_no_migration_fast_path_precedes_backup_and_deep_verification():
-    release_db = (
+    source = (
         ROOT / "christiania_release_database.py"
     ).read_text(encoding="utf-8")
 
-    fast_guard = release_db.index(
+    fast_guard = source.index(
         "if schema_before == EXPECTED_SCHEMA_VERSION:"
     )
-    fast_return = release_db.index(
+    fast_return = source.index(
         "return ReleaseDatabaseResult(",
         fast_guard,
     )
-    backup_phase = release_db.index(
+    backup_phase = source.index(
         '"Database preparation: creating and fully verifying rollback backup"',
         fast_return,
     )
 
-    fast_path = release_db[fast_guard:backup_phase]
+    fast_path = source[fast_guard:backup_phase]
     assert fast_guard < fast_return < backup_phase
     assert 'backup_path=""' in fast_path
     assert "migrated=False" in fast_path
     assert "skipping rollback" in fast_path
+
+
+def test_no_migration_fast_path_never_calls_backup_or_deep_verify(
+    monkeypatch,
+    tmp_path: Path,
+):
+    database = tmp_path / "live.db"
+    backup_dir = tmp_path / "backups"
+    pointer = tmp_path / "rollback.txt"
+
+    monkeypatch.setattr(release_db, "resolve_db_path", lambda: database)
+    monkeypatch.setattr(release_db, "resolve_backup_dir", lambda: backup_dir)
+    monkeypatch.setattr(
+        release_db,
+        "inspect_database",
+        lambda *args, **kwargs: SimpleNamespace(
+            exists=True,
+            schema_version=EXPECTED_SCHEMA_VERSION,
+            journal_mode="wal",
+        ),
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("heavy database path must not run without a migration")
+
+    monkeypatch.setattr(release_db, "_create_rollback_backup", forbidden)
+    monkeypatch.setattr(release_db, "_verify_database", forbidden)
+    monkeypatch.setattr(release_db, "apply_pending_migrations", forbidden)
+
+    result = release_db.prepare_release_database(
+        migrations_dir=tmp_path,
+        rollback_pointer=pointer,
+    )
+
+    assert result.schema_before == EXPECTED_SCHEMA_VERSION
+    assert result.schema_after == EXPECTED_SCHEMA_VERSION
+    assert result.migrated is False
+    assert result.backup_path == ""
+    assert not pointer.exists()
+    assert not backup_dir.exists()
 
 
 def test_release_rollback_retention_is_bounded_and_does_not_touch_daily_backups(
@@ -142,6 +185,7 @@ def test_receiver_uses_deployment_safety_and_requires_live_edge_before_success()
     assert "http://127.0.0.1:8501/_stcore/health" in receiver
     assert "http://127.0.0.1:4180/ping" in receiver
     assert "caddy validate --config /etc/caddy/Caddyfile" in receiver
+    assert "systemctl restart caddy.service" not in receiver
     assert 'verify_public_edge "${PUBLIC_HOST}"' in receiver
     assert 'database_migrated=${DB_MIGRATED}' in receiver
 
