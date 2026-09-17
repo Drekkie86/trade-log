@@ -65,7 +65,7 @@ def test_release_receiver_prepares_database_before_atomic_activation():
     ).read_text(encoding="utf-8")
 
     quiesce = receiver.index(
-        'echo "Quiescing Christiania database consumers for release migration."'
+        'echo "Quiescing Christiania scheduled jobs and database consumers for release migration."'
     )
     rollback_guard = receiver.index(
         "DATABASE_PREPARED=1",
@@ -176,36 +176,54 @@ def test_release_receiver_quarantines_incomplete_same_commit_retry():
     assert 'ACTIVATION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"' in receiver
 
 
-def test_release_receiver_quiesces_db_observers_during_migration_and_restores_timers():
+def test_release_receiver_quiesces_all_scheduled_jobs_before_migration():
     receiver = (
         ROOT / "deploy/receive_release.sh"
     ).read_text(encoding="utf-8")
 
     quiesce = receiver.index(
-        'echo "Quiescing Christiania database consumers for release migration."'
+        'echo "Quiescing Christiania scheduled jobs and database consumers for release migration."'
     )
-    timer_stop = receiver.index(
-        'for timer in "${DB_TIMER_UNITS[@]}"; do',
+    quiesce_guard = receiver.index(
+        "SERVICES_QUIESCED=1",
         quiesce,
     )
+    timer_stop = receiver.index(
+        'for timer in "${QUIESCE_TIMER_UNITS[@]}"; do',
+        quiesce_guard,
+    )
     oneshot_stop = receiver.index(
-        'for service in "${DB_ONESHOT_SERVICES[@]}"; do',
+        'for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do',
         timer_stop,
     )
     app_daemon_stop = receiver.index(
         'for service in "${QUIESCE_SERVICES[@]}"; do',
         oneshot_stop,
     )
-    prepare = receiver.index(
-        'DB_PREP_OUTPUT="$(' ,
+    theta_guard = receiver.index(
+        'systemctl is-active christiania-theta.service',
         app_daemon_stop,
     )
+    prepare = receiver.index(
+        'DB_PREP_OUTPUT="$(' ,
+        theta_guard,
+    )
     restore_timers = receiver.index(
-        'echo "Restoring database-observer timers."',
+        'echo "Restoring scheduled Christiania timers."',
         prepare,
     )
 
-    assert timer_stop < oneshot_stop < app_daemon_stop < prepare < restore_timers
+    assert (
+        quiesce
+        < quiesce_guard
+        < timer_stop
+        < oneshot_stop
+        < app_daemon_stop
+        < theta_guard
+        < prepare
+        < restore_timers
+    )
+
     for timer in (
         "christiania-audit.timer",
         "christiania-backup.timer",
@@ -213,11 +231,60 @@ def test_release_receiver_quiesces_db_observers_during_migration_and_restores_ti
         "christiania-health.timer",
         "christiania-restore-drill.timer",
         "christiania-supervisor.timer",
+        "christiania-theta-refresh.timer",
+        "christiania-theta-watchdog.timer",
         "christiania-v1-readiness.timer",
     ):
         assert f'  "{timer}"' in receiver
-    assert 'ACTIVE_DB_TIMERS+=("${timer}")' in receiver
+
+    for service in (
+        "christiania-audit.service",
+        "christiania-backup.service",
+        "christiania-burn-in.service",
+        "christiania-health.service",
+        "christiania-restore-drill.service",
+        "christiania-supervisor.service",
+        "christiania-theta-refresh.service",
+        "christiania-theta-watchdog.service",
+        "christiania-theta-recover.service",
+        "christiania-v1-readiness.service",
+    ):
+        assert f'  "{service}"' in receiver
+
+    assert 'ACTIVE_QUIESCE_TIMERS+=("${timer}")' in receiver
+    assert 'stop_unit_for_release "${timer}"' in receiver
+    assert 'stop_unit_for_release "${service}"' in receiver
     assert 'systemctl start "${timer}"' in receiver
+
+
+def test_release_receiver_has_complete_command_prerequisite_checks():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    for command in (
+        "awk",
+        "basename",
+        "chmod",
+        "chown",
+        "cp",
+        "date",
+        "find",
+        "id",
+        "install",
+        "ln",
+        "mktemp",
+        "mv",
+        "python3",
+        "readlink",
+        "rm",
+        "sha256sum",
+        "sudo",
+        "systemctl",
+        "tar",
+        "tr",
+    ):
+        assert f"  {command} \\\n" in receiver or f"  {command}; do" in receiver
 
 
 def test_release_receiver_warns_that_full_current_health_check_can_take_time():
