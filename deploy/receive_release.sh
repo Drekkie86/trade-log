@@ -180,10 +180,15 @@ fi
 
 UNIT_BACKUP="${ROLLBACK_ROOT}/${ACTIVATION_ID}-systemd"
 STATUS_BACKUP="${ROLLBACK_ROOT}/${ACTIVATION_ID}-christiania-status"
-DB_ROLLBACK_POINTER="${ROLLBACK_ROOT}/${ACTIVATION_ID}-database.txt"
+DB_ROLLBACK_DIR="${ROLLBACK_ROOT}/${ACTIVATION_ID}-database"
+DB_ROLLBACK_POINTER="${DB_ROLLBACK_DIR}/rollback.txt"
 
 install -d -m 0700 -o root -g root "${UNIT_BACKUP}"
-install -m 0660 -o "${SERVICE_USER}" -g "${SERVICE_USER}" /dev/null "${DB_ROLLBACK_POINTER}"
+# The release DB helper runs as the service account and atomically replaces a
+# sibling temp file into the pointer path. Give it a dedicated per-activation
+# directory rather than making the shared rollback root service-writable.
+install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${DB_ROLLBACK_DIR}"
+install -m 0600 -o "${SERVICE_USER}" -g "${SERVICE_USER}" /dev/null "${DB_ROLLBACK_POINTER}"
 
 LEGACY_MOVED=0
 APP_LINK_MUTATED=0
@@ -398,6 +403,11 @@ IFS=$'\t' read -r ROLLBACK_DB_VERSION ROLLBACK_DB_BACKUP < "${DB_ROLLBACK_POINTE
 if [[ -z "${ROLLBACK_DB_VERSION}" || -z "${ROLLBACK_DB_BACKUP}" ]]; then
   fail "release database preparation did not record rollback metadata"
 fi
+# The helper no longer needs to mutate the pointer once preparation returns.
+# Harden its dedicated directory before any target-release checks run.
+chown -R root:root "${DB_ROLLBACK_DIR}"
+chmod 0700 "${DB_ROLLBACK_DIR}"
+chmod 0600 "${DB_ROLLBACK_POINTER}"
 printf '%s\n' "${DB_PREP_OUTPUT}"
 
 echo "Running target-release preflight against the migrated database."
