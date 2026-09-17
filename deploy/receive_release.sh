@@ -21,23 +21,28 @@ QUIESCE_SERVICES=(
   "christiania-app.service"
 )
 
-DB_TIMER_UNITS=(
+QUIESCE_TIMER_UNITS=(
   "christiania-audit.timer"
   "christiania-backup.timer"
   "christiania-burn-in.timer"
   "christiania-health.timer"
   "christiania-restore-drill.timer"
   "christiania-supervisor.timer"
+  "christiania-theta-refresh.timer"
+  "christiania-theta-watchdog.timer"
   "christiania-v1-readiness.timer"
 )
 
-DB_ONESHOT_SERVICES=(
+QUIESCE_ONESHOT_SERVICES=(
   "christiania-audit.service"
   "christiania-backup.service"
   "christiania-burn-in.service"
   "christiania-health.service"
   "christiania-restore-drill.service"
   "christiania-supervisor.service"
+  "christiania-theta-refresh.service"
+  "christiania-theta-watchdog.service"
+  "christiania-theta-recover.service"
   "christiania-v1-readiness.service"
 )
 
@@ -49,6 +54,19 @@ usage() {
 fail() {
   echo "RELEASE FAILED: $*" >&2
   return 1
+}
+
+stop_unit_for_release() {
+  local unit="$1"
+  local state=""
+
+  systemctl stop "${unit}"
+  state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
+  case "${state}" in
+    active|activating|reloading|deactivating)
+      fail "${unit} did not become inactive during release quiescence"
+      ;;
+  esac
 }
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -78,12 +96,15 @@ fi
 for required in \
   awk \
   basename \
+  chmod \
+  chown \
   cp \
   date \
   find \
   id \
   install \
   ln \
+  mktemp \
   mv \
   python3 \
   readlink \
@@ -175,7 +196,7 @@ DATABASE_PREPARED=0
 ROLLBACK_DB_VERSION=""
 ROLLBACK_DB_BACKUP=""
 TEMP_SYSTEMD_ROOT=""
-ACTIVE_DB_TIMERS=()
+ACTIVE_QUIESCE_TIMERS=()
 
 rollback() {
   local original_exit="$1"
@@ -185,10 +206,10 @@ rollback() {
   echo "Release failed; restoring previous Christiania release and database state." >&2
 
   if [[ "${SERVICES_QUIESCED}" -eq 1 || "${ACTIVATED}" -eq 1 ]]; then
-    for timer in "${DB_TIMER_UNITS[@]}"; do
+    for timer in "${QUIESCE_TIMER_UNITS[@]}"; do
       systemctl stop "${timer}" >/dev/null 2>&1 || true
     done
-    for service in "${DB_ONESHOT_SERVICES[@]}"; do
+    for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
       systemctl stop "${service}" >/dev/null 2>&1 || true
     done
     for service in "${CORE_SERVICES[@]}"; do
@@ -272,7 +293,7 @@ rollback() {
     systemctl start "${SECURE_EDGE_SERVICE}" >/dev/null 2>&1 || restart_failed=1
   fi
 
-  for timer in "${ACTIVE_DB_TIMERS[@]}"; do
+  for timer in "${ACTIVE_QUIESCE_TIMERS[@]}"; do
     systemctl start "${timer}" >/dev/null 2>&1 || restart_failed=1
   done
 
@@ -339,20 +360,24 @@ if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}"; then
   SECURE_EDGE_WAS_ACTIVE=1
 fi
 
-echo "Quiescing Christiania database consumers for release migration."
-for timer in "${DB_TIMER_UNITS[@]}"; do
+echo "Quiescing Christiania scheduled jobs and database consumers for release migration."
+SERVICES_QUIESCED=1
+for timer in "${QUIESCE_TIMER_UNITS[@]}"; do
   if systemctl is-active --quiet "${timer}"; then
-    ACTIVE_DB_TIMERS+=("${timer}")
+    ACTIVE_QUIESCE_TIMERS+=("${timer}")
   fi
-  systemctl stop "${timer}" >/dev/null 2>&1 || true
+  stop_unit_for_release "${timer}"
 done
-for service in "${DB_ONESHOT_SERVICES[@]}"; do
-  systemctl stop "${service}" >/dev/null 2>&1 || true
+for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+  stop_unit_for_release "${service}"
 done
 for service in "${QUIESCE_SERVICES[@]}"; do
-  systemctl stop "${service}"
+  stop_unit_for_release "${service}"
 done
-SERVICES_QUIESCED=1
+
+if [[ "$(systemctl is-active christiania-theta.service 2>/dev/null || true)" != "active" ]]; then
+  fail "christiania-theta.service is not active after background-job quiescence"
+fi
 
 echo "Creating verified rollback backup and applying pending release migrations."
 # The helper commits the rollback pointer before any migration SQL can run.
@@ -468,8 +493,8 @@ fi
 echo "Running Christiania control-plane status."
 "${LOCAL_BIN}/christiania-status" --json
 
-echo "Restoring database-observer timers."
-for timer in "${ACTIVE_DB_TIMERS[@]}"; do
+echo "Restoring scheduled Christiania timers."
+for timer in "${ACTIVE_QUIESCE_TIMERS[@]}"; do
   systemctl start "${timer}"
 done
 
