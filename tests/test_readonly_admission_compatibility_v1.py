@@ -60,7 +60,26 @@ def _create_database(path, *, normalized_view: bool) -> None:
             conn.execute(
                 """
                 CREATE VIEW v_shadow_admission_decisions_all AS
-                SELECT * FROM shadow_admission_decisions
+                SELECT
+                    id AS decision_id,
+                    proposal_id,
+                    fx_observation_id,
+                    candidate_id,
+                    sizing_policy_version,
+                    cost_model_version,
+                    cost_provenance,
+                    proposal_max_loss_usd_minor,
+                    estimated_cost_usd_minor,
+                    reserved_risk_usd_minor,
+                    converted_max_loss_eur_minor,
+                    estimated_cost_eur_minor,
+                    reserved_risk_eur_minor,
+                    bankroll_cap_eur_minor,
+                    decision,
+                    reason_code,
+                    decided_at,
+                    evidence_json
+                FROM shadow_admission_decisions
                 UNION ALL
                 SELECT
                     2, 11, 21, 31,
