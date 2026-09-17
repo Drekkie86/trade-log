@@ -60,10 +60,12 @@ def test_ui_theme_has_no_external_web_dependency():
     assert "#d9a84e" in theme
 
 
-def test_pandas_is_declared_explicitly():
-    for rel in ["requirements.txt", "requirements-ci.txt"]:
-        text = (ROOT / rel).read_text(encoding="utf-8")
-        assert "pandas>=2.2,<3" in text
+def test_pandas_is_pinned_for_runtime_and_inherited_by_ci():
+    runtime = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    ci = (ROOT / "requirements-ci.txt").read_text(encoding="utf-8")
+
+    assert "pandas==2.3.3" in runtime
+    assert "-r requirements.txt" in ci
 
 
 def test_ui_helpers_compile_as_standalone_modules():
