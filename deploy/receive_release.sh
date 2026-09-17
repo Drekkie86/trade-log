@@ -146,7 +146,7 @@ rollback() {
   local original_exit="$1"
   trap - ERR INT TERM
 
-  echo "Release failed; restoring the previous Christiania state." >&2
+  echo "Release failed; restoring previous Christiania release and database state." >&2
 
   if [[ "${SERVICES_QUIESCED}" -eq 1 || "${ACTIVATED}" -eq 1 ]]; then
     for service in "${CORE_SERVICES[@]}"; do
@@ -246,7 +246,8 @@ python3 -m venv "${RELEASE_DIR}/.venv"
 chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
 chmod -R g+rX,o-rwx "${RELEASE_DIR}"
 
-echo "Running current-release health preflight before database preparation."
+echo "Running release preflight before activation."
+echo "Validating current release health before database preparation."
 
 sudo -u "${SERVICE_USER}" \
   "${PREVIOUS_TARGET}/.venv/bin/python" \
@@ -287,6 +288,8 @@ done
 SERVICES_QUIESCED=1
 
 echo "Creating verified rollback backup and applying pending release migrations."
+# From this point onward rollback must assume database mutation may have begun.
+DATABASE_PREPARED=1
 DB_PREP_OUTPUT="$(
   sudo -u "${SERVICE_USER}" \
     "${RELEASE_DIR}/.venv/bin/python" \
@@ -297,7 +300,6 @@ DB_PREP_OUTPUT="$(
     --rollback-pointer "${DB_ROLLBACK_POINTER}" \
     --json
 )"
-DATABASE_PREPARED=1
 
 IFS=$'\t' read -r ROLLBACK_DB_VERSION ROLLBACK_DB_BACKUP < "${DB_ROLLBACK_POINTER}"
 if [[ -z "${ROLLBACK_DB_VERSION}" || -z "${ROLLBACK_DB_BACKUP}" ]]; then
