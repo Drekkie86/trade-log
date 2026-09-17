@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,10 @@ class ReleaseDatabaseResult:
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+def _progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def _verify_database(path: Path, *, expected_version: int) -> None:
@@ -92,12 +97,27 @@ def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version:
     try:
         _verify_sqlite_copy(temp_path, expected_version=schema_version)
         os.replace(temp_path, final_path)
-    except Exception:
+    except BaseException:
         if temp_path.exists():
             temp_path.unlink()
         raise
 
     return final_path
+
+
+def _write_rollback_pointer(path: Path, *, schema_version: int, backup: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = f"{schema_version}\t{backup}\n"
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        if temp.exists():
+            temp.unlink()
 
 
 def restore_backup(*, database: Path, backup: Path, expected_version: int | None = None) -> int:
@@ -140,7 +160,8 @@ def prepare_release_database(
     database = resolve_db_path()
     backup_dir = resolve_backup_dir()
 
-    health = inspect_database(database)
+    _progress("Database preparation: validating current schema and WAL metadata.")
+    health = inspect_database(database, deep_integrity=False)
     if not health.exists or health.schema_version is None:
         raise RuntimeError("Persistent Christiania database is missing or unversioned.")
     if health.schema_version > EXPECTED_SCHEMA_VERSION:
@@ -148,12 +169,12 @@ def prepare_release_database(
             f"Database schema v{health.schema_version} is newer than release "
             f"schema v{EXPECTED_SCHEMA_VERSION}."
         )
-    if health.journal_mode != "wal" or health.quick_check != "ok":
-        raise RuntimeError("Database must be healthy and in WAL mode before release migration.")
-    if health.foreign_key_violation_count != 0:
-        raise RuntimeError("Database has foreign-key violations before release migration.")
+    if health.journal_mode != "wal":
+        raise RuntimeError("Database must be in WAL mode before release migration.")
 
     schema_before = int(health.schema_version)
+
+    _progress("Database preparation: creating and fully verifying rollback backup.")
     backup = _create_rollback_backup(
         database,
         backup_dir,
@@ -161,10 +182,13 @@ def prepare_release_database(
     )
 
     if rollback_pointer is not None:
-        rollback_pointer.write_text(
-            f"{schema_before}\t{backup}\n",
-            encoding="utf-8",
+        _write_rollback_pointer(
+            rollback_pointer,
+            schema_version=schema_before,
+            backup=backup,
         )
+
+    _progress("Database preparation: rollback pointer committed; migration may now begin.")
 
     try:
         connection = sqlite3.connect(database, timeout=30.0)
@@ -179,8 +203,11 @@ def prepare_release_database(
                 f"Release migrations ended at schema v{after}; expected "
                 f"v{EXPECTED_SCHEMA_VERSION}."
             )
+
+        _progress("Database preparation: verifying migrated database integrity.")
         _verify_database(database, expected_version=EXPECTED_SCHEMA_VERSION)
-    except Exception:
+    except BaseException:
+        _progress("Database preparation failed or was interrupted; restoring rollback backup.")
         restore_backup(
             database=database,
             backup=backup,
@@ -188,6 +215,7 @@ def prepare_release_database(
         )
         raise
 
+    _progress("Database preparation complete.")
     return ReleaseDatabaseResult(
         database_path=str(database),
         backup_path=str(backup),
