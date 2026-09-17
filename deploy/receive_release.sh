@@ -262,7 +262,7 @@ ACTIVE_QUIESCE_TIMERS=()
 rollback() {
   local original_exit="$1"
   local restart_failed=0
-  trap - ERR INT TERM
+  trap - ERR INT TERM HUP
 
   echo "Release failed; restoring previous Christiania release and database state." >&2
 
@@ -365,7 +365,7 @@ rollback() {
   exit "${original_exit}"
 }
 
-trap 'rollback $?' ERR INT TERM
+trap 'rollback $?' ERR INT TERM HUP
 
 echo "Preparing Christiania release ${EXPECTED_COMMIT}."
 
@@ -585,7 +585,7 @@ APP_LINK_MUTATED=0
 ACTIVATED=0
 SERVICES_QUIESCED=0
 DATABASE_PREPARED=0
-trap - ERR INT TERM
+trap - ERR INT TERM HUP
 
 echo
 echo "CHRISTIANIA RELEASE ACTIVATED"
