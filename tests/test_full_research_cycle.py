@@ -19,9 +19,15 @@ class FakeSurfaceV2:
 
 
 @dataclass(frozen=True)
+class FakeResearch:
+    run_id: int = 17
+
+
+@dataclass(frozen=True)
 class FakeResearchCycle:
     hypothesis: FakeHypothesis = FakeHypothesis()
     surface_v2: FakeSurfaceV2 = FakeSurfaceV2()
+    research: FakeResearch = FakeResearch()
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,9 @@ def test_full_cycle_skips_fx_when_no_proposals(
             proposals=(),
         )
 
+    def fake_lifecycle(**kwargs):
+        calls.append(("lifecycle", kwargs["research_run_id"]))
+
     def forbidden_fx():
         raise AssertionError(
             "FX must not be fetched when "
@@ -89,6 +98,12 @@ def test_full_cycle_skips_fx_when_no_proposals(
         fake_bridge,
     )
 
+    monkeypatch.setattr(
+        "src.research.full_research_cycle."
+        "advance_shadow_lifecycle",
+        fake_lifecycle,
+    )
+
     result = run_full_research_cycle(
         symbols=["AAPL"],
         massive_client=object(),
@@ -101,6 +116,7 @@ def test_full_cycle_skips_fx_when_no_proposals(
     assert calls == [
         "research_cycle",
         ("bridge", 9),
+        ("lifecycle", 17),
     ]
 
 
@@ -154,6 +170,9 @@ def test_full_cycle_admits_only_persisted_proposals(
         captured["fx"] = kwargs["fx"]
         return FakeAdmission()
 
+    def fake_lifecycle(**kwargs):
+        captured["lifecycle_run_id"] = kwargs["research_run_id"]
+
     monkeypatch.setattr(
         "src.research.full_research_cycle."
         "run_research_cycle",
@@ -172,6 +191,12 @@ def test_full_cycle_admits_only_persisted_proposals(
         fake_admission,
     )
 
+    monkeypatch.setattr(
+        "src.research.full_research_cycle."
+        "advance_shadow_lifecycle",
+        fake_lifecycle,
+    )
+
     result = run_full_research_cycle(
         symbols=["AAPL"],
         massive_client=object(),
@@ -184,6 +209,7 @@ def test_full_cycle_admits_only_persisted_proposals(
         103,
     ]
     assert captured["fx"] == fx
+    assert captured["lifecycle_run_id"] == 17
     assert result.admission.admitted_count == 1
 
 
@@ -227,6 +253,12 @@ def test_full_cycle_propagates_research_thresholds(
                 blocked_count=0,
                 proposals=(),
             ),
+    )
+
+    monkeypatch.setattr(
+        "src.research.full_research_cycle."
+        "advance_shadow_lifecycle",
+        lambda **kwargs: None,
     )
 
     run_full_research_cycle(
