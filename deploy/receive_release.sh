@@ -21,6 +21,26 @@ QUIESCE_SERVICES=(
   "christiania-app.service"
 )
 
+DB_TIMER_UNITS=(
+  "christiania-audit.timer"
+  "christiania-backup.timer"
+  "christiania-burn-in.timer"
+  "christiania-health.timer"
+  "christiania-restore-drill.timer"
+  "christiania-supervisor.timer"
+  "christiania-v1-readiness.timer"
+)
+
+DB_ONESHOT_SERVICES=(
+  "christiania-audit.service"
+  "christiania-backup.service"
+  "christiania-burn-in.service"
+  "christiania-health.service"
+  "christiania-restore-drill.service"
+  "christiania-supervisor.service"
+  "christiania-v1-readiness.service"
+)
+
 usage() {
   echo "Usage: sudo bash receive_release.sh <archive.tar.gz> <40-char-commit> <sha256>" >&2
   exit 2
@@ -111,19 +131,24 @@ else
   fail "current application path is neither a directory nor a symlink: ${APP_LINK}"
 fi
 
+ROLLBACK_ROOT="${STATE_ROOT}/release-rollbacks"
+FAILED_RELEASE_ROOT="${STATE_ROOT}/failed-releases"
+install -d -m 0750 -o root -g "${SERVICE_USER}" "${ROLLBACK_ROOT}"
+install -d -m 0750 -o root -g "${SERVICE_USER}" "${FAILED_RELEASE_ROOT}"
+
+ACTIVATION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RELEASE_DIR="${RELEASE_ROOT}/${EXPECTED_COMMIT}"
-if [[ -e "${RELEASE_DIR}" ]]; then
-  if [[ "$(readlink -f "${RELEASE_DIR}")" == "${PREVIOUS_TARGET}" ]]; then
+QUARANTINED_RELEASE=""
+if [[ -e "${RELEASE_DIR}" || -L "${RELEASE_DIR}" ]]; then
+  candidate_target="$(readlink -f "${RELEASE_DIR}" 2>/dev/null || true)"
+  if [[ -n "${candidate_target}" && "${candidate_target}" == "${PREVIOUS_TARGET}" ]]; then
     fail "requested release is already the active release: ${RELEASE_DIR}"
   fi
-  echo "Removing incomplete prior attempt for ${EXPECTED_COMMIT}."
-  rm -rf -- "${RELEASE_DIR}"
+  QUARANTINED_RELEASE="${FAILED_RELEASE_ROOT}/${EXPECTED_COMMIT}-${ACTIVATION_ID}"
+  echo "Quarantining incomplete prior attempt for ${EXPECTED_COMMIT} at ${QUARANTINED_RELEASE}."
+  mv -- "${RELEASE_DIR}" "${QUARANTINED_RELEASE}"
 fi
 
-ROLLBACK_ROOT="${STATE_ROOT}/release-rollbacks"
-install -d -m 0750 -o root -g "${SERVICE_USER}" "${ROLLBACK_ROOT}"
-
-ACTIVATION_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 UNIT_BACKUP="${ROLLBACK_ROOT}/${ACTIVATION_ID}-systemd"
 STATUS_BACKUP="${ROLLBACK_ROOT}/${ACTIVATION_ID}-christiania-status"
 DB_ROLLBACK_POINTER="${ROLLBACK_ROOT}/${ACTIVATION_ID}-database.txt"
@@ -142,6 +167,7 @@ DATABASE_PREPARED=0
 ROLLBACK_DB_VERSION=""
 ROLLBACK_DB_BACKUP=""
 TEMP_SYSTEMD_ROOT=""
+ACTIVE_DB_TIMERS=()
 
 rollback() {
   local original_exit="$1"
@@ -151,6 +177,12 @@ rollback() {
   echo "Release failed; restoring previous Christiania release and database state." >&2
 
   if [[ "${SERVICES_QUIESCED}" -eq 1 || "${ACTIVATED}" -eq 1 ]]; then
+    for timer in "${DB_TIMER_UNITS[@]}"; do
+      systemctl stop "${timer}" >/dev/null 2>&1 || true
+    done
+    for service in "${DB_ONESHOT_SERVICES[@]}"; do
+      systemctl stop "${service}" >/dev/null 2>&1 || true
+    done
     for service in "${CORE_SERVICES[@]}"; do
       systemctl stop "${service}" >/dev/null 2>&1 || true
     done
@@ -232,6 +264,10 @@ rollback() {
     systemctl start "${SECURE_EDGE_SERVICE}" >/dev/null 2>&1 || restart_failed=1
   fi
 
+  for timer in "${ACTIVE_DB_TIMERS[@]}"; do
+    systemctl start "${timer}" >/dev/null 2>&1 || restart_failed=1
+  done
+
   if [[ "${restart_failed}" -ne 0 ]]; then
     echo "ROLLBACK WARNING: previous runtime did not fully recover; operator inspection required." >&2
   fi
@@ -296,6 +332,15 @@ if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}"; then
 fi
 
 echo "Quiescing Christiania database consumers for release migration."
+for timer in "${DB_TIMER_UNITS[@]}"; do
+  if systemctl is-active --quiet "${timer}"; then
+    ACTIVE_DB_TIMERS+=("${timer}")
+  fi
+  systemctl stop "${timer}" >/dev/null 2>&1 || true
+done
+for service in "${DB_ONESHOT_SERVICES[@]}"; do
+  systemctl stop "${service}" >/dev/null 2>&1 || true
+done
 for service in "${QUIESCE_SERVICES[@]}"; do
   systemctl stop "${service}"
 done
@@ -415,6 +460,11 @@ fi
 echo "Running Christiania control-plane status."
 "${LOCAL_BIN}/christiania-status" --json
 
+echo "Restoring database-observer timers."
+for timer in "${ACTIVE_DB_TIMERS[@]}"; do
+  systemctl start "${timer}"
+done
+
 APP_LINK_MUTATED=0
 ACTIVATED=0
 SERVICES_QUIESCED=0
@@ -428,5 +478,6 @@ echo "archive_sha256=${EXPECTED_SHA256}"
 echo "release=${RELEASE_DIR}"
 echo "previous=${PREVIOUS_TARGET}"
 echo "legacy_migration=${LEGACY_MOVED}"
+echo "quarantined_retry=${QUARANTINED_RELEASE}"
 echo "database_rollback_backup=${ROLLBACK_DB_BACKUP}"
 echo "status_command=${LOCAL_BIN}/christiania-status"
