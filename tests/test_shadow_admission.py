@@ -131,14 +131,30 @@ def test_data_quality_still_blocks_admission_without_wallet_gate(db_path):
 
     conn = get_connection(db_path)
     try:
+        source = conn.execute(
+            """
+            SELECT reference_contract_id
+            FROM provider_observation_availability
+            WHERE id = ?;
+            """,
+            (seeded["quote_evidence_id"],),
+        ).fetchone()
         with conn:
             conn.execute(
                 """
-                UPDATE provider_observation_availability
-                SET state = 'ABSENT'
-                WHERE id = ?;
+                INSERT INTO provider_observation_availability (
+                    reference_contract_id,
+                    provider,
+                    evidence_family,
+                    state,
+                    observed_at,
+                    ingested_at
+                )
+                VALUES (?, 'THETADATA', 'THETADATA_QUOTE', 'ABSENT',
+                        '2026-09-01T18:00:06Z',
+                        '2026-09-01T18:00:06Z');
                 """,
-                (seeded["quote_evidence_id"],),
+                (int(source["reference_contract_id"]),),
             )
     finally:
         conn.close()
