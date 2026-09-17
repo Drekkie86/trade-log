@@ -631,9 +631,8 @@ if [[ "${SECURE_EDGE_EXPECTED}" -eq 1 ]]; then
   wait_for_http_2xx "Christiania OAuth proxy" "http://127.0.0.1:4180/ping" 30
 
   caddy validate --config /etc/caddy/Caddyfile
-  systemctl restart caddy.service
   if [[ "$(systemctl is-active caddy.service 2>/dev/null || true)" != "active" ]]; then
-    fail "caddy.service did not become active after deployment"
+    fail "caddy.service is not active after deployment"
   fi
 
   PUBLIC_HOST="$(read_public_host)"
