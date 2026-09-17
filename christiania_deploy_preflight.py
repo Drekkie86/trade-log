@@ -70,6 +70,7 @@ def run_preflight(
     require_theta_live: bool = False,
     require_secure_edge: bool = False,
     strict_backup: bool = False,
+    deep_database: bool = True,
 ) -> list[PreflightCheck]:
     checks: list[PreflightCheck] = []
 
@@ -103,26 +104,52 @@ def run_preflight(
         )
     )
 
-    db_health = inspect_database(
-        db_path
+    db_health = (
+        inspect_database(db_path)
+        if deep_database
+        else inspect_database(
+            db_path,
+            deep_integrity=False,
+        )
     )
+
+    database_ok = (
+        db_health.exists
+        and db_health.schema_version == EXPECTED_SCHEMA_VERSION
+        and db_health.journal_mode == "wal"
+    )
+
+    if deep_database:
+        database_ok = (
+            database_ok
+            and db_health.quick_check == "ok"
+            and db_health.foreign_key_violation_count == 0
+        )
+        database_success = (
+            f"SQLite v{db_health.schema_version}; WAL; "
+            "integrity and foreign keys clean."
+        )
+        database_failure = (
+            "Database missing, wrong schema, non-WAL, "
+            "or failed integrity checks."
+        )
+    else:
+        database_success = (
+            f"SQLite v{db_health.schema_version}; WAL; "
+            "metadata check clean; deep integrity verification is delegated "
+            "to the release database safety step."
+        )
+        database_failure = (
+            "Database missing, wrong schema, or non-WAL during "
+            "metadata-only deployment preflight."
+        )
 
     checks.append(
         _check(
             "database-health",
-            db_health.exists
-            and db_health.schema_version == EXPECTED_SCHEMA_VERSION
-            and db_health.journal_mode == "wal"
-            and db_health.quick_check == "ok"
-            and db_health.foreign_key_violation_count == 0,
-            (
-                f"SQLite v{db_health.schema_version}; WAL; "
-                "integrity and foreign keys clean."
-            ),
-            (
-                "Database missing, wrong schema, non-WAL, "
-                "or failed integrity checks."
-            ),
+            database_ok,
+            database_success,
+            database_failure,
         )
     )
 
@@ -384,6 +411,15 @@ def main() -> int:
         help="Deep-verify backup SQLite integrity instead of using the fast metadata-only backup presence check.",
     )
     parser.add_argument(
+        "--metadata-db-check",
+        action="store_true",
+        help=(
+            "Check only database existence, schema and WAL metadata. "
+            "Use only when the release database safety step provides the "
+            "authoritative deep integrity verification."
+        ),
+    )
+    parser.add_argument(
         "--require-secure-edge",
         action="store_true",
         help="Also require production HTTPS/OIDC edge configuration.",
@@ -399,6 +435,7 @@ def main() -> int:
         require_theta_live=args.require_theta_live,
         require_secure_edge=args.require_secure_edge,
         strict_backup=args.strict_backup,
+        deep_database=not args.metadata_db_check,
     )
     failed = [
         check

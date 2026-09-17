@@ -83,9 +83,10 @@ def test_windows_deployer_uploads_normalized_receiver():
     )
 
     assert (
-        "& scp -i $KeyPath $receiverUploadPath"
+        "& scp @SshOptions -i $KeyPath $receiverUploadPath"
         in script
     )
+    assert '"-o", "ServerAliveInterval=15"' in script
 
 
 def test_windows_deployer_uses_scp_then_receiver():
@@ -166,14 +167,25 @@ def test_receiver_preflights_before_activation():
         "deploy/receive_release.sh"
     )
 
-    preflight = script.index(
-        "Running release preflight before activation."
+    current_control_plane = script.index(
+        'phase_start "Validating current production control plane"'
+    )
+    current_database = script.index(
+        'phase_start "Validating current database schema/WAL metadata"'
+    )
+    target_preflight = script.index(
+        'phase_start "Validating target release prerequisites"'
     )
     activation = script.index(
         "Preparing atomic activation."
     )
 
-    assert preflight < activation
+    assert (
+        current_control_plane
+        < current_database
+        < target_preflight
+        < activation
+    )
 
 
 def test_receiver_has_rollback_path():
@@ -252,10 +264,17 @@ def test_receiver_runs_post_activation_preflight():
         "deploy/receive_release.sh"
     )
 
-    assert (
-        "Running post-activation deployment preflight."
-        in script
+    post_activation = script.index(
+        'phase_start "Running post-activation readiness checks"'
     )
+    installed_commit = script.index(
+        'INSTALLED_COMMIT="$(tr -d',
+        post_activation,
+    )
+
+    assert post_activation < installed_commit
+    assert "--metadata-db-check" in script[post_activation:installed_commit]
+    assert "--require-theta-live" in script[post_activation:installed_commit]
 
 
 def test_receiver_refreshes_supervisor_before_status():

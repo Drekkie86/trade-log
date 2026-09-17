@@ -10,6 +10,12 @@ Set-StrictMode -Version Latest
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
+$SshOptions = @(
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=20",
+    "-o", "TCPKeepAlive=yes"
+)
+
 function Invoke-Git {
     param(
         [Parameter(Mandatory = $true)]
@@ -135,13 +141,13 @@ try {
     $remoteArchive = "/tmp/$archiveName"
     $remoteReceiver = "/tmp/christiania-receive-release.sh"
 
-    & scp -i $KeyPath $archivePath "${User}@${Server}:$remoteArchive"
+    & scp @SshOptions -i $KeyPath $archivePath "${User}@${Server}:$remoteArchive"
 
     if ($LASTEXITCODE -ne 0) {
         throw "SCP of release archive failed."
     }
 
-    & scp -i $KeyPath $receiverUploadPath "${User}@${Server}:$remoteReceiver"
+    & scp @SshOptions -i $KeyPath $receiverUploadPath "${User}@${Server}:$remoteReceiver"
 
     if ($LASTEXITCODE -ne 0) {
         throw "SCP of release receiver failed."
@@ -149,7 +155,7 @@ try {
 
     $remoteCommand = "sudo bash $remoteReceiver $remoteArchive $head $sha256"
 
-    & ssh -t -i $KeyPath "${User}@${Server}" $remoteCommand
+    & ssh @SshOptions -t -i $KeyPath "${User}@${Server}" $remoteCommand
 
     if ($LASTEXITCODE -ne 0) {
         throw "Remote Christiania release activation failed."
