@@ -166,7 +166,7 @@ def test_intraday_marks_do_not_score_closed_candidate(db_path):
                     ?, ?, '2026-09-19T20:01:00Z', 'THETADATA',
                     0, 0, 0, 0, 0, ?,
                     'COMPLETE_UNVERIFIED_FRESHNESS',
-                    'INTRADAY_MARK', 0, '{}'
+                    'INDEPENDENT_LEG_LIQUIDATION_STRESS', 0, '{}'
                 );
                 """,
                 (
@@ -223,7 +223,7 @@ def test_validated_package_outcome_allows_scoring_after_close(db_path):
                 ) VALUES (
                     ?, ?, '2026-09-22T20:01:00Z', 'THETADATA',
                     0, 1000, 900, 800, 700, ?,
-                    'VALIDATED_PACKAGE',
+                    'COMPLETE_UNVERIFIED_FRESHNESS',
                     'VALIDATED_PACKAGE_OUTCOME', 1, '{}'
                 );
                 """,
