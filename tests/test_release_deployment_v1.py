@@ -158,14 +158,62 @@ def test_release_receiver_treats_empty_pointer_as_pre_mutation_interrupt():
     assert 'if [[ -s "${DB_ROLLBACK_POINTER}" ]]; then' in receiver
 
 
-def test_release_receiver_cleans_incomplete_same_commit_retry():
+def test_release_receiver_quarantines_incomplete_same_commit_retry():
     receiver = (
         ROOT / "deploy/receive_release.sh"
     ).read_text(encoding="utf-8")
 
-    assert 'echo "Removing incomplete prior attempt for ${EXPECTED_COMMIT}."' in receiver
-    assert 'rm -rf -- "${RELEASE_DIR}"' in receiver
+    assert 'FAILED_RELEASE_ROOT="${STATE_ROOT}/failed-releases"' in receiver
+    assert 'if [[ -e "${RELEASE_DIR}" || -L "${RELEASE_DIR}" ]]; then' in receiver
+    assert 'echo "Quarantining incomplete prior attempt for ${EXPECTED_COMMIT}' in receiver
+    assert 'mv -- "${RELEASE_DIR}" "${QUARANTINED_RELEASE}"' in receiver
+    assert 'rm -rf -- "${RELEASE_DIR}"' not in receiver
     assert "requested release is already the active release" in receiver
+    assert 'ACTIVATION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"' in receiver
+
+
+def test_release_receiver_quiesces_db_observers_during_migration_and_restores_timers():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    quiesce = receiver.index(
+        'echo "Quiescing Christiania database consumers for release migration."'
+    )
+    timer_stop = receiver.index(
+        'for timer in "${DB_TIMER_UNITS[@]}"; do',
+        quiesce,
+    )
+    oneshot_stop = receiver.index(
+        'for service in "${DB_ONESHOT_SERVICES[@]}"; do',
+        timer_stop,
+    )
+    app_daemon_stop = receiver.index(
+        'for service in "${QUIESCE_SERVICES[@]}"; do',
+        oneshot_stop,
+    )
+    prepare = receiver.index(
+        'DB_PREP_OUTPUT="$(' ,
+        app_daemon_stop,
+    )
+    restore_timers = receiver.index(
+        'echo "Restoring database-observer timers."',
+        prepare,
+    )
+
+    assert timer_stop < oneshot_stop < app_daemon_stop < prepare < restore_timers
+    for timer in (
+        "christiania-audit.timer",
+        "christiania-backup.timer",
+        "christiania-burn-in.timer",
+        "christiania-health.timer",
+        "christiania-restore-drill.timer",
+        "christiania-supervisor.timer",
+        "christiania-v1-readiness.timer",
+    ):
+        assert f'  "{timer}"' in receiver
+    assert 'ACTIVE_DB_TIMERS+=("${timer}")' in receiver
+    assert 'systemctl start "${timer}"' in receiver
 
 
 def test_release_receiver_warns_that_full_current_health_check_can_take_time():
