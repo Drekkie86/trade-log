@@ -56,6 +56,26 @@ fail() {
   return 1
 }
 
+PHASE_STARTED_AT=0
+PHASE_NAME=""
+
+phase_start() {
+  PHASE_NAME="$1"
+  PHASE_STARTED_AT="$(date +%s)"
+  echo
+  echo "==> ${PHASE_NAME}"
+}
+
+phase_done() {
+  local finished_at
+  local elapsed
+  finished_at="$(date +%s)"
+  elapsed=$((finished_at - PHASE_STARTED_AT))
+  echo "<== ${PHASE_NAME} completed in ${elapsed}s"
+  PHASE_NAME=""
+  PHASE_STARTED_AT=0
+}
+
 stop_unit_for_release() {
   local unit="$1"
   local state=""
@@ -323,22 +343,29 @@ else
   install -d -m 0750 -o root -g "${SERVICE_USER}" "${RELEASE_DIR}/vendor"
 fi
 
+phase_start "Building isolated target runtime"
 python3 -m venv "${RELEASE_DIR}/.venv"
 "${RELEASE_DIR}/.venv/bin/pip" install --upgrade pip
 "${RELEASE_DIR}/.venv/bin/pip" install -r "${RELEASE_DIR}/requirements.txt"
+phase_done
 
 chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
 chmod -R g+rX,o-rwx "${RELEASE_DIR}"
 
-echo "Running release preflight before activation."
-echo "Validating current release health before database preparation."
-echo "Note: the current-release SQLite integrity check can take several minutes on a large database; this is expected and must not be interrupted."
+phase_start "Validating current production control plane"
+if [[ -x "${LOCAL_BIN}/christiania-status" ]]; then
+  "${LOCAL_BIN}/christiania-status" --json
+else
+  echo "Current status wrapper is unavailable; falling back to legacy full preflight."
+  sudo -u "${SERVICE_USER}" \
+    "${PREVIOUS_TARGET}/.venv/bin/python" \
+    "${PREVIOUS_TARGET}/christiania_deploy_preflight.py" \
+    --env-file "${ENV_FILE}" \
+    --require-theta-live
+fi
+phase_done
 
-sudo -u "${SERVICE_USER}" \
-  "${PREVIOUS_TARGET}/.venv/bin/python" \
-  "${PREVIOUS_TARGET}/christiania_deploy_preflight.py" \
-  --env-file "${ENV_FILE}" \
-  --require-theta-live
+echo "Deep database integrity is not repeated here. The release database safety step below fully verifies a fresh rollback copy before any migration SQL, then fully verifies the migrated database."
 
 TEMP_SYSTEMD_ROOT="$(mktemp -d)"
 "${RELEASE_DIR}/.venv/bin/python" \
@@ -365,7 +392,7 @@ if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}"; then
   SECURE_EDGE_WAS_ACTIVE=1
 fi
 
-echo "Quiescing Christiania scheduled jobs and database consumers for release migration."
+phase_start "Quiescing scheduled jobs and database consumers"
 SERVICES_QUIESCED=1
 for timer in "${QUIESCE_TIMER_UNITS[@]}"; do
   if systemctl is-active --quiet "${timer}"; then
@@ -383,8 +410,9 @@ done
 if [[ "$(systemctl is-active christiania-theta.service 2>/dev/null || true)" != "active" ]]; then
   fail "christiania-theta.service is not active after background-job quiescence"
 fi
+phase_done
 
-echo "Creating verified rollback backup and applying pending release migrations."
+phase_start "Creating verified rollback backup and applying migrations"
 # The helper commits the rollback pointer before any migration SQL can run.
 # Until that pointer exists, an interruption is provably pre-mutation.
 DATABASE_PREPARED=1
@@ -398,6 +426,7 @@ DB_PREP_OUTPUT="$(
     --rollback-pointer "${DB_ROLLBACK_POINTER}" \
     --json
 )"
+phase_done
 
 IFS=$'\t' read -r ROLLBACK_DB_VERSION ROLLBACK_DB_BACKUP < "${DB_ROLLBACK_POINTER}"
 if [[ -z "${ROLLBACK_DB_VERSION}" || -z "${ROLLBACK_DB_BACKUP}" ]]; then
@@ -410,12 +439,14 @@ chmod 0700 "${DB_ROLLBACK_DIR}"
 chmod 0600 "${DB_ROLLBACK_POINTER}"
 printf '%s\n' "${DB_PREP_OUTPUT}"
 
-echo "Running target-release preflight against the migrated database."
+phase_start "Validating target release prerequisites"
 sudo -u "${SERVICE_USER}" \
   "${RELEASE_DIR}/.venv/bin/python" \
   "${RELEASE_DIR}/christiania_deploy_preflight.py" \
   --env-file "${ENV_FILE}" \
-  --require-theta-live
+  --require-theta-live \
+  --metadata-db-check
+phase_done
 
 echo "Target preflight passed. Preparing atomic activation."
 systemctl stop christiania-theta.service
@@ -481,12 +512,14 @@ if [[ "${SECURE_EDGE_WAS_ACTIVE}" -eq 1 ]]; then
   fi
 fi
 
-echo "Running post-activation deployment preflight."
+phase_start "Running post-activation readiness checks"
 sudo -u "${SERVICE_USER}" \
   "${APP_LINK}/.venv/bin/python" \
   "${APP_LINK}/christiania_deploy_preflight.py" \
   --env-file "${ENV_FILE}" \
-  --require-theta-live
+  --require-theta-live \
+  --metadata-db-check
+phase_done
 
 INSTALLED_COMMIT="$(tr -d '[:space:]' < "${APP_LINK}/DEPLOYED_COMMIT")"
 if [[ "${INSTALLED_COMMIT}" != "${EXPECTED_COMMIT}" ]]; then
