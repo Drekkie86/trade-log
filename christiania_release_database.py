@@ -71,7 +71,7 @@ def _verify_sqlite_copy(path: Path, *, expected_version: int) -> None:
 
 def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version: int) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     final_path = backup_dir / (
         f"christiania_release_rollback_{stamp}_v{schema_version}.db"
     )
@@ -132,7 +132,11 @@ def restore_backup(*, database: Path, backup: Path, expected_version: int | None
     return backup_version
 
 
-def prepare_release_database(*, migrations_dir: Path) -> ReleaseDatabaseResult:
+def prepare_release_database(
+    *,
+    migrations_dir: Path,
+    rollback_pointer: Path | None = None,
+) -> ReleaseDatabaseResult:
     database = resolve_db_path()
     backup_dir = resolve_backup_dir()
 
@@ -155,6 +159,12 @@ def prepare_release_database(*, migrations_dir: Path) -> ReleaseDatabaseResult:
         backup_dir,
         schema_version=schema_before,
     )
+
+    if rollback_pointer is not None:
+        rollback_pointer.write_text(
+            f"{schema_before}\t{backup}\n",
+            encoding="utf-8",
+        )
 
     try:
         connection = sqlite3.connect(database, timeout=30.0)
@@ -196,6 +206,7 @@ def main() -> int:
 
     prepare = subparsers.add_parser("prepare")
     prepare.add_argument("--migrations-dir", required=True)
+    prepare.add_argument("--rollback-pointer", default=None)
     prepare.add_argument("--json", action="store_true")
 
     restore = subparsers.add_parser("restore")
@@ -209,6 +220,11 @@ def main() -> int:
     if args.command == "prepare":
         result = prepare_release_database(
             migrations_dir=Path(args.migrations_dir).expanduser(),
+            rollback_pointer=(
+                None
+                if args.rollback_pointer is None
+                else Path(args.rollback_pointer).expanduser()
+            ),
         )
         if args.json:
             print(json.dumps(result.as_dict(), sort_keys=True))
