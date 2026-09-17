@@ -185,7 +185,6 @@ def test_superseded_ids_are_ordered_and_invalid_only(runs_db):
 
 
 
-
 def test_run_notes_record_superseded_ids_and_code_identity():
     notes = launcher.build_run_notes(
         superseded_run_ids=[2, 5],
@@ -219,16 +218,28 @@ def test_writable_database_passes(tmp_path):
     launcher.require_database_writable(db_path)
 
 
-def test_locked_database_is_detected(tmp_path):
+def test_locked_database_is_detected(tmp_path, monkeypatch):
     """
     The whole collection runs in one write transaction. A second holder
     would otherwise surface as 'database is locked' partway through.
+
+    Production intentionally waits up to two seconds for SQLite locks. This
+    unit test verifies lock detection, not the production wait duration, so
+    force only the launcher's probe connection to fail fast.
     """
     db_path = tmp_path / "probe.db"
 
     holder = sqlite3.connect(db_path)
     holder.execute("CREATE TABLE t (x INTEGER);")
     holder.execute("BEGIN EXCLUSIVE;")
+
+    real_connect = sqlite3.connect
+
+    def fast_connect(*args, **kwargs):
+        kwargs["timeout"] = 0.01
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(launcher.sqlite3, "connect", fast_connect)
 
     try:
         with pytest.raises(RuntimeError, match="locked"):
