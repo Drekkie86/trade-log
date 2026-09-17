@@ -20,6 +20,7 @@ from src.operations.sqlite_runtime import inspect_database, resolve_backup_dir
 
 
 HEARTBEAT_INTERVAL_SECONDS = 15.0
+DEFAULT_RELEASE_ROLLBACK_RETENTION = 3
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,26 @@ def _verify_sqlite_copy(path: Path, *, expected_version: int) -> None:
         )
 
 
+def _prune_release_rollback_backups(
+    backup_dir: Path,
+    *,
+    keep: int = DEFAULT_RELEASE_ROLLBACK_RETENTION,
+) -> int:
+    if keep < 1:
+        raise ValueError("Release rollback retention must be >= 1.")
+
+    backups = sorted(
+        backup_dir.glob("christiania_release_rollback_*.db"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    pruned = 0
+    for stale in backups[keep:]:
+        stale.unlink()
+        pruned += 1
+    return pruned
+
+
 def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version: int) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
@@ -156,6 +177,18 @@ def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version:
         if temp_path.exists():
             temp_path.unlink()
         raise
+
+    try:
+        pruned = _prune_release_rollback_backups(backup_dir)
+        if pruned:
+            _progress(
+                f"Database preparation: pruned {pruned} stale release rollback backup(s)."
+            )
+    except OSError as exc:
+        _progress(
+            "Database preparation: warning: could not prune stale release rollback "
+            f"backup(s): {exc}"
+        )
 
     return final_path
 
@@ -231,6 +264,19 @@ def prepare_release_database(
 
     schema_before = int(health.schema_version)
 
+    if schema_before == EXPECTED_SCHEMA_VERSION:
+        _progress(
+            "Database preparation: no schema migration required; skipping rollback "
+            "snapshot and deep database scans."
+        )
+        return ReleaseDatabaseResult(
+            database_path=str(database),
+            backup_path="",
+            schema_before=schema_before,
+            schema_after=EXPECTED_SCHEMA_VERSION,
+            migrated=False,
+        )
+
     with _heartbeat(
         "Database preparation: creating and fully verifying rollback backup"
     ):
@@ -284,7 +330,7 @@ def prepare_release_database(
         backup_path=str(backup),
         schema_before=schema_before,
         schema_after=EXPECTED_SCHEMA_VERSION,
-        migrated=schema_before != EXPECTED_SCHEMA_VERSION,
+        migrated=True,
     )
 
 

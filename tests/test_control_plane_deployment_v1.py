@@ -168,7 +168,7 @@ def test_receiver_preflights_before_activation():
     )
 
     current_control_plane = script.index(
-        'phase_start "Validating current production control plane"'
+        'phase_start "Validating current production deployment safety"'
     )
     current_database = script.index(
         'phase_start "Validating current database schema/WAL metadata"'
@@ -186,6 +186,9 @@ def test_receiver_preflights_before_activation():
         < target_preflight
         < activation
     )
+    current_gate = script[current_control_plane:current_database]
+    assert '"${RELEASE_DIR}/christiania_status.py"' in current_gate
+    assert "--deployment-safe" in current_gate
 
 
 def test_receiver_has_rollback_path():
@@ -286,7 +289,7 @@ def test_receiver_refreshes_supervisor_before_status():
         "Refreshing authoritative supervisor evidence."
     )
     status = script.index(
-        "Running Christiania control-plane status."
+        "Running deployment-safety control-plane status."
     )
 
     assert refresh < status
@@ -317,7 +320,7 @@ def test_receiver_requires_control_plane_status_to_pass():
     )
 
     status_index = script.index(
-        "Running Christiania control-plane status."
+        "Running deployment-safety control-plane status."
     )
     success_index = script.index(
         "CHRISTIANIA RELEASE ACTIVATED"
@@ -326,7 +329,7 @@ def test_receiver_requires_control_plane_status_to_pass():
     assert status_index < success_index
 
     assert (
-        '"${LOCAL_BIN}/christiania-status" --json'
+        '"${LOCAL_BIN}/christiania-status" --json --deployment-safe'
         in script
     )
 

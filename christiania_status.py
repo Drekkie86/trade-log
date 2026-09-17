@@ -37,6 +37,17 @@ def _print_human(
     )
 
     print(
+        "deployment_safe="
+        + (
+            "YES"
+            if payload.get(
+                "deployment_safe"
+            )
+            else "NO"
+        )
+    )
+
+    print(
         "deployed_commit="
         + str(
             payload[
@@ -60,6 +71,15 @@ def _print_human(
         + str(
             payload[
                 "supervisor_state"
+            ]
+        )
+    )
+
+    print(
+        "deployment_supervisor="
+        + str(
+            payload[
+                "deployment_supervisor_state"
             ]
         )
     )
@@ -158,6 +178,16 @@ def main() -> int:
     )
 
     parser.add_argument(
+        "--deployment-safe",
+        action="store_true",
+        help=(
+            "Exit on deployment-safety state rather than full operational "
+            "readiness. Operational warnings that a deployment itself can "
+            "repair remain visible in the payload."
+        ),
+    )
+
+    parser.add_argument(
         "--app-dir",
         type=Path,
         default=DEFAULT_APP_DIR,
@@ -208,9 +238,15 @@ def main() -> int:
             payload
         )
 
+    acceptable = (
+        status.deployment_safe
+        if args.deployment_safe
+        else status.ready
+    )
+
     return (
         0
-        if status.ready
+        if acceptable
         else 2
     )
 

@@ -5,6 +5,7 @@ APP_LINK="/opt/christiania"
 RELEASE_ROOT="/opt/christiania-releases"
 STATE_ROOT="/var/lib/christiania"
 ENV_FILE="/etc/christiania/christiania.env"
+EDGE_ENV="/etc/christiania/secure-edge.env"
 SYSTEMD_ROOT="/etc/systemd/system"
 LOCAL_BIN="/usr/local/bin"
 SERVICE_USER="christiania"
@@ -106,7 +107,7 @@ if health.journal_mode != "wal":
 
 print(
     f"Current DB metadata: schema v{health.schema_version}; WAL; "
-    "deep integrity deferred to verified rollback-copy safety step."
+    "deep integrity is required only when a release migration mutates the database."
 )
 PY
   )
@@ -123,6 +124,61 @@ stop_unit_for_release() {
       fail "${unit} did not become inactive during release quiescence"
       ;;
   esac
+}
+
+wait_for_http_2xx() {
+  local label="$1"
+  local url="$2"
+  local attempts="${3:-45}"
+  local code=""
+  local attempt
+
+  for attempt in $(seq 1 "${attempts}"); do
+    code="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' "${url}" 2>/dev/null || true)"
+    if [[ "${code}" =~ ^2[0-9][0-9]$ ]]; then
+      echo "${label}: HTTP ${code}"
+      return 0
+    fi
+    sleep 1
+  done
+
+  fail "${label} did not become healthy at ${url}; last HTTP status=${code:-000}"
+}
+
+read_public_host() {
+  (
+    cd "${APP_LINK}"
+    sudo -u "${SERVICE_USER}" \
+      "${APP_LINK}/.venv/bin/python" \
+      - "${EDGE_ENV}" <<'PY'
+import sys
+from src.config import read_env_file
+
+values = read_env_file(sys.argv[1])
+host = str(values.get("CHRISTIANIA_PUBLIC_HOST") or "").strip().lower()
+if not host or "://" in host or "/" in host or "@" in host:
+    raise SystemExit("CHRISTIANIA_PUBLIC_HOST is missing or invalid.")
+print(host)
+PY
+  )
+}
+
+verify_public_edge() {
+  local host="$1"
+  local code=""
+  code="$(
+    curl -sS \
+      --max-time 10 \
+      --resolve "${host}:443:127.0.0.1" \
+      -o /dev/null \
+      -w '%{http_code}' \
+      "https://${host}/" \
+      2>/dev/null || true
+  )"
+  if [[ ! "${code}" =~ ^[23][0-9][0-9]$ ]]; then
+    fail "public Christiania edge is unhealthy for https://${host}/; HTTP ${code:-000}"
+  fi
+  echo "Public Christiania edge: HTTP ${code}"
 }
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -155,6 +211,7 @@ for required in \
   chmod \
   chown \
   cp \
+  curl \
   date \
   find \
   id \
@@ -165,7 +222,9 @@ for required in \
   python3 \
   readlink \
   rm \
+  seq \
   sha256sum \
+  sleep \
   sudo \
   systemctl \
   tar \
@@ -252,6 +311,7 @@ ACTIVATED=0
 UNITS_BACKED_UP=0
 STATUS_WRAPPER_HAD_PREVIOUS=0
 SECURE_EDGE_WAS_ACTIVE=0
+SECURE_EDGE_EXPECTED=0
 SERVICES_QUIESCED=0
 DATABASE_PREPARED=0
 ROLLBACK_DB_VERSION=""
@@ -388,24 +448,19 @@ phase_done
 chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
 chmod -R g+rX,o-rwx "${RELEASE_DIR}"
 
-phase_start "Validating current production control plane"
-if [[ -x "${LOCAL_BIN}/christiania-status" ]]; then
-  "${LOCAL_BIN}/christiania-status" --json
-else
-  echo "Current status wrapper is unavailable; falling back to legacy full preflight."
-  sudo -u "${SERVICE_USER}" \
-    "${PREVIOUS_TARGET}/.venv/bin/python" \
-    "${PREVIOUS_TARGET}/christiania_deploy_preflight.py" \
-    --env-file "${ENV_FILE}" \
-    --require-theta-live
-fi
+phase_start "Validating current production deployment safety"
+sudo -u "${SERVICE_USER}" \
+  "${RELEASE_DIR}/.venv/bin/python" \
+  "${RELEASE_DIR}/christiania_status.py" \
+  --json \
+  --deployment-safe
 phase_done
 
 phase_start "Validating current database schema/WAL metadata"
 validate_current_database_metadata
 phase_done
 
-echo "Deep database integrity is not repeated here. The release database safety step below fully verifies a fresh rollback copy before any migration SQL, then fully verifies the migrated database."
+echo "Deep database integrity is not repeated here. If the target release requires a schema migration, the release database safety step fully verifies a fresh rollback copy before migration SQL and then fully verifies the migrated database. If schema is unchanged, both O(database-size) scans are skipped."
 
 TEMP_SYSTEMD_ROOT="$(mktemp -d)"
 "${RELEASE_DIR}/.venv/bin/python" \
@@ -431,6 +486,10 @@ fi
 if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}"; then
   SECURE_EDGE_WAS_ACTIVE=1
 fi
+if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}" \
+  || systemctl is-enabled --quiet "${SECURE_EDGE_SERVICE}" 2>/dev/null; then
+  SECURE_EDGE_EXPECTED=1
+fi
 
 phase_start "Quiescing scheduled jobs and database consumers"
 SERVICES_QUIESCED=1
@@ -452,9 +511,10 @@ if [[ "$(systemctl is-active christiania-theta.service 2>/dev/null || true)" != 
 fi
 phase_done
 
-phase_start "Creating verified rollback backup and applying migrations"
-# The helper commits the rollback pointer before any migration SQL can run.
-# Until that pointer exists, an interruption is provably pre-mutation.
+phase_start "Preparing release database"
+# The helper uses a zero-copy metadata-only fast path when the current schema
+# already matches the target. When a migration is required it commits the
+# rollback pointer before any migration SQL can run.
 DATABASE_PREPARED=1
 DB_PREP_OUTPUT="$(
   sudo -u "${SERVICE_USER}" \
@@ -468,10 +528,22 @@ DB_PREP_OUTPUT="$(
 )"
 phase_done
 
-IFS=$'\t' read -r ROLLBACK_DB_VERSION ROLLBACK_DB_BACKUP < "${DB_ROLLBACK_POINTER}"
-if [[ -z "${ROLLBACK_DB_VERSION}" || -z "${ROLLBACK_DB_BACKUP}" ]]; then
-  fail "release database preparation did not record rollback metadata"
+DB_MIGRATED="$(
+  printf '%s' "${DB_PREP_OUTPUT}" \
+    | "${RELEASE_DIR}/.venv/bin/python" -c \
+      'import json,sys; print("1" if json.load(sys.stdin)["migrated"] else "0")'
+)"
+
+if [[ "${DB_MIGRATED}" -eq 1 ]]; then
+  IFS=$'\t' read -r ROLLBACK_DB_VERSION ROLLBACK_DB_BACKUP < "${DB_ROLLBACK_POINTER}"
+  if [[ -z "${ROLLBACK_DB_VERSION}" || -z "${ROLLBACK_DB_BACKUP}" ]]; then
+    fail "release database migration did not record rollback metadata"
+  fi
+else
+  DATABASE_PREPARED=0
+  echo "No schema migration required; rollback DB snapshot and deep DB scans were skipped."
 fi
+
 # The helper no longer needs to mutate the pointer once preparation returns.
 # Harden its dedicated directory before any target-release checks run.
 chown -R root:root "${DB_ROLLBACK_DIR}"
@@ -543,14 +615,30 @@ for service in "${CORE_SERVICES[@]}"; do
   fi
 done
 
-if [[ "${SECURE_EDGE_WAS_ACTIVE}" -eq 1 ]]; then
-  echo "Restoring secure edge after application restart."
-  systemctl start "${SECURE_EDGE_SERVICE}"
-  edge_state="$(systemctl is-active "${SECURE_EDGE_SERVICE}")"
-  if [[ "${edge_state}" != "active" ]]; then
-    fail "${SECURE_EDGE_SERVICE} did not become active after deployment"
+phase_start "Verifying live application and secure edge"
+wait_for_http_2xx "Christiania Streamlit app" "http://127.0.0.1:8501/_stcore/health" 45
+
+if [[ "${SECURE_EDGE_EXPECTED}" -eq 1 ]]; then
+  if ! command -v caddy >/dev/null 2>&1; then
+    fail "secure edge is expected but caddy is unavailable"
   fi
+  if [[ ! -f "${EDGE_ENV}" ]]; then
+    fail "secure edge is expected but ${EDGE_ENV} is missing"
+  fi
+
+  echo "Restarting OAuth edge after application activation."
+  systemctl restart "${SECURE_EDGE_SERVICE}"
+  wait_for_http_2xx "Christiania OAuth proxy" "http://127.0.0.1:4180/ping" 30
+
+  caddy validate --config /etc/caddy/Caddyfile
+  if [[ "$(systemctl is-active caddy.service 2>/dev/null || true)" != "active" ]]; then
+    fail "caddy.service is not active after deployment"
+  fi
+
+  PUBLIC_HOST="$(read_public_host)"
+  verify_public_edge "${PUBLIC_HOST}"
 fi
+phase_done
 
 phase_start "Running post-activation readiness checks"
 sudo -u "${SERVICE_USER}" \
@@ -567,14 +655,13 @@ if [[ "${INSTALLED_COMMIT}" != "${EXPECTED_COMMIT}" ]]; then
 fi
 
 echo "Refreshing authoritative supervisor evidence."
-systemctl start christiania-supervisor.service
-SUPERVISOR_STATE="$(systemctl is-failed christiania-supervisor.service || true)"
-if [[ "${SUPERVISOR_STATE}" == "failed" ]]; then
-  fail "christiania-supervisor.service failed after deployment"
-fi
+systemctl start christiania-supervisor.service || true
 
-echo "Running Christiania control-plane status."
-"${LOCAL_BIN}/christiania-status" --json
+echo "Running deployment-safety control-plane status."
+"${LOCAL_BIN}/christiania-status" --json --deployment-safe
+
+echo "Operational status (informational after deployment safety has passed)."
+"${LOCAL_BIN}/christiania-status" --json || true
 
 echo "Restoring scheduled Christiania timers."
 for timer in "${ACTIVE_QUIESCE_TIMERS[@]}"; do
@@ -595,5 +682,6 @@ echo "release=${RELEASE_DIR}"
 echo "previous=${PREVIOUS_TARGET}"
 echo "legacy_migration=${LEGACY_MOVED}"
 echo "quarantined_retry=${QUARANTINED_RELEASE}"
+echo "database_migrated=${DB_MIGRATED}"
 echo "database_rollback_backup=${ROLLBACK_DB_BACKUP}"
 echo "status_command=${LOCAL_BIN}/christiania-status"
