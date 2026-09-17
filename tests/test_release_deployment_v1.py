@@ -97,7 +97,7 @@ def test_release_receiver_restores_database_before_restarting_old_services():
         restore,
     )
     restart = receiver.index(
-        'systemctl start "${service}" >/dev/null 2>&1 || true',
+        'systemctl start "${service}" >/dev/null 2>&1',
         daemon_reload,
     )
 
@@ -143,3 +143,35 @@ def test_release_receiver_can_restore_app_link_if_new_link_creation_fails():
     assert rollback_link_guard < rollback_restore_link
     assert activation_start < first_mutation_guard < second_mutation_guard < new_link < activated
     assert receiver.count("APP_LINK_MUTATED=1") == 2
+
+
+def test_release_receiver_treats_empty_pointer_as_pre_mutation_interrupt():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "Database preparation stopped before the rollback pointer was committed; "
+        "no migration could have started."
+    ) in receiver
+    assert "DATABASE ROLLBACK METADATA MISSING" not in receiver
+    assert 'if [[ -s "${DB_ROLLBACK_POINTER}" ]]; then' in receiver
+
+
+def test_release_receiver_cleans_incomplete_same_commit_retry():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'echo "Removing incomplete prior attempt for ${EXPECTED_COMMIT}."' in receiver
+    assert 'rm -rf -- "${RELEASE_DIR}"' in receiver
+    assert "requested release is already the active release" in receiver
+
+
+def test_release_receiver_warns_that_full_current_health_check_can_take_time():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "SQLite integrity check can take several minutes" in receiver
+    assert "must not be interrupted" in receiver
