@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import christiania_release_database as release_db
 from christiania_release_database import (
     prepare_release_database,
     restore_backup,
@@ -126,4 +127,80 @@ def test_failed_release_migration_restores_pre_release_database(
     finally:
         conn.close()
 
+    assert probe is None
+
+
+def test_rollback_pointer_is_committed_before_migration_sql(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(tmp_path)
+    backups = tmp_path / "backups"
+    pointer = tmp_path / "rollback-pointer.txt"
+
+    monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db))
+    monkeypatch.setenv("CHRISTIANIA_BACKUP_DIR", str(backups))
+
+    original = release_db.apply_pending_migrations
+
+    def guarded_apply(conn, migrations_dir):
+        assert pointer.is_file()
+        text = pointer.read_text(encoding="utf-8")
+        version, backup_path = text.rstrip("\n").split("\t", 1)
+        assert version == "27"
+        assert Path(backup_path).is_file()
+        return original(conn, migrations_dir)
+
+    monkeypatch.setattr(release_db, "apply_pending_migrations", guarded_apply)
+
+    result = prepare_release_database(
+        migrations_dir=MIGRATIONS,
+        rollback_pointer=pointer,
+    )
+    assert result.schema_after == 28
+
+
+def test_keyboard_interrupt_during_migration_restores_v27(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(tmp_path)
+    backups = tmp_path / "backups"
+    pointer = tmp_path / "rollback-pointer.txt"
+
+    monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db))
+    monkeypatch.setenv("CHRISTIANIA_BACKUP_DIR", str(backups))
+
+    def interrupted_apply(conn, migrations_dir):
+        del migrations_dir
+        conn.execute("CREATE TABLE interrupted_release_probe (id INTEGER);")
+        conn.commit()
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(release_db, "apply_pending_migrations", interrupted_apply)
+
+    with pytest.raises(KeyboardInterrupt):
+        prepare_release_database(
+            migrations_dir=MIGRATIONS,
+            rollback_pointer=pointer,
+        )
+
+    version, backup_path = pointer.read_text(encoding="utf-8").rstrip("\n").split("\t", 1)
+    assert version == "27"
+    assert Path(backup_path).is_file()
+
+    health = inspect_database(db)
+    assert health.schema_version == 27
+    assert health.journal_mode == "wal"
+    assert health.quick_check == "ok"
+    assert health.foreign_key_violation_count == 0
+
+    conn = sqlite3.connect(db)
+    try:
+        probe = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='interrupted_release_probe';"
+        ).fetchone()
+    finally:
+        conn.close()
     assert probe is None
