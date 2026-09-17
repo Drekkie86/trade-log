@@ -17,6 +17,7 @@ from src.research.shadow_intrinsic_admission_v1 import (
     ShadowAdmissionResult,
     USD_COST_PER_CONTRACT_SIDE_MINOR,
     _load_proposals,
+    _to_eur_minor,
     admit_shadow_proposals,
 )
 
@@ -30,5 +31,7 @@ __all__ = [
     "ShadowAdmissionError",
     "ShadowAdmissionResult",
     "USD_COST_PER_CONTRACT_SIDE_MINOR",
+    "_load_proposals",
+    "_to_eur_minor",
     "admit_shadow_proposals",
 ]
