@@ -34,5 +34,7 @@ jobs:
 
       - name: Run Christiania quality gate
         shell: pwsh
+        env:
+          PYTEST_ADDOPTS: "--durations=25 --durations-min=0.5"
         run: |
           python .\quality_gate.py --ci
