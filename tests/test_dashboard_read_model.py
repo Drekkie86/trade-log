@@ -1,4 +1,5 @@
 from src.dashboard.read_model import (
+    _decode_json_object,
     load_command_deck,
 )
 from src.database.repository import (
@@ -405,3 +406,11 @@ def test_command_deck_exposes_shadow_candidate_followup(db_path):
     assert followup["mark_count"] == 1
     assert followup["latest_estimated_net_pnl_eur_minor"] == 175
     assert followup["latest_measurement_role"] == "INDEPENDENT_LEG_LIQUIDATION_STRESS"
+
+
+def test_decode_checkpoint_metrics_does_not_depend_on_function_local_import():
+    assert _decode_json_object('{"metric": 1}') == {"metric": 1}
+    assert _decode_json_object(None) == {}
+    assert _decode_json_object("not-json") == {
+        "state": "INVALID_METRICS_JSON"
+    }
