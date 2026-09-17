@@ -162,6 +162,38 @@ def test_release_receiver_treats_empty_pointer_as_pre_mutation_interrupt():
     assert 'if [[ -s "${DB_ROLLBACK_POINTER}" ]]; then' in receiver
 
 
+def test_release_receiver_gives_atomic_pointer_writer_private_workspace():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'install -d -m 0750 -o root -g "${SERVICE_USER}" "${ROLLBACK_ROOT}"' in receiver
+    assert 'DB_ROLLBACK_DIR="${ROLLBACK_ROOT}/${ACTIVATION_ID}-database"' in receiver
+    assert 'DB_ROLLBACK_POINTER="${DB_ROLLBACK_DIR}/rollback.txt"' in receiver
+    assert (
+        'install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" '
+        '"${DB_ROLLBACK_DIR}"'
+    ) in receiver
+    assert (
+        'install -m 0600 -o "${SERVICE_USER}" -g "${SERVICE_USER}" '
+        '/dev/null "${DB_ROLLBACK_POINTER}"'
+    ) in receiver
+
+    prepare = receiver.index('DB_PREP_OUTPUT="$(')
+    harden = receiver.index(
+        'chown -R root:root "${DB_ROLLBACK_DIR}"',
+        prepare,
+    )
+    target_preflight = receiver.index(
+        'echo "Running target-release preflight against the migrated database."',
+        harden,
+    )
+
+    assert prepare < harden < target_preflight
+    assert 'chmod 0700 "${DB_ROLLBACK_DIR}"' in receiver[harden:target_preflight]
+    assert 'chmod 0600 "${DB_ROLLBACK_POINTER}"' in receiver[harden:target_preflight]
+
+
 def test_release_receiver_quarantines_incomplete_same_commit_retry():
     receiver = (
         ROOT / "deploy/receive_release.sh"
