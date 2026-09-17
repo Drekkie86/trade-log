@@ -109,7 +109,10 @@ def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version:
 
     try:
         _verify_sqlite_copy(temp_path, expected_version=schema_version)
-        with temp_path.open("rb") as handle:
+        # Windows' os.fsync/_commit rejects a read-only descriptor; open the
+        # already-written backup read/write so the durability barrier works on
+        # both CI Windows and the production POSIX host.
+        with temp_path.open("r+b") as handle:
             os.fsync(handle.fileno())
         os.replace(temp_path, final_path)
         _fsync_directory(backup_dir)
