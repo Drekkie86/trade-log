@@ -1,7 +1,2 @@
-pytest>=9,<10
-numpy
-requests
-streamlit
-exchange_calendars>=4.13,<5
-scipy>=1.14,<2
-pandas>=2.2,<3
+-r requirements.txt
+pytest==9.1.1
