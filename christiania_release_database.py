@@ -31,6 +31,19 @@ def _progress(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
+def _fsync_directory(path: Path) -> None:
+    """Persist a directory-entry update on POSIX after an atomic rename."""
+    if os.name == "nt":
+        return
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_fd = os.open(path, flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _verify_database(path: Path, *, expected_version: int) -> None:
     health = inspect_database(path)
     if not health.exists:
@@ -96,7 +109,10 @@ def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version:
 
     try:
         _verify_sqlite_copy(temp_path, expected_version=schema_version)
+        with temp_path.open("rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(temp_path, final_path)
+        _fsync_directory(backup_dir)
     except BaseException:
         if temp_path.exists():
             temp_path.unlink()
@@ -115,6 +131,7 @@ def _write_rollback_pointer(path: Path, *, schema_version: int, backup: Path) ->
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)
+        _fsync_directory(path.parent)
     finally:
         if temp.exists():
             temp.unlink()
@@ -187,8 +204,9 @@ def prepare_release_database(
             schema_version=schema_before,
             backup=backup,
         )
-
-    _progress("Database preparation: rollback pointer committed; migration may now begin.")
+        _progress("Database preparation: rollback pointer committed; migration may now begin.")
+    else:
+        _progress("Database preparation: verified rollback backup committed; migration may now begin.")
 
     try:
         connection = sqlite3.connect(database, timeout=30.0)
