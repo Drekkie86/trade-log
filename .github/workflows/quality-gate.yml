@@ -21,20 +21,32 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python 3.13
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: requirements-ci.txt
 
-      - name: Install CI dependencies
+      - name: Cache CI virtual environment
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: christiania-ci-venv-v1-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('requirements-ci.txt') }}
+
+      - name: Ensure CI dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-ci.txt
+          if ("${{ steps.venv-cache.outputs.cache-hit }}" -ne "true") {
+            python -m venv .venv
+            .\.venv\Scripts\python.exe -m pip install --disable-pip-version-check --no-compile -r requirements-ci.txt
+          }
+          .\.venv\Scripts\python.exe -c "import pytest, numpy, requests, streamlit, exchange_calendars, scipy, pandas; print('CI environment ready')"
 
       - name: Run Christiania quality gate
         shell: pwsh
         env:
           PYTEST_ADDOPTS: "--durations=25 --durations-min=0.5"
         run: |
-          python .\quality_gate.py --ci
+          .\.venv\Scripts\python.exe .\quality_gate.py --ci
