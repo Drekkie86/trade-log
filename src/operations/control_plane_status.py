@@ -46,6 +46,7 @@ class ControlPlaneStatus:
     core_services: dict[str, str]
     core_services_state: str
     supervisor_state: str
+    deployment_supervisor_state: str
     supervisor_observed_at: str | None
     supervisor_freshness_state: str
     supervisor_age_seconds: float | None
@@ -77,6 +78,23 @@ class ControlPlaneStatus:
             )
         )
 
+    @property
+    def deployment_safe(self) -> bool:
+        return all(
+            (
+                self.release_identity_state
+                == "PASS",
+                self.core_services_state
+                == "PASS",
+                self.deployment_supervisor_state
+                == "PASS",
+                self.supervisor_freshness_state
+                == "PASS",
+                self.resource_policy_state
+                == "PASS",
+            )
+        )
+
     def as_dict(
         self,
     ) -> dict[str, object]:
@@ -84,6 +102,7 @@ class ControlPlaneStatus:
             self
         ) | {
             "ready": self.ready,
+            "deployment_safe": self.deployment_safe,
         }
 
 
@@ -324,6 +343,66 @@ def _research_progress(
     )
 
 
+def _deployment_supervisor_state(
+    supervisor: dict[str, object],
+) -> str:
+    checks = supervisor.get(
+        "checks"
+    )
+    if not isinstance(
+        checks,
+        list,
+    ):
+        return "FAIL"
+
+    saw_check = False
+    for raw_check in checks:
+        if not isinstance(
+            raw_check,
+            dict,
+        ):
+            return "FAIL"
+
+        saw_check = True
+        state = str(
+            raw_check.get("state")
+            or "UNKNOWN"
+        ).upper()
+        if state in {"PASS", "INFO"}:
+            continue
+
+        if raw_check.get("blocking") is False:
+            continue
+
+        name = str(
+            raw_check.get("name")
+            or ""
+        )
+        detail = str(
+            raw_check.get("detail")
+            or ""
+        )
+
+        # Research freshness is an operational-quality signal rather than a
+        # database/application deployment hazard. A successful deployment may
+        # itself restart the research daemon and restore this signal.
+        if name == "research-progress":
+            continue
+
+        # Crossing the early memory warning is also operational. Do not ignore
+        # harder memory-policy failures: only the explicit current-memory
+        # warning emitted below MemoryHigh/MemoryMax is deploy-nonblocking.
+        if (
+            name.startswith("memory:")
+            and "reached warning=" in detail
+        ):
+            continue
+
+        return "FAIL"
+
+    return "PASS" if saw_check else "FAIL"
+
+
 def collect_control_plane_status(
     *,
     app_dir: Path = DEFAULT_APP_DIR,
@@ -395,6 +474,12 @@ def collect_control_plane_status(
         )
         or "UNKNOWN"
     ).upper()
+
+    deployment_supervisor_state = (
+        _deployment_supervisor_state(
+            supervisor
+        )
+    )
 
     observed_raw = (
         supervisor.get(
@@ -469,6 +554,9 @@ def collect_control_plane_status(
         ),
         supervisor_state=(
             supervisor_state
+        ),
+        deployment_supervisor_state=(
+            deployment_supervisor_state
         ),
         supervisor_observed_at=(
             observed_at
