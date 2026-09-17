@@ -63,9 +63,13 @@ def test_release_receiver_prepares_database_before_atomic_activation():
     quiesce = receiver.index(
         'echo "Quiescing Christiania database consumers for release migration."'
     )
+    rollback_guard = receiver.index(
+        "DATABASE_PREPARED=1",
+        quiesce,
+    )
     prepare = receiver.index(
         '"${RELEASE_DIR}/christiania_release_database.py"',
-        quiesce,
+        rollback_guard,
     )
     target_preflight = receiver.index(
         'echo "Running target-release preflight against the migrated database."'
@@ -74,9 +78,8 @@ def test_release_receiver_prepares_database_before_atomic_activation():
         'ln -s "${RELEASE_DIR}" "${APP_LINK}"'
     )
 
-    assert quiesce < prepare < target_preflight < activation
+    assert quiesce < rollback_guard < prepare < target_preflight < activation
     assert '--rollback-pointer "${DB_ROLLBACK_POINTER}"' in receiver
-    assert 'DATABASE_PREPARED=1' in receiver
 
 
 def test_release_receiver_restores_database_before_restarting_old_services():
