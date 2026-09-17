@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import (
     inspect_database,
     open_readonly_connection,
@@ -159,9 +160,11 @@ def test_database_health_still_operates_with_readonly_compatibility_view(tmp_pat
 
     health = inspect_database(db)
 
+    # This fixture intentionally models a v29 database to prove the v29
+    # compatibility view remains readable even after later repository schemas.
     assert health.exists is True
     assert health.schema_version == 29
-    assert health.expected_schema_version == 29
+    assert health.expected_schema_version == EXPECTED_SCHEMA_VERSION
     assert health.journal_mode == "wal"
     assert health.quick_check == "ok"
     assert health.foreign_key_violation_count == 0

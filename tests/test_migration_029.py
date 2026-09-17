@@ -32,8 +32,9 @@ def _columns(conn, table: str) -> set[str]:
 
 
 def test_schema_v29_adds_account_independent_risk_surfaces(db_path):
-    assert EXPECTED_SCHEMA_VERSION == 29
-    assert get_schema_version(db_path) == 29
+    # This test owns the objects introduced by v29; later additive migrations
+    # must not make it assert that v29 is still the repository's final schema.
+    assert get_schema_version(db_path) == EXPECTED_SCHEMA_VERSION
 
     conn = get_connection(db_path)
     try:

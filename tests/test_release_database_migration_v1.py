@@ -12,6 +12,7 @@ from christiania_release_database import (
     restore_backup,
 )
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import inspect_database
 
 
@@ -43,7 +44,7 @@ def _make_v27_database(tmp_path: Path) -> Path:
     return db
 
 
-def test_release_database_prepares_v27_to_v29_and_can_restore(
+def test_release_database_prepares_v27_to_current_and_can_restore(
     monkeypatch,
     tmp_path,
 ):
@@ -60,7 +61,7 @@ def test_release_database_prepares_v27_to_v29_and_can_restore(
     )
 
     assert result.schema_before == 27
-    assert result.schema_after == 29
+    assert result.schema_after == EXPECTED_SCHEMA_VERSION
     assert result.migrated is True
     assert Path(result.backup_path).is_file()
     assert pointer.read_text(encoding="utf-8") == (
@@ -68,7 +69,7 @@ def test_release_database_prepares_v27_to_v29_and_can_restore(
     )
 
     migrated = inspect_database(db)
-    assert migrated.schema_version == 29
+    assert migrated.schema_version == EXPECTED_SCHEMA_VERSION
     assert migrated.journal_mode == "wal"
     assert migrated.quick_check == "ok"
     assert migrated.foreign_key_violation_count == 0
@@ -157,7 +158,7 @@ def test_rollback_pointer_is_committed_before_migration_sql(
         migrations_dir=MIGRATIONS,
         rollback_pointer=pointer,
     )
-    assert result.schema_after == 29
+    assert result.schema_after == EXPECTED_SCHEMA_VERSION
 
 
 def test_rollback_directory_entries_are_synced_before_migration_sql(
@@ -189,7 +190,7 @@ def test_rollback_directory_entries_are_synced_before_migration_sql(
         migrations_dir=MIGRATIONS,
         rollback_pointer=pointer,
     )
-    assert result.schema_after == 29
+    assert result.schema_after == EXPECTED_SCHEMA_VERSION
 
 
 def test_keyboard_interrupt_during_migration_restores_v27(
