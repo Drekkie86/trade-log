@@ -40,6 +40,13 @@ def test_command_deck_loads_empty_current_schema(
         == 0
     )
     assert snapshot["decision_desk_candidates"] == []
+    assert snapshot["checkpoint_evaluations"] == []
+    assert snapshot["historical_replay_summary"]["would_admit_count"] == 0
+    assert snapshot["historical_replay_summary"]["economic_pnl_eligible_latest"] == 0
+    assert snapshot["historical_replay_latest"] == []
+    assert snapshot["replay_outcome_recovery"] == []
+    assert snapshot["lifecycle_health"]["state"] == "PASS"
+    assert snapshot["lifecycle_health"]["stale_tracked_count"] == 0
 
 
 def test_command_deck_reads_daemon_and_run_state(

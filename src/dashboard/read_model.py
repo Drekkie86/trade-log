@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from src.providers.thetadata_control import probe_theta_terminal
 from src.operations.sqlite_runtime import (
     inspect_database,
     open_readonly_connection,
+)
+from src.dashboard.research_evidence import (
+    assess_replay_liquidation_stress,
 )
 
 
@@ -381,6 +385,249 @@ def load_command_deck(
                 '''
             ).fetchall()
         )
+
+        checkpoint_evaluations = _rows_to_dicts(
+            conn.execute(
+                '''
+                SELECT
+                    e.id,
+                    e.freeze_run_id,
+                    e.hypothesis_id,
+                    e.hypothesis_key,
+                    h.description,
+                    e.evaluation_version,
+                    e.evaluated_at,
+                    e.evidence_start_session_date,
+                    e.evidence_end_session_date,
+                    e.independent_date_count,
+                    e.observation_count,
+                    e.evaluation_state,
+                    e.metrics_json,
+                    e.p_values_enabled,
+                    e.fdr_enabled,
+                    e.decision_enabled
+                FROM v_prospective_research_hypothesis_latest_v1 AS e
+                JOIN prospective_research_hypotheses_v1 AS h
+                  ON h.id = e.hypothesis_id
+                ORDER BY h.id;
+                '''
+            ).fetchall()
+        )
+
+        for checkpoint in checkpoint_evaluations:
+            try:
+                checkpoint["metrics"] = json.loads(
+                    str(checkpoint.get("metrics_json") or "{}")
+                )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                checkpoint["metrics"] = {
+                    "state": "INVALID_METRICS_JSON"
+                }
+
+        replay_latest_rows = _rows_to_dicts(
+            conn.execute(
+                '''
+                WITH latest_complete AS (
+                    SELECT
+                        hrm.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY hrm.policy_replay_id
+                            ORDER BY hrm.observed_at DESC, hrm.id DESC
+                        ) AS mark_rank
+                    FROM historical_replay_marks_v1 AS hrm
+                    WHERE hrm.quality_state =
+                        'COMPLETE_RECONSTRUCTED_CONSERVATIVE_LIQUIDATION'
+                )
+                SELECT
+                    hpr.id AS policy_replay_id,
+                    hpr.proposal_id,
+                    hpr.original_decided_at,
+                    hpr.original_reason_code,
+                    hpr.counterfactual_decision,
+                    hpr.intrinsic_risk_eur_minor,
+                    hpr.estimated_cost_usd_minor,
+                    hpr.estimated_cost_eur_minor,
+                    fx.rate AS entry_eur_to_usd,
+                    ssp.underlying,
+                    ssp.expiration,
+                    ssp.right,
+                    ssp.target_strike,
+                    ssp.structure_id,
+                    ssp.anomaly_direction,
+                    ssp.structure_json,
+                    lm.id AS mark_id,
+                    lm.research_run_id AS mark_research_run_id,
+                    lm.observed_at,
+                    lm.quality_state,
+                    lm.structure_mark_usd_minor,
+                    lm.gross_pnl_usd_minor,
+                    lm.estimated_net_pnl_usd_minor,
+                    lm.gross_pnl_eur_minor,
+                    lm.estimated_net_pnl_eur_minor,
+                    lm.measurement_role,
+                    lm.outcome_eligible,
+                    lm.evidence_json
+                FROM historical_policy_replay_v1 AS hpr
+                JOIN shadow_structure_proposals AS ssp
+                  ON ssp.id = hpr.proposal_id
+                JOIN fx_observations AS fx
+                  ON fx.id = hpr.original_fx_observation_id
+                LEFT JOIN latest_complete AS lm
+                  ON lm.policy_replay_id = hpr.id
+                 AND lm.mark_rank = 1
+                WHERE hpr.counterfactual_decision = 'WOULD_ADMIT'
+                ORDER BY hpr.id;
+                '''
+            ).fetchall()
+        )
+
+        historical_replay_latest = [
+            assess_replay_liquidation_stress(row)
+            for row in replay_latest_rows
+        ]
+
+        replay_mark_totals = _row_to_dict(
+            conn.execute(
+                '''
+                SELECT
+                    COUNT(*) AS mark_count,
+                    SUM(
+                        CASE
+                            WHEN quality_state =
+                                'COMPLETE_RECONSTRUCTED_CONSERVATIVE_LIQUIDATION'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS complete_mark_count,
+                    SUM(
+                        CASE
+                            WHEN quality_state !=
+                                'COMPLETE_RECONSTRUCTED_CONSERVATIVE_LIQUIDATION'
+                            THEN 1 ELSE 0
+                        END
+                    ) AS incomplete_mark_count
+                FROM historical_replay_marks_v1;
+                '''
+            ).fetchone()
+        ) or {}
+
+        replay_outcome_recovery = _rows_to_dicts(
+            conn.execute(
+                '''
+                SELECT
+                    source_population,
+                    recovery_state,
+                    reason_code,
+                    COUNT(*) AS count
+                FROM historical_outcome_recovery_v1
+                GROUP BY
+                    source_population,
+                    recovery_state,
+                    reason_code
+                ORDER BY
+                    source_population,
+                    recovery_state,
+                    reason_code;
+                '''
+            ).fetchall()
+        )
+
+        historical_replay_summary = {
+            "would_admit_count": len(replay_latest_rows),
+            "with_complete_latest_mark": sum(
+                row.get("mark_id") is not None
+                for row in replay_latest_rows
+            ),
+            "mark_count": int(
+                replay_mark_totals.get("mark_count") or 0
+            ),
+            "complete_mark_count": int(
+                replay_mark_totals.get("complete_mark_count") or 0
+            ),
+            "incomplete_mark_count": int(
+                replay_mark_totals.get("incomplete_mark_count") or 0
+            ),
+            "midpoint_incoherent_latest": sum(
+                row.get("package_coherence_state")
+                == "MIDPOINT_OUTSIDE_BUTTERFLY_BOUNDS"
+                for row in historical_replay_latest
+            ),
+            "stress_exceeds_intrinsic_risk_latest": sum(
+                (row.get("stress_loss_to_intrinsic_risk") or 0) > 1
+                for row in historical_replay_latest
+            ),
+            "economic_pnl_eligible_latest": sum(
+                bool(row.get("economic_pnl_eligible"))
+                for row in historical_replay_latest
+            ),
+            "interpretation": "LIQUIDATION_STRESS_NOT_ECONOMIC_PNL",
+        }
+
+        latest_completed_session_row = conn.execute(
+            '''
+            SELECT MAX(us_session_date) AS session_date
+            FROM research_runs
+            WHERE status = 'COMPLETED';
+            '''
+        ).fetchone()
+        latest_completed_session_date = (
+            None
+            if latest_completed_session_row is None
+            else latest_completed_session_row["session_date"]
+        )
+
+        stale_lifecycle_candidates = []
+        if latest_completed_session_date:
+            stale_lifecycle_candidates = _rows_to_dicts(
+                conn.execute(
+                    '''
+                    WITH latest_state AS (
+                        SELECT
+                            se.*,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY se.candidate_id
+                                ORDER BY se.id DESC
+                            ) AS state_rank
+                        FROM shadow_state_events AS se
+                    )
+                    SELECT
+                        sc.id AS candidate_id,
+                        sc.underlying,
+                        lrc.expiration,
+                        ls.to_state AS current_state,
+                        ls.occurred_at AS state_at,
+                        ls.reason_code AS state_reason
+                    FROM shadow_candidates AS sc
+                    JOIN listing_reference_contracts AS lrc
+                      ON lrc.id = sc.reference_contract_id
+                    JOIN latest_state AS ls
+                      ON ls.candidate_id = sc.id
+                     AND ls.state_rank = 1
+                    WHERE ls.to_state = 'SHADOW_TRACKED'
+                      AND lrc.expiration < ?
+                    ORDER BY lrc.expiration, sc.id;
+                    ''',
+                    (latest_completed_session_date,),
+                ).fetchall()
+            )
+
+        lifecycle_health = {
+            "state": (
+                "PASS"
+                if not stale_lifecycle_candidates
+                else "WARN"
+            ),
+            "latest_completed_session_date":
+                latest_completed_session_date,
+            "stale_tracked_count": len(
+                stale_lifecycle_candidates
+            ),
+            "stale_candidates": stale_lifecycle_candidates,
+            "rule": (
+                "SHADOW_TRACKED must close only after a completed "
+                "research session whose US session date is later "
+                "than expiration."
+            ),
+        }
 
         theta_timestamp_semantics = _row_to_dict(
             conn.execute(
@@ -766,6 +1013,15 @@ def load_command_deck(
                     smo.estimated_net_pnl_usd_minor,
                     smo.gross_pnl_eur_minor,
                     smo.estimated_net_pnl_eur_minor,
+                    CASE
+                        WHEN smo.measurement_role =
+                            'INDEPENDENT_LEG_LIQUIDATION_STRESS'
+                        THEN smo.estimated_net_pnl_eur_minor
+                    END AS liquidation_stress_eur_minor,
+                    CASE
+                        WHEN smo.outcome_eligible = 1
+                        THEN smo.estimated_net_pnl_eur_minor
+                    END AS validated_net_pnl_eur_minor,
                     smo.quality_state,
                     smo.measurement_role,
                     smo.outcome_eligible
@@ -1062,6 +1318,11 @@ def load_command_deck(
         "research_counts": research_counts,
         "models": models,
         "hypotheses": hypotheses,
+        "checkpoint_evaluations": checkpoint_evaluations,
+        "historical_replay_summary": historical_replay_summary,
+        "historical_replay_latest": historical_replay_latest,
+        "replay_outcome_recovery": replay_outcome_recovery,
+        "lifecycle_health": lifecycle_health,
         "recent_iterations": recent_iterations,
         "recent_anomalies": recent_anomalies,
         "recent_proposals": recent_proposals,

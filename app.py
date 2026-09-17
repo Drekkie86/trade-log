@@ -102,6 +102,16 @@ COLUMN_LABELS = {
     "estimated_net_pnl_usd_minor": "Estimated net P&L (USD cents)",
     "gross_pnl_eur_minor": "Gross P&L (EUR cents)",
     "estimated_net_pnl_eur_minor": "Estimated net P&L (EUR cents)",
+    "liquidation_stress_eur_minor": "Leg-cross liquidation stress (EUR cents)",
+    "validated_net_pnl_eur_minor": "Validated economic P&L (EUR cents)",
+    "package_coherence_state": "Package coherence",
+    "stress_loss_to_intrinsic_risk": "Stress loss / intrinsic risk",
+    "midpoint_loss_to_intrinsic_risk": "Midpoint diagnostic loss / intrinsic risk",
+    "spread_crossing_penalty_eur_minor": "Spread-crossing penalty (EUR cents)",
+    "midpoint_diagnostic_net_eur_minor": "Midpoint diagnostic net value (EUR cents)",
+    "conservative_stress_net_eur_minor": "Leg-cross stress net value (EUR cents)",
+    "max_leg_spread_to_mid": "Max leg spread / mid",
+    "quote_time_span_seconds": "Leg quote time span (seconds)",
     "quality_state": "Mark quality",
     "measurement_role": "Measurement role",
     "outcome_eligible": "Outcome eligible",
@@ -559,9 +569,18 @@ calibration_state = calibration_evidence_state(
     hypotheses=snapshot.get("hypotheses", []),
     independent_dates=int(prospective.get("independent_dates", 0)),
 )
+lifecycle_health = snapshot.get("lifecycle_health", {})
 
 if page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")
+    if lifecycle_health.get("state") == "WARN":
+        st.warning(
+            "Shadow lifecycle warning: "
+            f"{_fmt_count(lifecycle_health.get('stale_tracked_count', 0))} "
+            "candidate(s) are still SHADOW_TRACKED after their expiration session. "
+            "This is non-blocking evidence; the next completed research cycle should "
+            "close them automatically. If the warning survives that cycle, investigate."
+        )
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
@@ -1035,6 +1054,46 @@ elif page == "Calibration":
         "Friendly names are reviewed aliases only. The exact backend hypothesis ID is shown alongside every alias."
     )
 
+    section_heading(
+        "Latest prospective checkpoints",
+        "Persisted H1–H4 evidence from the frozen protocol. Descriptive only; no automatic model promotion.",
+    )
+    checkpoints = snapshot.get("checkpoint_evaluations", [])
+    if checkpoints:
+        _show_table(
+            checkpoints,
+            columns=[
+                "hypothesis_key",
+                "evaluation_version",
+                "evaluated_at",
+                "evidence_start_session_date",
+                "evidence_end_session_date",
+                "independent_date_count",
+                "observation_count",
+                "evaluation_state",
+                "p_values_enabled",
+                "fdr_enabled",
+                "decision_enabled",
+            ],
+        )
+        checkpoint_choices = {
+            f"{hypothesis_label(row.get('hypothesis_key'))} · {row.get('evaluation_state')}": row
+            for row in checkpoints
+        }
+        checkpoint_label = st.selectbox(
+            "Checkpoint detail",
+            list(checkpoint_choices),
+            key="checkpoint_detail_selector",
+        )
+        with st.expander("Checkpoint metrics", expanded=False):
+            st.json(checkpoint_choices[checkpoint_label].get("metrics", {}))
+        _visual_note(
+            "These evaluations are append-only scientific evidence. They do not change the scanner, "
+            "do not reset the prospective clock and cannot enable decisions in the current protocol."
+        )
+    else:
+        st.info("No prospective checkpoint evaluation has been persisted yet.")
+
     section_heading("Research model registry")
     _show_table(snapshot.get("models", []))
     st.caption(
@@ -1151,6 +1210,98 @@ elif page == "Shadow Lab":
         "marks are later valuations. Validated hold/mark outcomes and predeclared risk-trigger exits are deliberately separate measurement populations."
     )
 
+    lifecycle = snapshot.get("lifecycle_health", {})
+    replay_summary = snapshot.get("historical_replay_summary", {})
+
+    section_heading(
+        "Evidence integrity",
+        "Lifecycle health and historical replay are visible without promoting stress marks into trading P&L.",
+    )
+    e1, e2, e3, e4, e5 = st.columns(5)
+    e1.metric(
+        "Lifecycle",
+        _status_label(lifecycle.get("state")),
+        f"{_fmt_count(lifecycle.get('stale_tracked_count', 0))} stale tracked",
+    )
+    e2.metric(
+        "Wallet replay cohort",
+        _fmt_count(replay_summary.get("would_admit_count", 0)),
+        "retrospective only",
+    )
+    e3.metric(
+        "Replay marks",
+        _fmt_count(replay_summary.get("mark_count", 0)),
+        f"{_fmt_count(replay_summary.get('complete_mark_count', 0))} complete",
+    )
+    e4.metric(
+        "Midpoint-incoherent latest",
+        _fmt_count(replay_summary.get("midpoint_incoherent_latest", 0)),
+        "package diagnostic",
+    )
+    e5.metric(
+        "Economic P&L eligible",
+        _fmt_count(replay_summary.get("economic_pnl_eligible_latest", 0)),
+        "replay latest marks",
+    )
+
+    if lifecycle.get("state") == "WARN":
+        st.warning(
+            f"{_fmt_count(lifecycle.get('stale_tracked_count', 0))} candidate(s) remain "
+            "SHADOW_TRACKED after expiration relative to the latest completed research session "
+            f"({lifecycle.get('latest_completed_session_date') or '—'})."
+        )
+        _show_table(
+            lifecycle.get("stale_candidates", []),
+            columns=[
+                "candidate_id",
+                "underlying",
+                "expiration",
+                "current_state",
+                "state_at",
+                "state_reason",
+            ],
+        )
+
+    replay_latest = snapshot.get("historical_replay_latest", [])
+    if replay_latest:
+        section_heading(
+            "Historical wallet-policy replay",
+            "Counterfactual admission evidence. Latest leg-cross marks are liquidity stress, not ordinary P&L.",
+        )
+        st.warning(
+            "Replay values below are independent-leg liquidation stress. They are not "
+            "validated economic outcomes and are never eligible as trading P&L."
+        )
+        _show_table(
+            replay_latest,
+            columns=[
+                "policy_replay_id",
+                "proposal_id",
+                "underlying",
+                "expiration",
+                "structure_id",
+                "package_coherence_state",
+                "conservative_stress_net_eur_minor",
+                "midpoint_diagnostic_net_eur_minor",
+                "spread_crossing_penalty_eur_minor",
+                "stress_loss_to_intrinsic_risk",
+                "midpoint_loss_to_intrinsic_risk",
+                "max_leg_spread_to_mid",
+                "quote_time_span_seconds",
+                "measurement_role",
+                "outcome_eligible",
+            ],
+        )
+        _visual_note(
+            "The midpoint value is a diagnostic only, not an executable quote. A midpoint outside "
+            "the no-arbitrage butterfly bounds is a package-coherence warning. The leg-cross value "
+            "measures forced spread crossing and may exceed hold-to-expiry defined risk."
+        )
+
+        if snapshot.get("replay_outcome_recovery"):
+            with st.expander("Replay / original expiry recovery status", expanded=False):
+                _show_table(snapshot["replay_outcome_recovery"])
+
     followup = snapshot.get("shadow_candidate_followup", [])
     if followup:
         choices = {
@@ -1194,7 +1345,8 @@ elif page == "Shadow Lab":
                 "mark_count",
                 "validated_outcomes",
                 "latest_mark_at",
-                "latest_estimated_net_pnl_eur_minor",
+                "latest_measurement_role",
+                "latest_outcome_eligible",
                 "validated_net_pnl_eur_minor",
                 "thesis_assessment",
                 "validated_trade_result",
@@ -1208,22 +1360,43 @@ elif page == "Shadow Lab":
         if candidate_marks:
             marks = pd.DataFrame(candidate_marks)
             marks["Observed"] = pd.to_datetime(marks["observed_at"], errors="coerce")
-            marks["Estimated net P&L (€)"] = (
-                pd.to_numeric(marks["estimated_net_pnl_eur_minor"], errors="coerce") / 100.0
+
+            validated = marks[
+                pd.to_numeric(
+                    marks["outcome_eligible"],
+                    errors="coerce",
+                ).fillna(0).astype(int) == 1
+            ].copy()
+            validated["Validated economic P&L (€)"] = (
+                pd.to_numeric(
+                    validated["validated_net_pnl_eur_minor"],
+                    errors="coerce",
+                ) / 100.0
             )
-            plot = marks.dropna(subset=["Observed", "Estimated net P&L (€)"]).set_index("Observed")[["Estimated net P&L (€)"]].sort_index()
+            plot = (
+                validated
+                .dropna(subset=["Observed", "Validated economic P&L (€)"])
+                .set_index("Observed")[["Validated economic P&L (€)"]]
+                .sort_index()
+            )
             if not plot.empty:
                 st.line_chart(plot, height=300)
                 chart_note(
-                    "Recorded estimated net EUR P&L for this candidate through time. "
-                    "Only outcome-eligible marks count as validated trade outcomes; stress marks remain diagnostics."
+                    "Only independently validated, outcome-eligible package evidence appears in this economic P&L chart."
                 )
+            else:
+                st.info(
+                    "No validated economic P&L outcome exists for this candidate yet. "
+                    "Recorded independent-leg values below are liquidity-stress diagnostics only."
+                )
+
             _show_table(
                 candidate_marks,
                 columns=[
                     "observed_at",
                     "provider",
-                    "estimated_net_pnl_eur_minor",
+                    "liquidation_stress_eur_minor",
+                    "validated_net_pnl_eur_minor",
                     "quality_state",
                     "measurement_role",
                     "outcome_eligible",
