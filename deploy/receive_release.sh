@@ -16,6 +16,11 @@ CORE_SERVICES=(
   "christiania-app.service"
 )
 
+QUIESCE_SERVICES=(
+  "christiania-daemon.service"
+  "christiania-app.service"
+)
+
 usage() {
   echo "Usage: sudo bash receive_release.sh <archive.tar.gz> <40-char-commit> <sha256>" >&2
   exit 2
@@ -23,7 +28,7 @@ usage() {
 
 fail() {
   echo "RELEASE FAILED: $*" >&2
-  exit 1
+  return 1
 }
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -111,26 +116,45 @@ install -d -m 0750 -o root -g "${SERVICE_USER}" "${ROLLBACK_ROOT}"
 ACTIVATION_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 UNIT_BACKUP="${ROLLBACK_ROOT}/${ACTIVATION_ID}-systemd"
 STATUS_BACKUP="${ROLLBACK_ROOT}/${ACTIVATION_ID}-christiania-status"
+DB_ROLLBACK_POINTER="${ROLLBACK_ROOT}/${ACTIVATION_ID}-database.txt"
 
 install -d -m 0700 -o root -g root "${UNIT_BACKUP}"
+install -m 0660 -o "${SERVICE_USER}" -g "${SERVICE_USER}" /dev/null "${DB_ROLLBACK_POINTER}"
 
 PREVIOUS_TARGET=""
+LEGACY_SOURCE=0
 LEGACY_MOVED=0
 ACTIVATED=0
 UNITS_BACKED_UP=0
 STATUS_WRAPPER_HAD_PREVIOUS=0
 SECURE_EDGE_WAS_ACTIVE=0
+SERVICES_QUIESCED=0
+DATABASE_PREPARED=0
+ROLLBACK_DB_VERSION=""
+ROLLBACK_DB_BACKUP=""
+
+if [[ -L "${APP_LINK}" ]]; then
+  PREVIOUS_TARGET="$(readlink -f "${APP_LINK}")"
+elif [[ -d "${APP_LINK}" ]]; then
+  PREVIOUS_TARGET="${APP_LINK}"
+  LEGACY_SOURCE=1
+else
+  fail "current application path is neither a directory nor a symlink: ${APP_LINK}"
+fi
 
 rollback() {
   local original_exit="$1"
+  trap - ERR INT TERM
 
-  if [[ "${ACTIVATED}" -eq 1 ]]; then
-    echo "Activation failed; restoring previous Christiania release." >&2
+  echo "Release failed; restoring the previous Christiania state." >&2
 
+  if [[ "${SERVICES_QUIESCED}" -eq 1 || "${ACTIVATED}" -eq 1 ]]; then
     for service in "${CORE_SERVICES[@]}"; do
       systemctl stop "${service}" >/dev/null 2>&1 || true
     done
+  fi
 
+  if [[ "${ACTIVATED}" -eq 1 ]]; then
     rm -f "${APP_LINK}"
 
     if [[ -n "${PREVIOUS_TARGET}" ]]; then
@@ -159,16 +183,43 @@ rollback() {
     else
       rm -f "${LOCAL_BIN}/christiania-status"
     fi
+  fi
 
-    systemctl daemon-reload || true
+  if [[ "${DATABASE_PREPARED}" -eq 1 ]]; then
+    if [[ -z "${ROLLBACK_DB_BACKUP}" || -z "${ROLLBACK_DB_VERSION}" ]]; then
+      if [[ -s "${DB_ROLLBACK_POINTER}" ]]; then
+        IFS=$'\t' read -r ROLLBACK_DB_VERSION ROLLBACK_DB_BACKUP < "${DB_ROLLBACK_POINTER}"
+      fi
+    fi
 
+    if [[ -z "${ROLLBACK_DB_BACKUP}" || -z "${ROLLBACK_DB_VERSION}" ]]; then
+      echo "DATABASE ROLLBACK METADATA MISSING; core services remain stopped." >&2
+      exit "${original_exit}"
+    fi
+
+    echo "Restoring pre-release database schema v${ROLLBACK_DB_VERSION}." >&2
+    if ! sudo -u "${SERVICE_USER}" \
+      "${RELEASE_DIR}/.venv/bin/python" \
+      "${RELEASE_DIR}/christiania_release_database.py" \
+      --env-file "${ENV_FILE}" \
+      restore \
+      --backup "${ROLLBACK_DB_BACKUP}" \
+      --expected-version "${ROLLBACK_DB_VERSION}"; then
+      echo "DATABASE ROLLBACK FAILED; core services remain stopped." >&2
+      exit "${original_exit}"
+    fi
+  fi
+
+  systemctl daemon-reload || true
+
+  if [[ "${SERVICES_QUIESCED}" -eq 1 || "${ACTIVATED}" -eq 1 ]]; then
     for service in "${CORE_SERVICES[@]}"; do
       systemctl start "${service}" >/dev/null 2>&1 || true
     done
+  fi
 
-    if [[ "${SECURE_EDGE_WAS_ACTIVE}" -eq 1 ]]; then
-      systemctl start "${SECURE_EDGE_SERVICE}" >/dev/null 2>&1 || true
-    fi
+  if [[ "${SECURE_EDGE_WAS_ACTIVE}" -eq 1 ]]; then
+    systemctl start "${SECURE_EDGE_SERVICE}" >/dev/null 2>&1 || true
   fi
 
   exit "${original_exit}"
@@ -179,9 +230,7 @@ trap 'rollback $?' ERR INT TERM
 echo "Preparing Christiania release ${EXPECTED_COMMIT}."
 
 install -d -m 0750 -o root -g "${SERVICE_USER}" "${RELEASE_DIR}"
-
 tar -xzf "${ARCHIVE}" -C "${RELEASE_DIR}"
-
 printf '%s\n' "${EXPECTED_COMMIT}" > "${RELEASE_DIR}/DEPLOYED_COMMIT"
 
 if [[ -d "${APP_LINK}/vendor" ]]; then
@@ -197,11 +246,11 @@ python3 -m venv "${RELEASE_DIR}/.venv"
 chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
 chmod -R g+rX,o-rwx "${RELEASE_DIR}"
 
-echo "Running release preflight before activation."
+echo "Running current-release health preflight before database preparation."
 
 sudo -u "${SERVICE_USER}" \
-  "${RELEASE_DIR}/.venv/bin/python" \
-  "${RELEASE_DIR}/christiania_deploy_preflight.py" \
+  "${PREVIOUS_TARGET}/.venv/bin/python" \
+  "${PREVIOUS_TARGET}/christiania_deploy_preflight.py" \
   --env-file "${ENV_FILE}" \
   --require-theta-live
 
@@ -212,19 +261,6 @@ TEMP_SYSTEMD_ROOT="$(mktemp -d)"
   render \
   --systemd-root "${TEMP_SYSTEMD_ROOT}"
 
-echo "Preflight passed. Preparing atomic activation."
-
-if [[ -L "${APP_LINK}" ]]; then
-  PREVIOUS_TARGET="$(readlink -f "${APP_LINK}")"
-elif [[ -d "${APP_LINK}" ]]; then
-  LEGACY_TARGET="${RELEASE_ROOT}/legacy-${ACTIVATION_ID}"
-  mv "${APP_LINK}" "${LEGACY_TARGET}"
-  PREVIOUS_TARGET="${LEGACY_TARGET}"
-  LEGACY_MOVED=1
-else
-  fail "current application path is neither a directory nor a symlink: ${APP_LINK}"
-fi
-
 for existing in \
   "${SYSTEMD_ROOT}"/christiania-*.service \
   "${SYSTEMD_ROOT}"/christiania-*.timer \
@@ -233,7 +269,6 @@ for existing in \
     cp -a "${existing}" "${UNIT_BACKUP}/"
   fi
 done
-
 UNITS_BACKED_UP=1
 
 if [[ -e "${LOCAL_BIN}/christiania-status" ]]; then
@@ -245,11 +280,47 @@ if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}"; then
   SECURE_EDGE_WAS_ACTIVE=1
 fi
 
-for service in "${CORE_SERVICES[@]}"; do
+echo "Quiescing Christiania database consumers for release migration."
+for service in "${QUIESCE_SERVICES[@]}"; do
   systemctl stop "${service}"
 done
+SERVICES_QUIESCED=1
 
-if [[ -L "${APP_LINK}" ]]; then
+echo "Creating verified rollback backup and applying pending release migrations."
+DB_PREP_OUTPUT="$(
+  sudo -u "${SERVICE_USER}" \
+    "${RELEASE_DIR}/.venv/bin/python" \
+    "${RELEASE_DIR}/christiania_release_database.py" \
+    --env-file "${ENV_FILE}" \
+    prepare \
+    --migrations-dir "${RELEASE_DIR}/migrations" \
+    --rollback-pointer "${DB_ROLLBACK_POINTER}" \
+    --json
+)"
+DATABASE_PREPARED=1
+
+IFS=$'\t' read -r ROLLBACK_DB_VERSION ROLLBACK_DB_BACKUP < "${DB_ROLLBACK_POINTER}"
+if [[ -z "${ROLLBACK_DB_VERSION}" || -z "${ROLLBACK_DB_BACKUP}" ]]; then
+  fail "release database preparation did not record rollback metadata"
+fi
+printf '%s\n' "${DB_PREP_OUTPUT}"
+
+echo "Running target-release preflight against the migrated database."
+sudo -u "${SERVICE_USER}" \
+  "${RELEASE_DIR}/.venv/bin/python" \
+  "${RELEASE_DIR}/christiania_deploy_preflight.py" \
+  --env-file "${ENV_FILE}" \
+  --require-theta-live
+
+echo "Target preflight passed. Preparing atomic activation."
+systemctl stop christiania-theta.service
+
+if [[ "${LEGACY_SOURCE}" -eq 1 ]]; then
+  LEGACY_TARGET="${RELEASE_ROOT}/legacy-${ACTIVATION_ID}"
+  mv "${APP_LINK}" "${LEGACY_TARGET}"
+  PREVIOUS_TARGET="${LEGACY_TARGET}"
+  LEGACY_MOVED=1
+elif [[ -L "${APP_LINK}" ]]; then
   rm "${APP_LINK}"
 fi
 
@@ -271,7 +342,6 @@ for dropin_dir in "${TEMP_SYSTEMD_ROOT}"/christiania-*.service.d; do
 done
 
 rm -rf "${TEMP_SYSTEMD_ROOT}"
-
 systemctl daemon-reload
 
 "${APP_LINK}/.venv/bin/python" \
@@ -304,7 +374,6 @@ if [[ "${SECURE_EDGE_WAS_ACTIVE}" -eq 1 ]]; then
 fi
 
 echo "Running post-activation deployment preflight."
-
 sudo -u "${SERVICE_USER}" \
   "${APP_LINK}/.venv/bin/python" \
   "${APP_LINK}/christiania_deploy_preflight.py" \
@@ -320,7 +389,6 @@ if [[ "${INSTALLED_COMMIT}" != "${EXPECTED_COMMIT}" ]]; then
 fi
 
 echo "Refreshing authoritative supervisor evidence."
-
 systemctl start christiania-supervisor.service
 
 SUPERVISOR_STATE="$(
@@ -332,10 +400,11 @@ if [[ "${SUPERVISOR_STATE}" == "failed" ]]; then
 fi
 
 echo "Running Christiania control-plane status."
-
 "${LOCAL_BIN}/christiania-status" --json
 
 ACTIVATED=0
+SERVICES_QUIESCED=0
+DATABASE_PREPARED=0
 trap - ERR INT TERM
 
 echo
@@ -345,4 +414,5 @@ echo "archive_sha256=${EXPECTED_SHA256}"
 echo "release=${RELEASE_DIR}"
 echo "previous=${PREVIOUS_TARGET}"
 echo "legacy_migration=${LEGACY_MOVED}"
+echo "database_rollback_backup=${ROLLBACK_DB_BACKUP}"
 echo "status_command=${LOCAL_BIN}/christiania-status"
