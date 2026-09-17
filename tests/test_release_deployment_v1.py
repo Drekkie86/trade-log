@@ -65,7 +65,7 @@ def test_release_receiver_prepares_database_before_atomic_activation():
     ).read_text(encoding="utf-8")
 
     quiesce = receiver.index(
-        'echo "Quiescing Christiania scheduled jobs and database consumers for release migration."'
+        'phase_start "Quiescing scheduled jobs and database consumers"'
     )
     rollback_guard = receiver.index(
         "DATABASE_PREPARED=1",
@@ -76,7 +76,7 @@ def test_release_receiver_prepares_database_before_atomic_activation():
         rollback_guard,
     )
     target_preflight = receiver.index(
-        'echo "Running target-release preflight against the migrated database."'
+        'phase_start "Validating target release prerequisites"'
     )
     activation = receiver.index(
         'ln -s "${RELEASE_DIR}" "${APP_LINK}"'
@@ -185,7 +185,7 @@ def test_release_receiver_gives_atomic_pointer_writer_private_workspace():
         prepare,
     )
     target_preflight = receiver.index(
-        'echo "Running target-release preflight against the migrated database."',
+        'phase_start "Validating target release prerequisites"',
         harden,
     )
 
@@ -214,7 +214,7 @@ def test_release_receiver_quiesces_all_scheduled_jobs_before_migration():
     ).read_text(encoding="utf-8")
 
     quiesce = receiver.index(
-        'echo "Quiescing Christiania scheduled jobs and database consumers for release migration."'
+        'phase_start "Quiescing scheduled jobs and database consumers"'
     )
     quiesce_guard = receiver.index(
         "SERVICES_QUIESCED=1",
@@ -321,13 +321,42 @@ def test_release_receiver_has_complete_command_prerequisite_checks():
     }.issubset(required_commands)
 
 
-def test_release_receiver_warns_that_full_current_health_check_can_take_time():
+def test_release_receiver_avoids_redundant_deep_database_preflights():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+    preflight = (
+        ROOT / "christiania_deploy_preflight.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"${LOCAL_BIN}/christiania-status" --json' in receiver
+    assert "Deep database integrity is not repeated here." in receiver
+    assert receiver.count("--metadata-db-check") == 2
+    assert "deep_database: bool = True" in preflight
+    assert "deep_integrity=False" in preflight
+    assert '"--metadata-db-check"' in preflight
+
+
+def test_release_receiver_reports_phase_timings():
     receiver = (
         ROOT / "deploy/receive_release.sh"
     ).read_text(encoding="utf-8")
 
-    assert "SQLite integrity check can take several minutes" in receiver
-    assert "must not be interrupted" in receiver
+    assert "phase_start()" in receiver
+    assert "phase_done()" in receiver
+    assert 'completed in ${elapsed}s' in receiver
+    assert 'phase_start "Creating verified rollback backup and applying migrations"' in receiver
+
+
+def test_release_client_keeps_long_ssh_sessions_alive():
+    deployer = (
+        ROOT / "deploy/deploy_release.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert '"-o", "ServerAliveInterval=15"' in deployer
+    assert '"-o", "ServerAliveCountMax=20"' in deployer
+    assert '"-o", "TCPKeepAlive=yes"' in deployer
+    assert "& ssh @SshOptions -t -i $KeyPath" in deployer
 
 
 def test_release_receiver_has_valid_bash_syntax():
