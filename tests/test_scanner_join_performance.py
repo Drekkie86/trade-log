@@ -102,7 +102,12 @@ def _seed(conn: sqlite3.Connection, *, reference_rows: int, quote_rows: int):
     )
     snapshot_id = conn.execute("SELECT id FROM market_snapshots").fetchone()[0]
 
-    sample = random.sample(ref_rows, min(quote_rows, len(ref_rows)))
+    # Keep the benchmark population reproducible. Runner-to-runner timing may
+    # vary, but the actual rows under test must not.
+    sample = random.Random(0).sample(
+        ref_rows,
+        min(quote_rows, len(ref_rows)),
+    )
     quote_rows_data = []
     for (_, _, underlying, _, _, expiration, strike, right, *_rest) in sample:
         quote_rows_data.append(
@@ -273,14 +278,14 @@ def test_composite_index_covers_all_six_join_columns():
 @pytest.mark.slow
 def test_join_is_measurably_faster_than_the_legacy_in_list():
     """
-    Regression guard: at a size large enough to matter, the rewritten
-    query must remain materially faster than the original.
+    Regression guard: at a representative but CI-sized population, the
+    rewritten query must remain materially faster than the original.
 
-    CI hosts are shared and single wall-clock measurements are noisy, so
-    compare medians from three alternating runs after warming both paths.
-    A 2x floor is deliberately coarse: it still catches a meaningful
-    regression while avoiding a false release failure because one runner
-    happens to make a 2.45x improvement look smaller than 2.5x.
+    Production-scale benchmarking belongs in the dedicated benchmark tool;
+    this release guard deliberately uses a smaller deterministic population
+    so every PR still proves the optimization without spending a minute on a
+    single timing assertion. We compare medians from three alternating runs
+    after warming both paths, retaining the coarse 2x regression floor.
     """
     import sys
 
@@ -291,7 +296,11 @@ def test_join_is_measurably_faster_than_the_legacy_in_list():
     conn.row_factory = sqlite3.Row
     _build_schema(conn)
     conn.execute("PRAGMA foreign_keys = OFF;")
-    run_id, quote_ids = _seed(conn, reference_rows=20_000, quote_rows=1_500)
+    run_id, quote_ids = _seed(
+        conn,
+        reference_rows=6_000,
+        quote_rows=500,
+    )
 
     import tempfile
     import os
