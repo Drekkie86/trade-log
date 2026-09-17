@@ -303,6 +303,7 @@ def test_release_receiver_has_complete_command_prerequisite_checks():
         "chmod",
         "chown",
         "cp",
+        "curl",
         "date",
         "find",
         "id",
@@ -313,7 +314,9 @@ def test_release_receiver_has_complete_command_prerequisite_checks():
         "python3",
         "readlink",
         "rm",
+        "seq",
         "sha256sum",
+        "sleep",
         "sudo",
         "systemctl",
         "tar",
@@ -345,7 +348,8 @@ def test_release_receiver_reports_phase_timings():
     assert "phase_start()" in receiver
     assert "phase_done()" in receiver
     assert 'completed in ${elapsed}s' in receiver
-    assert 'phase_start "Creating verified rollback backup and applying migrations"' in receiver
+    assert 'phase_start "Preparing release database"' in receiver
+    assert 'phase_start "Verifying live application and secure edge"' in receiver
 
 
 def test_release_client_keeps_long_ssh_sessions_alive():
