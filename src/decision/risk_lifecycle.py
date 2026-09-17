@@ -8,9 +8,8 @@ from typing import Any
 from src.database.repository import get_connection
 
 
-RISK_PLAN_VERSION = "SHADOW_RISK_PLAN_V1"
-ASSESSMENT_VERSION = "SHADOW_RISK_ASSESSMENT_V1"
-BANKROLL_CAP_EUR_MINOR = 50_000
+RISK_PLAN_VERSION = "SHADOW_INTRINSIC_RISK_PLAN_V1"
+ASSESSMENT_VERSION = "SHADOW_INTRINSIC_RISK_ASSESSMENT_V1"
 
 
 @dataclass(frozen=True)
@@ -22,9 +21,8 @@ class FrozenRiskPlan:
     prospectivity_state: str
     plan_version: str
     actor: str
-    bankroll_cap_eur_minor: int
     max_defined_loss_eur_minor: int
-    reserved_risk_eur_minor: int
+    risk_basis_eur_minor: int
     stop_loss_fraction: float | None
     time_stop_at: str | None
     thesis_invalidation_rule: str | None
@@ -45,7 +43,7 @@ class RiskAssessment:
     thesis_stop_state: str
     event_stop_state: str
     overall_state: str
-    loss_fraction_reserved: float | None
+    loss_fraction_risk_basis: float | None
     reason_codes: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
@@ -60,19 +58,24 @@ def _aware(value: str) -> datetime:
 
 
 def _same_instant(first: str, second: str) -> bool:
-    return _aware(first).astimezone(timezone.utc) == _aware(second).astimezone(timezone.utc)
+    return (
+        _aware(first).astimezone(timezone.utc)
+        == _aware(second).astimezone(timezone.utc)
+    )
 
 
-def get_frozen_risk_plan(*, candidate_id: int, db_path=None) -> FrozenRiskPlan | None:
+def get_frozen_risk_plan(
+    *, candidate_id: int, db_path=None
+) -> FrozenRiskPlan | None:
     conn = get_connection(db_path)
     try:
         row = conn.execute(
             """
             SELECT p.*, rec.recorded_at, rec.prospectivity_state
-            FROM shadow_risk_plans AS p
-            JOIN shadow_risk_plan_recordings AS rec
+            FROM shadow_intrinsic_risk_plans_v1 AS p
+            JOIN shadow_intrinsic_risk_plan_recordings_v1 AS rec
               ON rec.risk_plan_id = p.id
-            WHERE p.candidate_id = ?
+            WHERE p.candidate_id = ?;
             """,
             (candidate_id,),
         ).fetchone()
@@ -85,10 +88,13 @@ def get_frozen_risk_plan(*, candidate_id: int, db_path=None) -> FrozenRiskPlan |
     try:
         entry_assumption = json.loads(row["entry_assumption_json"])
     except (TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Frozen risk plan contains invalid entry-assumption JSON.") from exc
-
+        raise RuntimeError(
+            "Frozen risk plan contains invalid entry-assumption JSON."
+        ) from exc
     if not isinstance(entry_assumption, dict):
-        raise RuntimeError("Frozen risk plan entry assumption must be a JSON object.")
+        raise RuntimeError(
+            "Frozen risk plan entry assumption must be a JSON object."
+        )
 
     return FrozenRiskPlan(
         id=int(row["id"]),
@@ -98,9 +104,8 @@ def get_frozen_risk_plan(*, candidate_id: int, db_path=None) -> FrozenRiskPlan |
         prospectivity_state=str(row["prospectivity_state"]),
         plan_version=str(row["plan_version"]),
         actor=str(row["actor"]),
-        bankroll_cap_eur_minor=int(row["bankroll_cap_eur_minor"]),
         max_defined_loss_eur_minor=int(row["max_defined_loss_eur_minor"]),
-        reserved_risk_eur_minor=int(row["reserved_risk_eur_minor"]),
+        risk_basis_eur_minor=int(row["risk_basis_eur_minor"]),
         stop_loss_fraction=(
             None
             if row["stop_loss_fraction"] is None
@@ -118,7 +123,8 @@ def create_frozen_risk_plan(
     *,
     candidate_id: int,
     max_defined_loss_eur_minor: int,
-    reserved_risk_eur_minor: int,
+    risk_basis_eur_minor: int | None = None,
+    reserved_risk_eur_minor: int | None = None,
     stop_loss_fraction: float | None = None,
     time_stop_at: str | None = None,
     thesis_invalidation_rule: str | None = None,
@@ -129,15 +135,43 @@ def create_frozen_risk_plan(
     created_at: str | None = None,
     db_path=None,
 ) -> FrozenRiskPlan:
+    """Freeze an intrinsic candidate risk plan.
+
+    `risk_basis_eur_minor` is the loss denominator used by the candidate's
+    predeclared stop logic. It is a property of the research trade definition,
+    not an account reservation and not an affordability test.
+
+    `reserved_risk_eur_minor` is accepted temporarily as a compatibility alias
+    for callers from the pre-V29 API. It has no bankroll/account semantics and
+    cannot impose a ceiling.
+    """
     if max_defined_loss_eur_minor < 0:
         raise ValueError("Defined maximum loss cannot be negative.")
-    if reserved_risk_eur_minor <= 0:
-        raise ValueError("Reserved risk must be positive.")
-    if max_defined_loss_eur_minor > reserved_risk_eur_minor:
-        raise ValueError("Defined maximum loss cannot exceed reserved risk.")
-    if reserved_risk_eur_minor > BANKROLL_CAP_EUR_MINOR:
-        raise ValueError("Reserved risk exceeds Christiania's fixed €500 bankroll cap.")
-    if stop_loss_fraction is not None and not 0 < float(stop_loss_fraction) <= 1:
+
+    if risk_basis_eur_minor is None:
+        risk_basis_eur_minor = reserved_risk_eur_minor
+    elif (
+        reserved_risk_eur_minor is not None
+        and int(reserved_risk_eur_minor) != int(risk_basis_eur_minor)
+    ):
+        raise ValueError(
+            "risk_basis_eur_minor conflicts with the compatibility alias."
+        )
+
+    if risk_basis_eur_minor is None:
+        risk_basis_eur_minor = max_defined_loss_eur_minor
+
+    risk_basis_eur_minor = int(risk_basis_eur_minor)
+    if risk_basis_eur_minor <= 0:
+        raise ValueError("Intrinsic risk basis must be positive.")
+    if max_defined_loss_eur_minor > risk_basis_eur_minor:
+        raise ValueError(
+            "Defined maximum loss cannot exceed the intrinsic risk basis."
+        )
+    if (
+        stop_loss_fraction is not None
+        and not 0 < float(stop_loss_fraction) <= 1
+    ):
         raise ValueError("stop_loss_fraction must be in (0,1].")
     if not str(actor).strip():
         raise ValueError("Risk-plan actor cannot be blank.")
@@ -158,7 +192,7 @@ def create_frozen_risk_plan(
     conn = get_connection(db_path)
     try:
         candidate = conn.execute(
-            "SELECT surfaced_at FROM shadow_candidates WHERE id = ?",
+            "SELECT surfaced_at FROM shadow_candidates WHERE id = ?;",
             (candidate_id,),
         ).fetchone()
         if candidate is None:
@@ -166,12 +200,13 @@ def create_frozen_risk_plan(
         if created_dt < _aware(str(candidate["surfaced_at"])):
             raise ValueError("Risk plan cannot predate the candidate.")
 
-        # Prospectivity does not depend on caller-supplied created_at.
-        # Any pre-existing shadow mark means the outcome history has begun,
-        # so a first risk plan is refused outright. A DB trigger enforces the
-        # same invariant for direct SQL callers.
         existing_mark = conn.execute(
-            "SELECT 1 FROM shadow_mark_observations WHERE candidate_id = ? LIMIT 1",
+            """
+            SELECT 1
+            FROM shadow_mark_observations
+            WHERE candidate_id = ?
+            LIMIT 1;
+            """,
             (candidate_id,),
         ).fetchone()
         if existing_mark is not None:
@@ -182,23 +217,21 @@ def create_frozen_risk_plan(
         with conn:
             conn.execute(
                 """
-                INSERT INTO shadow_risk_plans(
+                INSERT INTO shadow_intrinsic_risk_plans_v1 (
                     candidate_id, created_at, plan_version, actor,
-                    bankroll_cap_eur_minor, max_defined_loss_eur_minor,
-                    reserved_risk_eur_minor, stop_loss_fraction, time_stop_at,
+                    max_defined_loss_eur_minor, risk_basis_eur_minor,
+                    stop_loss_fraction, time_stop_at,
                     thesis_invalidation_rule, event_stop_rule,
                     entry_assumption_json, notes
-                )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     candidate_id,
                     created_at,
                     RISK_PLAN_VERSION,
                     actor,
-                    BANKROLL_CAP_EUR_MINOR,
                     max_defined_loss_eur_minor,
-                    reserved_risk_eur_minor,
+                    risk_basis_eur_minor,
                     stop_loss_fraction,
                     time_stop_at,
                     thesis_invalidation_rule,
@@ -214,7 +247,9 @@ def create_frozen_risk_plan(
     if plan is None:
         raise RuntimeError("Frozen risk plan insert did not persist.")
     if plan.prospectivity_state != "DB_RECORDED_PROSPECTIVE":
-        raise RuntimeError("New risk plan did not receive DB-recorded prospective origin evidence.")
+        raise RuntimeError(
+            "New risk plan did not receive DB-recorded prospective origin evidence."
+        )
     return plan
 
 
@@ -228,12 +263,16 @@ def evaluate_risk_plan(
 ) -> RiskAssessment:
     observed_dt = _aware(observed_at)
     if plan.prospectivity_state != "DB_RECORDED_PROSPECTIVE":
-        raise ValueError("Risk assessment refused: risk-plan prospectivity is not DB-verified.")
+        raise ValueError(
+            "Risk assessment refused: risk-plan prospectivity is not DB-verified."
+        )
     if observed_dt < _aware(plan.recorded_at):
-        raise ValueError("Risk assessment cannot predate the DB-recorded risk plan.")
+        raise ValueError(
+            "Risk assessment cannot predate the DB-recorded risk plan."
+        )
 
     reasons: list[str] = []
-    loss_fraction_reserved = None
+    loss_fraction = None
 
     if plan.stop_loss_fraction is None:
         price_state = "NOT_CONFIGURED"
@@ -241,13 +280,13 @@ def evaluate_risk_plan(
         price_state = "UNAVAILABLE"
         reasons.append("PRICE_STOP_INPUT_UNAVAILABLE")
     else:
-        loss_fraction_reserved = max(
+        loss_fraction = max(
             0.0,
-            -float(mark_net_pnl_eur_minor) / plan.reserved_risk_eur_minor,
+            -float(mark_net_pnl_eur_minor) / plan.risk_basis_eur_minor,
         )
         price_state = (
             "BREACHED"
-            if loss_fraction_reserved >= plan.stop_loss_fraction
+            if loss_fraction >= plan.stop_loss_fraction
             else "CLEAR"
         )
         if price_state == "BREACHED":
@@ -257,7 +296,9 @@ def evaluate_risk_plan(
         time_state = "NOT_CONFIGURED"
     else:
         time_state = (
-            "BREACHED" if observed_dt >= _aware(plan.time_stop_at) else "CLEAR"
+            "BREACHED"
+            if observed_dt >= _aware(plan.time_stop_at)
+            else "CLEAR"
         )
         if time_state == "BREACHED":
             reasons.append("TIME_STOP_BREACHED")
@@ -298,7 +339,7 @@ def evaluate_risk_plan(
         thesis_stop_state=thesis_state,
         event_stop_state=event_state,
         overall_state=overall_state,
-        loss_fraction_reserved=loss_fraction_reserved,
+        loss_fraction_risk_basis=loss_fraction,
         reason_codes=tuple(reasons),
     )
 
@@ -315,12 +356,19 @@ def record_risk_assessment(
 ) -> RiskAssessment:
     plan = get_frozen_risk_plan(candidate_id=candidate_id, db_path=db_path)
     if plan is None:
-        raise ValueError(f"Candidate {candidate_id} has no frozen shadow risk plan.")
+        raise ValueError(
+            f"Candidate {candidate_id} has no frozen intrinsic shadow risk plan."
+        )
 
     evidence: dict[str, Any] = {
         "thesis_invalidated": thesis_invalidated,
         "event_risk_active": event_risk_active,
-        "source": "MANUAL_ASSESSMENT" if shadow_mark_id is None else "PERSISTED_SHADOW_MARK",
+        "source": (
+            "MANUAL_ASSESSMENT"
+            if shadow_mark_id is None
+            else "PERSISTED_SHADOW_MARK"
+        ),
+        "account_balance_dependency": False,
     }
 
     conn = get_connection(db_path)
@@ -369,14 +417,13 @@ def record_risk_assessment(
         with conn:
             conn.execute(
                 """
-                INSERT INTO shadow_risk_assessments(
+                INSERT INTO shadow_intrinsic_risk_assessments_v1 (
                     risk_plan_id, candidate_id, shadow_mark_id, observed_at,
                     assessment_version, mark_net_pnl_eur_minor,
-                    loss_fraction_reserved, price_stop_state, time_stop_state,
+                    loss_fraction_risk_basis, price_stop_state, time_stop_state,
                     thesis_stop_state, event_stop_state, overall_state,
                     reason_codes_json, evidence_json
-                )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     plan.id,
@@ -385,7 +432,7 @@ def record_risk_assessment(
                     observed_at,
                     ASSESSMENT_VERSION,
                     mark_net_pnl_eur_minor,
-                    assessment.loss_fraction_reserved,
+                    assessment.loss_fraction_risk_basis,
                     assessment.price_stop_state,
                     assessment.time_stop_state,
                     assessment.thesis_stop_state,
@@ -409,41 +456,43 @@ def monitor_frozen_risk_plans(*, db_path=None) -> dict[str, int]:
             SELECT
                 p.candidate_id,
                 rec.recorded_at AS plan_recorded_at,
-                rec.prospectivity_state,
                 m.id AS mark_id,
                 m.observed_at,
                 m.estimated_net_pnl_eur_minor
-            FROM shadow_risk_plans AS p
-            JOIN shadow_risk_plan_recordings AS rec
+            FROM shadow_intrinsic_risk_plans_v1 AS p
+            JOIN shadow_intrinsic_risk_plan_recordings_v1 AS rec
               ON rec.risk_plan_id = p.id
             JOIN shadow_mark_observations AS m
               ON m.candidate_id = p.candidate_id
-            LEFT JOIN shadow_risk_assessments AS a
+            LEFT JOIN shadow_intrinsic_risk_assessments_v1 AS a
               ON a.shadow_mark_id = m.id
             WHERE a.id IS NULL
               AND rec.prospectivity_state = 'DB_RECORDED_PROSPECTIVE'
             ORDER BY m.observed_at, m.id;
             """
         ).fetchall()
-
-        without_marks = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM shadow_risk_plans AS p
-            WHERE NOT EXISTS(
-                SELECT 1
-                FROM shadow_mark_observations AS m
-                WHERE m.candidate_id = p.candidate_id
-            );
-            """
-        ).fetchone()[0]
+        without_marks = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM shadow_intrinsic_risk_plans_v1 AS p
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM shadow_mark_observations AS m
+                    WHERE m.candidate_id = p.candidate_id
+                );
+                """
+            ).fetchone()[0]
+        )
     finally:
         conn.close()
 
     recorded = 0
     retrospective_marks = 0
     for row in rows:
-        if _aware(str(row["observed_at"])) < _aware(str(row["plan_recorded_at"])):
+        if _aware(str(row["observed_at"])) < _aware(
+            str(row["plan_recorded_at"])
+        ):
             retrospective_marks += 1
             continue
         record_risk_assessment(
@@ -458,6 +507,6 @@ def monitor_frozen_risk_plans(*, db_path=None) -> dict[str, int]:
     return {
         "recorded": recorded,
         "skipped_existing": 0,
-        "without_marks": int(without_marks),
+        "without_marks": without_marks,
         "retrospective_marks_refused": retrospective_marks,
     }
