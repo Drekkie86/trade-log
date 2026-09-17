@@ -42,6 +42,7 @@ def _progress(message: str) -> None:
 def _heartbeat(label: str) -> Iterator[None]:
     started = monotonic()
     stopped = Event()
+    succeeded = False
 
     def emit() -> None:
         while not stopped.wait(HEARTBEAT_INTERVAL_SECONDS):
@@ -57,11 +58,13 @@ def _heartbeat(label: str) -> Iterator[None]:
     thread.start()
     try:
         yield
+        succeeded = True
     finally:
         stopped.set()
         thread.join(timeout=1.0)
         elapsed = monotonic() - started
-        _progress(f"{label}: completed in {elapsed:.1f}s.")
+        outcome = "completed" if succeeded else "stopped"
+        _progress(f"{label}: {outcome} after {elapsed:.1f}s.")
 
 
 def _fsync_directory(path: Path) -> None:
