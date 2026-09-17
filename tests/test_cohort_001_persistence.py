@@ -1,6 +1,8 @@
 from datetime import date
 from pathlib import Path
+import shutil
 import sqlite3
+import tempfile
 
 import pytest
 
@@ -37,65 +39,90 @@ SESSION_DATE = date(
     28,
 )
 
+_V7_TEMPLATE_DIR = tempfile.TemporaryDirectory(
+    prefix="christiania-cohort-persistence-"
+)
+_V7_TEMPLATE_PATH = (
+    Path(_V7_TEMPLATE_DIR.name)
+    / "cohort_persistence_v7_template.db"
+)
+_V7_TEMPLATE_READY = False
+
 
 def build_database(
     tmp_path,
 ):
+    """Clone one pristine v7 cohort schema instead of rebuilding per test."""
+    global _V7_TEMPLATE_READY
+
+    if not _V7_TEMPLATE_READY:
+        schema = (
+            PROJECT_ROOT
+            / "trade_log_schema.sql"
+        ).read_text(
+            encoding="utf-8"
+        )
+
+        template_connection = sqlite3.connect(
+            _V7_TEMPLATE_PATH
+        )
+        template_connection.row_factory = sqlite3.Row
+        template_connection.execute(
+            "PRAGMA foreign_keys = ON;"
+        )
+
+        try:
+            template_connection.executescript(
+                schema
+            )
+
+            version = template_connection.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0]
+
+            if version == 6:
+                migration = (
+                    PROJECT_ROOT
+                    / "migrations"
+                    / "007_selection_universe_integrity.sql"
+                ).read_text(
+                    encoding="utf-8"
+                )
+                template_connection.executescript(
+                    migration
+                )
+
+            assert template_connection.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0] == 7
+            template_connection.commit()
+        finally:
+            template_connection.close()
+
+        _V7_TEMPLATE_READY = True
+
     db_path = (
         tmp_path
         / "cohort_persistence.db"
     )
-
-    schema = (
-        PROJECT_ROOT
-        / "trade_log_schema.sql"
-    ).read_text(
-        encoding="utf-8"
+    shutil.copy2(
+        _V7_TEMPLATE_PATH,
+        db_path,
     )
 
     connection = sqlite3.connect(
         db_path
     )
-
-    connection.row_factory = (
-        sqlite3.Row
-    )
-
+    connection.row_factory = sqlite3.Row
     connection.execute(
         "PRAGMA foreign_keys = ON;"
     )
-
-    connection.executescript(
-        schema
-    )
-
-    version = connection.execute(
-        """
-        SELECT MAX(version)
-        FROM schema_version;
-        """
-    ).fetchone()[0]
-
-    if version == 6:
-        migration = (
-            PROJECT_ROOT
-            / "migrations"
-            / "007_selection_universe_integrity.sql"
-        ).read_text(
-            encoding="utf-8"
-        )
-
-        connection.executescript(
-            migration
-        )
-
-    assert connection.execute(
-        """
-        SELECT MAX(version)
-        FROM schema_version;
-        """
-    ).fetchone()[0] == 7
-
     return connection
 
 
@@ -536,8 +563,6 @@ def test_freeze_selection_writes_before_resolution(
             == 1
         )
 
-        # No Saxo evidence is required or written
-        # by this persistence step.
         assert connection.execute(
             """
             SELECT COUNT(*)
@@ -763,7 +788,6 @@ def test_resolution_sequence_must_be_complete(
         connection.close()
 
 
-
 def test_selection_exclusion_persists_and_reconciles(
     tmp_path,
 ):
@@ -943,6 +967,7 @@ def test_selection_freeze_rejects_nonreconciling_population(
 
     finally:
         connection.close()
+
 
 def test_terminal_run_locks_manifest(
     tmp_path,
