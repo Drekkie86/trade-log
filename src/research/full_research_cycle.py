@@ -12,9 +12,12 @@ from src.research.research_cycle import (
     ResearchCycleResult,
     run_research_cycle,
 )
-from src.research.shadow_admission import (
+from src.research.shadow_intrinsic_admission_v1 import (
     ShadowAdmissionResult,
     admit_shadow_proposals,
+)
+from src.research.shadow_lifecycle_runtime import (
+    advance_shadow_lifecycle,
 )
 from src.research.shadow_structure_bridge import (
     ShadowStructureBridgeResult,
@@ -53,11 +56,12 @@ def run_full_research_cycle(
         -> deterministic structural filter
         -> deterministic hypothesis scan
         -> defined-risk structure proposals
-        -> ECB FX
-        -> EUR sizing + cost reserve
-        -> shadow admission
+        -> intrinsic trade-risk validation + cost evidence
+        -> shadow admission (independent of external account balance)
+        -> deterministic lifecycle advancement for expired candidates
 
-    No broker order is created.
+    No broker order is created. Account/wallet capacity is deliberately not a
+    research-admission criterion.
     """
 
     research_cycle = run_research_cycle(
@@ -103,19 +107,25 @@ def run_full_research_cycle(
         )
     ]
 
-    if not proposed_ids:
-        return FullResearchCycleResult(
-            research_cycle=research_cycle,
-            structure_bridge=bridge,
-            fx_observation=None,
-            admission=None,
+    fx = None
+    admission = None
+
+    if proposed_ids:
+        fx = fx_fetcher()
+        admission = admit_shadow_proposals(
+            fx=fx,
+            proposal_ids=proposed_ids,
+            db_path=db_path,
         )
 
-    fx = fx_fetcher()
-
-    admission = admit_shadow_proposals(
-        fx=fx,
-        proposal_ids=proposed_ids,
+    # The daemon collects shadow marks only after this function returns.
+    # Advance expiry first so already-expired candidates stop generating dead
+    # quote marks. Closing never implies scoring; the lifecycle runtime keeps
+    # the validated-package-outcome evidence firewall intact.
+    advance_shadow_lifecycle(
+        research_run_id=int(
+            research_cycle.research.run_id
+        ),
         db_path=db_path,
     )
 
