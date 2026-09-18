@@ -16,7 +16,10 @@ from src.operations.backup_recovery import (
     inventory_backups,
     run_restore_drill,
 )
-from src.operations.sqlite_runtime import create_verified_backup
+from src.operations.sqlite_runtime import (
+    _prune_backups,
+    create_verified_backup,
+)
 
 
 def test_compressed_backup_roundtrip_is_verified(db_path, tmp_path):
@@ -220,3 +223,42 @@ def test_historical_schema_backup_can_be_compressed_without_becoming_current(
             deep_payload=False,
             require_current_schema=True,
         )
+
+
+def test_retention_prunes_compressed_backup_and_manifest(db_path, tmp_path):
+    backup_dir = tmp_path / "backups"
+    created = create_verified_backup(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        retention=5,
+    )
+
+    newest = Path(created.backup_path)
+    older = backup_dir / "christiania_backup_20260101T000000Z.db"
+    shutil.copy2(newest, older)
+
+    now = datetime.now(UTC)
+    old_time = (now - timedelta(days=1)).timestamp()
+    new_time = now.timestamp()
+    os.utime(older, (old_time, old_time))
+    os.utime(newest, (new_time, new_time))
+
+    compressed = Path(
+        compress_verified_backup(
+            older
+        ).compressed_path
+    )
+    manifest = manifest_path_for(compressed)
+
+    assert compressed.exists()
+    assert manifest.exists()
+
+    pruned = _prune_backups(
+        backup_dir,
+        keep=1,
+    )
+
+    assert pruned == 1
+    assert newest.exists()
+    assert not compressed.exists()
+    assert not manifest.exists()
