@@ -945,6 +945,15 @@ def evaluate_counterfactual_rejection_audit_v1(
             for item in group_metrics.values()
         )
 
+        if missing_n:
+            raise CounterfactualRejectionAuditError(
+                "Final rejection-audit evaluation refused: outcome recovery has "
+                f"not been attempted for {missing_n} frozen cohort member(s). "
+                "Run the frozen recovery pipeline first; unresolved outcomes "
+                "may remain unresolved, but silent missing records are not "
+                "accepted."
+            )
+
         metrics = {
             "classification": "RETROSPECTIVE_DISCOVERY_NOT_EDGE_EVIDENCE",
             "evaluation_trigger": {
