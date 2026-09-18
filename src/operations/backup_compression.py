@@ -6,11 +6,9 @@ import json
 import os
 import shutil
 import sqlite3
-import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
 
 from src.config import get_runtime_setting
 from src.database.repository import EXPECTED_SCHEMA_VERSION
@@ -362,7 +360,10 @@ def compress_verified_backup(
             f"Compressed backup target already exists for {source.name}."
         )
 
-    source_size = source.stat().st_size
+    source_stat = source.stat()
+    source_size = source_stat.st_size
+    source_atime_ns = source_stat.st_atime_ns
+    source_mtime_ns = source_stat.st_mtime_ns
     source_sha = _sha256_file(source)
     level = gzip_level()
 
@@ -411,6 +412,13 @@ def compress_verified_backup(
         )
 
         os.replace(temp, final)
+        os.utime(
+            final,
+            ns=(
+                source_atime_ns,
+                source_mtime_ns,
+            ),
+        )
         _fsync_directory(source.parent)
 
         _write_manifest_atomic(
