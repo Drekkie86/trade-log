@@ -455,17 +455,54 @@ def test_followup_freeze_is_separate_idempotent_and_preserves_original_clock(
             "total": 3359,
         }
     }
+    assert overlap["per_date_gap"] == {
+        "2026-09-04": 779,
+        "2026-09-11": 53,
+        "2026-09-14": 885,
+        "2026-09-15": 594,
+        "2026-09-16": 695,
+        "2026-09-17": 353,
+    }
+    assert sum(overlap["per_date_gap"].values()) == 3359
+
+    minimum_geometry = overlap["minimum_geometry_rule"]
+    assert minimum_geometry["min_usable_strikes"] == 5
+    assert minimum_geometry["quadratic_parameter_count"] == 3
+    assert minimum_geometry["loo_peer_count_at_minimum"] == 4
+    assert minimum_geometry["residual_degrees_of_freedom_at_minimum"] == 1
+    assert "does not independently establish" in minimum_geometry["audit_boundary"]
+
     assert overlap["gap_reconciliation_state"] == (
         "FULLY_EXPLAINED_BY_V2_MINIMUM_GEOMETRY"
     )
 
     selection = discovery_context["h2"]["raw_vs_centered_selection_audit"]
     assert selection["raw_better_consistently_exceeds_centered"] is False
-    assert (
-        selection["centered_higher_examples_all_population"][0]
-        ["centered_better_fraction"]
-        > selection["centered_higher_examples_all_population"][0]
-        ["raw_better_fraction"]
+
+    examples = selection["centered_higher_examples_all_population"]
+    assert examples == [
+        {
+            "session_date": "2026-09-14",
+            "dte_bucket": "DTE_21_30",
+            "raw_better_fraction": 0.6686,
+            "centered_better_fraction": 0.6867,
+        },
+        {
+            "session_date": "2026-09-16",
+            "dte_bucket": "DTE_31_45",
+            "raw_better_fraction": 0.6622,
+            "centered_better_fraction": 0.6808,
+        },
+        {
+            "session_date": "2026-09-17",
+            "dte_bucket": "DTE_21_30",
+            "raw_better_fraction": 0.6583,
+            "centered_better_fraction": 0.6828,
+        },
+    ]
+    assert all(
+        item["centered_better_fraction"] > item["raw_better_fraction"]
+        for item in examples
     )
 
 
