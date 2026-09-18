@@ -237,35 +237,30 @@ def resolve_latest_valid_backup(backup_dir: str | Path | None = None) -> Path:
 def resolve_restore_drill_backup(
     backup_dir: str | Path | None = None,
 ) -> Path:
-    """Prefer a verified compressed backup so weekly drills exercise it.
+    """Prefer compressed recovery so weekly drills exercise that path.
 
-    The newest ordinary .db remains the fastest local recovery point. The
-    scheduled drill deliberately proves the older compressed recovery path
-    whenever one exists, falling back to the latest valid backup otherwise.
+    Selection itself is metadata-only: run_restore_drill() performs the full
+    hash, decompression, schema, integrity, and foreign-key verification. This
+    avoids reading every compressed backup deeply before immediately reading
+    the selected one again.
     """
-    inventory = inventory_backups(backup_dir)
-    compressed = [
-        entry
-        for entry in inventory.entries
-        if (
-            entry.state == "VALID"
-            and entry.filename.endswith(".db.gz")
-        )
-    ]
+    directory = resolve_backup_dir(backup_dir)
 
-    if compressed:
-        selected = min(
-            compressed,
-            key=lambda entry: entry.age_hours,
-        )
-        return Path(selected.path)
-
-    if not inventory.latest_valid_path:
-        raise FileNotFoundError(
-            "No valid Christiania backup is available."
+    if directory.exists():
+        compressed = sorted(
+            (
+                path
+                for path in backup_data_files(directory)
+                if path.name.endswith(".db.gz")
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
         )
 
-    return Path(inventory.latest_valid_path)
+        if compressed:
+            return compressed[0]
+
+    return resolve_latest_valid_backup(directory)
 
 
 def run_restore_drill(backup_path: str | Path) -> RestoreDrillResult:
