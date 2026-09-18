@@ -674,6 +674,16 @@ SERVICES_QUIESCED=0
 DATABASE_PREPARED=0
 trap - ERR INT TERM HUP
 
+echo "Pruning old immutable release directories after successful activation."
+if ! "${APP_LINK}/.venv/bin/python" \
+  "${APP_LINK}/prune_christiania_releases.py" \
+  --release-root "${RELEASE_ROOT}" \
+  --active-release "${RELEASE_DIR}" \
+  --retention 4 \
+  --json; then
+  echo "WARNING: release-directory pruning failed; activation remains valid." >&2
+fi
+
 echo
 echo "CHRISTIANIA RELEASE ACTIVATED"
 echo "commit=${EXPECTED_COMMIT}"

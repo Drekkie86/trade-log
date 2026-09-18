@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import shutil
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,8 @@ from src.database.repository import (
 
 
 DEFAULT_BACKUP_RETENTION = 14
+DEFAULT_BACKUP_MIN_FREE_BYTES = 15 * 1024**3
+DEFAULT_BACKUP_MIN_FREE_FRACTION = 0.15
 
 
 @dataclass(frozen=True)
@@ -257,6 +260,72 @@ def inspect_database(
     )
 
 
+def _runtime_nonnegative_int(name: str, default: int) -> int:
+    raw = get_runtime_setting(name)
+    if raw in (None, ""):
+        return default
+    value = int(raw)
+    if value < 0:
+        raise ValueError(f"{name} cannot be negative.")
+    return value
+
+
+def _runtime_nonnegative_float(name: str, default: float) -> float:
+    raw = get_runtime_setting(name)
+    if raw in (None, ""):
+        return default
+    value = float(raw)
+    if value < 0:
+        raise ValueError(f"{name} cannot be negative.")
+    return value
+
+
+def backup_required_free_bytes(
+    *,
+    source_size_bytes: int,
+    filesystem_total_bytes: int,
+) -> int:
+    """Free bytes required before starting a full verified backup.
+
+    The temporary full SQLite copy exists before retention pruning. Keep the
+    same post-write free-space reserve used by the RC0 supervisor so a backup
+    cannot consume the headroom that keeps production deployable and healthy.
+    """
+    reserve_bytes = _runtime_nonnegative_int(
+        "CHRISTIANIA_RC0_MIN_FREE_BYTES",
+        DEFAULT_BACKUP_MIN_FREE_BYTES,
+    )
+    reserve_fraction = _runtime_nonnegative_float(
+        "CHRISTIANIA_RC0_MIN_FREE_FRACTION",
+        DEFAULT_BACKUP_MIN_FREE_FRACTION,
+    )
+    reserve = max(
+        reserve_bytes,
+        int(filesystem_total_bytes * reserve_fraction),
+    )
+    return int(source_size_bytes) + reserve
+
+
+def assert_backup_capacity(
+    *,
+    source: Path,
+    target_dir: Path,
+) -> None:
+    usage = shutil.disk_usage(target_dir)
+    required = backup_required_free_bytes(
+        source_size_bytes=source.stat().st_size,
+        filesystem_total_bytes=int(usage.total),
+    )
+
+    if int(usage.free) < required:
+        raise RuntimeError(
+            "Insufficient backup filesystem headroom: "
+            f"free={int(usage.free)} bytes, required={required} bytes. "
+            "A full temporary backup must fit while preserving the configured "
+            "production free-space reserve. No backup file was created."
+        )
+
+
 def _verify_backup(path: Path) -> tuple[int, str, int]:
     conn = sqlite3.connect(path)
 
@@ -345,6 +414,11 @@ def create_verified_backup(
     target_dir.mkdir(
         parents=True,
         exist_ok=True,
+    )
+
+    assert_backup_capacity(
+        source=source,
+        target_dir=target_dir,
     )
 
     keep = (
