@@ -175,3 +175,52 @@ def test_verified_backup_rejects_stale_schema(
             "christiania_backup_*.db"
         )
     )
+
+
+def test_backup_capacity_preflight_refuses_before_file_creation(
+    tmp_path,
+    monkeypatch,
+):
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    source_size = source.stat().st_size
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 90 * 1024**3
+        free = 10 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    import pytest
+
+    with pytest.raises(
+        RuntimeError,
+        match="Insufficient backup filesystem headroom",
+    ):
+        create_verified_backup(
+            db_path=source,
+            backup_dir=backup_dir,
+            retention=3,
+        )
+
+    assert source_size > 0
+    assert not list(
+        backup_dir.glob(
+            "christiania_backup_*.db"
+        )
+    )
+    assert not list(
+        backup_dir.glob(
+            ".christiania_backup_*.tmp.db"
+        )
+    )
