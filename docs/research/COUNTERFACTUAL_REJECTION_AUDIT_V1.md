@@ -17,7 +17,9 @@ The freeze requires the exact pre-label inventory observed through the
 
 - 149 defined-risk `PROPOSED` structures in total;
 - 15 `ADMITTED_AT_TIME`;
-- 134 `REJECTED_AT_TIME_WALLET_ONLY`;
+- 134 `REJECTED_AT_TIME_WALLET_ONLY`:
+  - 133 were blocked by `ACTIVE_PORTFOLIO_EXCEEDS_EUR_500_BANKROLL`;
+  - 1 was blocked by `ONE_UNIT_EXCEEDS_EUR_500_BANKROLL`;
 - all 134 wallet-only rejects are already present in immutable historical replay
   as `WOULD_ADMIT` after removal of the external bankroll rule;
 - the union of the 15 admitted and 134 wallet-rejected structures must equal the
