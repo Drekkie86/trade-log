@@ -281,6 +281,41 @@ def _discovery_context() -> dict[str, Any]:
                 "missing_in_v1": 0,
                 "residual_mismatches_gt_1e_12": 0,
                 "max_abs_residual_difference": 1.1102230246251565e-16,
+                "v1_evaluable_observations": 969048,
+                "v2_not_evaluable_gap": 3359,
+                "missing_v2_observations": 0,
+                "v2_not_evaluable_reasons": {
+                    "INSUFFICIENT_USABLE_STRIKES": {
+                        "usable_strikes_3": 835,
+                        "usable_strikes_4": 2524,
+                        "total": 3359,
+                    },
+                },
+                "per_date_gap": {
+                    "2026-09-04": 779,
+                    "2026-09-11": 53,
+                    "2026-09-14": 885,
+                    "2026-09-15": 594,
+                    "2026-09-16": 695,
+                    "2026-09-17": 353,
+                },
+                "minimum_geometry_rule": {
+                    "min_usable_strikes": 5,
+                    "quadratic_parameter_count": 3,
+                    "loo_peer_count_at_minimum": 4,
+                    "residual_degrees_of_freedom_at_minimum": 1,
+                    "documented_rationale": (
+                        "Five usable strikes leave four peers after target "
+                        "omission for a three-parameter quadratic, preserving "
+                        "one positive residual degree of freedom."
+                    ),
+                    "audit_boundary": (
+                        "This reconciliation verifies consistent enforcement "
+                        "and fully explains the population gap; it does not "
+                        "independently establish that five is statistically optimal."
+                    ),
+                },
+                "gap_reconciliation_state": "FULLY_EXPLAINED_BY_V2_MINIMUM_GEOMETRY",
             },
             "raw_vs_raw_all_population": {
                 "date_x_dte_cells": 24,
@@ -288,6 +323,34 @@ def _discovery_context() -> dict[str, Any]:
                 "local_linear_lower_q95_cells": 20,
                 "local_linear_better_fraction_gt_half_cells": 24,
                 "local_linear_better_fraction_range": [0.5433, 0.6892],
+            },
+            "raw_vs_centered_selection_audit": {
+                "raw_better_consistently_exceeds_centered": False,
+                "selection_rationale": (
+                    "Raw-vs-raw is the symmetric paired model comparison and "
+                    "was selected even though centered often produced the more "
+                    "favorable local-linear better-fraction."
+                ),
+                "centered_higher_examples_all_population": [
+                    {
+                        "session_date": "2026-09-14",
+                        "dte_bucket": "DTE_21_30",
+                        "raw_better_fraction": 0.6686,
+                        "centered_better_fraction": 0.6867,
+                    },
+                    {
+                        "session_date": "2026-09-16",
+                        "dte_bucket": "DTE_31_45",
+                        "raw_better_fraction": 0.6622,
+                        "centered_better_fraction": 0.6808,
+                    },
+                    {
+                        "session_date": "2026-09-17",
+                        "dte_bucket": "DTE_21_30",
+                        "raw_better_fraction": 0.6583,
+                        "centered_better_fraction": 0.6828,
+                    },
+                ],
             },
             "clean_population": {
                 "date_x_dte_cells": 24,

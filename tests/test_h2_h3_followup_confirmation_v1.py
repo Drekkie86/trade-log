@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -426,12 +427,83 @@ def test_followup_freeze_is_separate_idempotent_and_preserves_original_clock(
         hypothesis_count = conn.execute(
             "SELECT COUNT(*) FROM prospective_followup_hypotheses_v1;"
         ).fetchone()[0]
+        discovery_context = json.loads(
+            conn.execute(
+                """
+                SELECT discovery_context_json
+                FROM prospective_followup_programs_v1
+                WHERE program_key = 'H2_H3_FOLLOWUP_CONFIRMATION_V1';
+                """
+            ).fetchone()[0]
+        )
     finally:
         conn.close()
 
     assert original == [("2026-09-03", "2026-09-04")]
     assert followup_count == 1
     assert hypothesis_count == 2
+
+    overlap = discovery_context["h2"]["h2_v2_overlap_parity"]
+    assert overlap["v1_evaluable_observations"] == 969048
+    assert overlap["comparable_observations"] == 965689
+    assert overlap["v2_not_evaluable_gap"] == 3359
+    assert overlap["missing_v2_observations"] == 0
+    assert overlap["v2_not_evaluable_reasons"] == {
+        "INSUFFICIENT_USABLE_STRIKES": {
+            "usable_strikes_3": 835,
+            "usable_strikes_4": 2524,
+            "total": 3359,
+        }
+    }
+    assert overlap["per_date_gap"] == {
+        "2026-09-04": 779,
+        "2026-09-11": 53,
+        "2026-09-14": 885,
+        "2026-09-15": 594,
+        "2026-09-16": 695,
+        "2026-09-17": 353,
+    }
+    assert sum(overlap["per_date_gap"].values()) == 3359
+
+    minimum_geometry = overlap["minimum_geometry_rule"]
+    assert minimum_geometry["min_usable_strikes"] == 5
+    assert minimum_geometry["quadratic_parameter_count"] == 3
+    assert minimum_geometry["loo_peer_count_at_minimum"] == 4
+    assert minimum_geometry["residual_degrees_of_freedom_at_minimum"] == 1
+    assert "does not independently establish" in minimum_geometry["audit_boundary"]
+
+    assert overlap["gap_reconciliation_state"] == (
+        "FULLY_EXPLAINED_BY_V2_MINIMUM_GEOMETRY"
+    )
+
+    selection = discovery_context["h2"]["raw_vs_centered_selection_audit"]
+    assert selection["raw_better_consistently_exceeds_centered"] is False
+
+    examples = selection["centered_higher_examples_all_population"]
+    assert examples == [
+        {
+            "session_date": "2026-09-14",
+            "dte_bucket": "DTE_21_30",
+            "raw_better_fraction": 0.6686,
+            "centered_better_fraction": 0.6867,
+        },
+        {
+            "session_date": "2026-09-16",
+            "dte_bucket": "DTE_31_45",
+            "raw_better_fraction": 0.6622,
+            "centered_better_fraction": 0.6808,
+        },
+        {
+            "session_date": "2026-09-17",
+            "dte_bucket": "DTE_21_30",
+            "raw_better_fraction": 0.6583,
+            "centered_better_fraction": 0.6828,
+        },
+    ]
+    assert all(
+        item["centered_better_fraction"] > item["raw_better_fraction"]
+        for item in examples
+    )
 
 
 def test_followup_freeze_refuses_late_creation_after_new_boundary_evidence(

@@ -37,12 +37,43 @@ confirmation**:
   - 965,689 comparable observations;
   - zero missing V1 residuals;
   - zero residual mismatches above 1e-12;
+  - the 3,359-observation gap from the 969,048 V1-evaluable population is
+    completely reconciled to quadratic-V2 minimum geometry:
+    - 835 observations had 3 usable strikes;
+    - 2,524 observations had 4 usable strikes;
+    - all 3,359 are persisted as `NOT_EVALUABLE` with
+      `INSUFFICIENT_USABLE_STRIKES`;
+    - per-date gap reconciliation:
+      - Sep-04: 779;
+      - Sep-11: 53;
+      - Sep-14: 885;
+      - Sep-15: 594;
+      - Sep-16: 695;
+      - Sep-17: 353;
+      - total: 3,359;
+    - zero V2 observations are unexplained or missing;
+    - the five-strike minimum is a pre-existing V2 geometry rule, not a
+      conclusion of this reconciliation audit. Its documented rationale is:
+      a quadratic has three fitted parameters; requiring five usable strikes in
+      the full group leaves four peers after target omission and therefore one
+      positive residual degree of freedom. This audit verifies that the rule was
+      enforced consistently and fully explains the population gap; it does not
+      independently prove that five is statistically optimal;
 - raw-vs-raw H2, ALL population:
   - 24 date x DTE cells;
   - local-linear lower median absolute residual in 24/24 cells;
   - local-linear lower q95 absolute residual in 20/24 cells;
   - local-linear better-fraction above 0.5 in 24/24 cells;
   - better-fraction range 54.33% to 68.92%;
+- the raw-vs-raw endpoint was selected for symmetry, not because it made H2
+  look stronger. The retrospective raw-vs-centred audit was mixed, with the
+  centred comparison often producing the higher local-linear better-fraction.
+  Examples on the ALL population include:
+  - Sep-14 DTE 21-30: raw 66.86% versus centred 68.67%;
+  - Sep-16 DTE 31-45: raw 66.22% versus centred 68.08%;
+  - Sep-17 DTE 21-30: raw 65.83% versus centred 68.28%.
+  Raw-vs-raw is therefore the fairer paired model comparison even where it is
+  descriptively less flattering to the challenger;
 - the CLEAN lens had stronger descriptive consistency, but its elevation occurred
   after inspecting the discovery period;
 - Sep-04 was a genuinely weaker date and remains in the record;
