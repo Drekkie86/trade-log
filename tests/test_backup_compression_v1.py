@@ -163,3 +163,60 @@ def test_compressed_backup_corruption_is_rejected(db_path, tmp_path):
             compressed,
             deep_payload=True,
         )
+
+
+def test_historical_schema_backup_can_be_compressed_without_becoming_current(
+    tmp_path,
+):
+    import sqlite3
+    import pytest
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    source = backup_dir / "christiania_backup_20260101T000000Z.db"
+
+    conn = sqlite3.connect(source)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE schema_version(
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO schema_version(version, applied_at)
+            VALUES(32, '2026-09-01T00:00:00Z');
+            """
+        )
+        conn.execute(
+            "CREATE TABLE evidence(id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
+        )
+        conn.execute(
+            "INSERT INTO evidence(value) VALUES('historical');"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = compress_verified_backup(source)
+    compressed = Path(result.compressed_path)
+
+    manifest = verify_compressed_backup(
+        compressed,
+        deep_payload=True,
+        require_current_schema=False,
+    )
+    assert manifest.schema_version == 32
+
+    with pytest.raises(
+        RuntimeError,
+        match="does not match expected",
+    ):
+        verify_compressed_backup(
+            compressed,
+            deep_payload=False,
+            require_current_schema=True,
+        )
