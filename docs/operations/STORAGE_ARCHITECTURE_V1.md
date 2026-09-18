@@ -61,6 +61,40 @@ ignored.
 Release-directory pruning is post-activation housekeeping. A pruning failure is
 reported as a warning and does not invalidate an otherwise healthy activation.
 
+
+## Compressed local backup tier
+
+To reduce full-copy amplification without weakening recoverability, Christiania
+stores the newest retained verified backup as an ordinary SQLite `.db` file
+for the fastest local restore path and may compress older retained backups with
+gzip.
+
+Compression is permitted only after the source backup has already passed:
+
+- schema-version verification;
+- SQLite integrity verification; and
+- foreign-key verification.
+
+Before deleting the uncompressed source, Christiania:
+
+1. computes the SHA-256 of the verified source backup;
+2. writes the compressed file to a temporary path;
+3. fsyncs the compressed bytes;
+4. decompresses the temporary file as a stream and verifies that the payload
+   SHA-256 exactly matches the original verified source;
+5. records an immutable JSON manifest containing the source and compressed
+   hashes, sizes, schema version, integrity state and compression parameters;
+6. atomically promotes the compressed file and manifest;
+7. re-verifies the promoted compressed file and payload; and only then
+8. deletes the uncompressed older copy.
+
+The weekly restore drill supports compressed backups by materializing the
+archive into a temporary SQLite database and running the same schema,
+integrity, and foreign-key checks as an ordinary backup restore.
+
+Compression is a local capacity optimization only. It does not satisfy the
+off-host disaster-recovery requirement.
+
 ## Off-host recovery requirement
 
 Same-device local backups do not protect against total server or disk loss.
