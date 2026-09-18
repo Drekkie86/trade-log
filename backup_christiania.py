@@ -48,12 +48,11 @@ def main() -> None:
     )
 
     if args.json:
+        payload = result.as_dict()
+        payload["compression"] = compression.as_dict()
         print(
             json.dumps(
-                {
-                    "backup": result.as_dict(),
-                    "compression": compression.as_dict(),
-                },
+                payload,
                 indent=2,
                 sort_keys=True,
             )
