@@ -10,7 +10,11 @@ from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.backup_recovery import (
     inventory_backups,
     resolve_latest_valid_backup,
+    resolve_restore_drill_backup,
     run_restore_drill,
+)
+from src.operations.backup_compression import (
+    maintain_compressed_backups,
 )
 from src.operations.sqlite_runtime import create_verified_backup
 
@@ -75,3 +79,44 @@ def test_restore_drill_rejects_invalid_backup(tmp_path):
 def test_latest_valid_backup_refuses_empty_directory(tmp_path):
     with pytest.raises(FileNotFoundError):
         resolve_latest_valid_backup(tmp_path / "empty")
+
+
+def test_restore_drill_resolver_prefers_verified_compressed_backup(
+    db_path,
+    tmp_path,
+):
+    import shutil
+
+    backup_dir = tmp_path / "backups"
+    created = create_verified_backup(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        retention=5,
+    )
+
+    newest = os.path.abspath(created.backup_path)
+    older = backup_dir / "christiania_backup_20260101T000000Z.db"
+    shutil.copy2(newest, older)
+
+    now = datetime.now(UTC)
+    os.utime(
+        older,
+        (
+            (now - timedelta(days=1)).timestamp(),
+            (now - timedelta(days=1)).timestamp(),
+        ),
+    )
+    os.utime(newest, (now.timestamp(), now.timestamp()))
+
+    maintain_compressed_backups(
+        backup_dir,
+        keep_latest_uncompressed=1,
+    )
+
+    selected = resolve_restore_drill_backup(
+        backup_dir
+    )
+
+    assert selected.name.endswith(".db.gz")
+    drill = run_restore_drill(selected)
+    assert drill.state == "PASSED"

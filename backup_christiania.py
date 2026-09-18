@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from src.operations.sqlite_runtime import (
     create_verified_backup,
+)
+from src.operations.backup_compression import (
+    maintain_compressed_backups,
 )
 
 
@@ -38,10 +42,17 @@ def main() -> None:
         retention=args.retention,
     )
 
+    compression = maintain_compressed_backups(
+        Path(result.backup_path).parent,
+        keep_latest_uncompressed=1,
+    )
+
     if args.json:
+        payload = result.as_dict()
+        payload["compression"] = compression.as_dict()
         print(
             json.dumps(
-                result.as_dict(),
+                payload,
                 indent=2,
                 sort_keys=True,
             )
@@ -62,6 +73,14 @@ def main() -> None:
     )
     print(
         f"Old backups pruned: {result.pruned_count}"
+    )
+    print(
+        "Older retained backups compressed: "
+        f"{compression.compressed_count}"
+    )
+    print(
+        "Bytes reclaimed by compression: "
+        f"{compression.reclaimed_bytes}"
     )
 
 

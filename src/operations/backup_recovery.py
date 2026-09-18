@@ -8,6 +8,11 @@ from pathlib import Path
 
 from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import resolve_backup_dir
+from src.operations.backup_compression import (
+    backup_data_files,
+    restore_compressed_backup_to,
+    verify_compressed_backup,
+)
 
 
 @dataclass(frozen=True)
@@ -107,11 +112,39 @@ def inventory_backups(
         )
 
     entries: list[BackupInventoryEntry] = []
-    for path in sorted(directory.glob("christiania_backup_*.db"), reverse=True):
+    for path in sorted(
+        backup_data_files(directory),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    ):
         stat = path.stat()
         modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
         age_hours = max(0.0, (observed_at - modified).total_seconds() / 3600.0)
-        version, integrity, fk_count, state, detail = _inspect_sqlite(path)
+
+        if path.name.endswith(".db.gz"):
+            try:
+                manifest = verify_compressed_backup(
+                    path,
+                    deep_payload=True,
+                )
+            except Exception as exc:
+                version = None
+                integrity = None
+                fk_count = None
+                state = "INVALID"
+                detail = (
+                    "COMPRESSED_VERIFY_FAILED:"
+                    f"{type(exc).__name__}:{exc}"
+                )
+            else:
+                version = manifest.schema_version
+                integrity = manifest.integrity_check
+                fk_count = manifest.foreign_key_violation_count
+                state = "VALID"
+                detail = "VERIFIED_COMPRESSED"
+        else:
+            version, integrity, fk_count, state, detail = _inspect_sqlite(path)
+
         entries.append(
             BackupInventoryEntry(
                 path=str(path), filename=path.name, size_bytes=stat.st_size,
@@ -158,7 +191,11 @@ def inventory_backups_fast(
         )
 
     entries: list[BackupInventoryEntry] = []
-    for path in sorted(directory.glob("christiania_backup_*.db"), reverse=True):
+    for path in sorted(
+        backup_data_files(directory),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    ):
         stat = path.stat()
         modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
         age_hours = max(
@@ -197,30 +234,85 @@ def resolve_latest_valid_backup(backup_dir: str | Path | None = None) -> Path:
     return Path(inventory.latest_valid_path)
 
 
+def resolve_restore_drill_backup(
+    backup_dir: str | Path | None = None,
+) -> Path:
+    """Prefer compressed recovery so weekly drills exercise that path.
+
+    Selection itself is metadata-only: run_restore_drill() performs the full
+    hash, decompression, schema, integrity, and foreign-key verification. This
+    avoids reading every compressed backup deeply before immediately reading
+    the selected one again.
+    """
+    directory = resolve_backup_dir(backup_dir)
+
+    if directory.exists():
+        compressed = sorted(
+            (
+                path
+                for path in backup_data_files(directory)
+                if path.name.endswith(".db.gz")
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+
+        if compressed:
+            return compressed[0]
+
+    return resolve_latest_valid_backup(directory)
+
+
 def run_restore_drill(backup_path: str | Path) -> RestoreDrillResult:
     source = Path(backup_path).expanduser()
     if not source.is_file():
         raise FileNotFoundError(f"Backup not found: {source}")
 
-    source_version, source_integrity, source_fk, state, detail = _inspect_sqlite(source)
-    if state != "VALID" or source_version is None:
-        raise RuntimeError(f"Backup is not valid for restore drill: {detail}")
-
     with tempfile.TemporaryDirectory(prefix="christiania_restore_drill_") as td:
         restored = Path(td) / "restored.db"
-        source_uri = source.resolve().as_uri() + "?mode=ro"
-        source_conn = sqlite3.connect(source_uri, uri=True, timeout=30.0)
-        target_conn = sqlite3.connect(restored)
-        try:
-            source_conn.backup(target_conn)
-            target_conn.commit()
-        finally:
-            target_conn.close()
-            source_conn.close()
 
-        restored_version, integrity, fk_count, restored_state, restored_detail = _inspect_sqlite(restored)
+        if source.name.endswith(".db.gz"):
+            try:
+                manifest = restore_compressed_backup_to(
+                    source,
+                    restored,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Compressed backup is not valid for restore drill: "
+                    f"{type(exc).__name__}:{exc}"
+                ) from exc
+            source_version = manifest.schema_version
+        else:
+            source_version, source_integrity, source_fk, state, detail = (
+                _inspect_sqlite(source)
+            )
+            if state != "VALID" or source_version is None:
+                raise RuntimeError(
+                    f"Backup is not valid for restore drill: {detail}"
+                )
+
+            source_uri = source.resolve().as_uri() + "?mode=ro"
+            source_conn = sqlite3.connect(
+                source_uri,
+                uri=True,
+                timeout=30.0,
+            )
+            target_conn = sqlite3.connect(restored)
+            try:
+                source_conn.backup(target_conn)
+                target_conn.commit()
+            finally:
+                target_conn.close()
+                source_conn.close()
+
+        restored_version, integrity, fk_count, restored_state, restored_detail = (
+            _inspect_sqlite(restored)
+        )
         if restored_state != "VALID" or restored_version is None:
-            raise RuntimeError(f"Restored copy failed verification: {restored_detail}")
+            raise RuntimeError(
+                f"Restored copy failed verification: {restored_detail}"
+            )
         restored_size = restored.stat().st_size
 
     return RestoreDrillResult(

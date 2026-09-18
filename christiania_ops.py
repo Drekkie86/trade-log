@@ -6,7 +6,13 @@ from pathlib import Path
 
 from src.dashboard.read_model import load_command_deck
 from src.operations.audit_export import export_audit_snapshot
-from src.operations.backup_recovery import inventory_backups, resolve_latest_valid_backup, run_restore_drill
+from src.operations.backup_recovery import (
+    inventory_backups,
+    resolve_latest_valid_backup,
+    resolve_restore_drill_backup,
+    run_restore_drill,
+)
+from src.operations.backup_compression import maintain_compressed_backups
 from src.operations.sqlite_runtime import create_verified_backup
 from src.operations.v1_readiness import assess_v1_readiness
 from src.operations.secure_edge import inspect_secure_edge_configuration
@@ -37,6 +43,9 @@ def main() -> int:
 
     backup = sub.add_parser("backup")
     backup.add_argument("--json", action="store_true")
+
+    compress_backups = sub.add_parser("compress-backups")
+    compress_backups.add_argument("--json", action="store_true")
 
     drill = sub.add_parser("restore-drill")
     drill.add_argument("--backup", default=None)
@@ -94,14 +103,52 @@ def main() -> int:
 
     if args.command == "backup":
         result = create_verified_backup()
+        compression = maintain_compressed_backups(
+            Path(result.backup_path).parent,
+            keep_latest_uncompressed=1,
+        )
+        payload = result.as_dict()
+        payload["compression"] = compression.as_dict()
         if args.json:
-            _print_json(result.as_dict())
+            _print_json(payload)
         else:
             print(f"Created verified backup: {result.backup_path}")
+            print(
+                "Compressed older retained backups: "
+                f"{compression.compressed_count}"
+            )
+            print(
+                "Bytes reclaimed: "
+                f"{compression.reclaimed_bytes}"
+            )
+        return 0
+
+    if args.command == "compress-backups":
+        from src.operations.sqlite_runtime import resolve_backup_dir
+
+        compression = maintain_compressed_backups(
+            resolve_backup_dir(),
+            keep_latest_uncompressed=1,
+        )
+        if args.json:
+            _print_json(compression.as_dict())
+        else:
+            print(
+                "Compressed retained backups: "
+                f"{compression.compressed_count}"
+            )
+            print(
+                "Bytes reclaimed: "
+                f"{compression.reclaimed_bytes}"
+            )
         return 0
 
     if args.command == "restore-drill":
-        source = Path(args.backup).expanduser() if args.backup else resolve_latest_valid_backup()
+        source = (
+            Path(args.backup).expanduser()
+            if args.backup
+            else resolve_restore_drill_backup()
+        )
         result = run_restore_drill(source)
         if args.json:
             _print_json(result.as_dict())
