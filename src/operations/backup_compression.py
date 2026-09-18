@@ -187,9 +187,15 @@ def _verify_plain_sqlite(
 
 
 def _fsync_directory(directory: Path) -> None:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
+    """Persist directory-entry updates on POSIX after atomic replacement."""
+    if os.name == "nt":
+        return
+
+    flags = os.O_RDONLY | getattr(
+        os,
+        "O_DIRECTORY",
+        0,
+    )
     fd = os.open(directory, flags)
     try:
         os.fsync(fd)
