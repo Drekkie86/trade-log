@@ -6,7 +6,12 @@ from pathlib import Path
 
 from src.dashboard.read_model import load_command_deck
 from src.operations.audit_export import export_audit_snapshot
-from src.operations.backup_recovery import inventory_backups, resolve_latest_valid_backup, run_restore_drill
+from src.operations.backup_recovery import (
+    inventory_backups,
+    resolve_latest_valid_backup,
+    resolve_restore_drill_backup,
+    run_restore_drill,
+)
 from src.operations.backup_compression import maintain_compressed_backups
 from src.operations.sqlite_runtime import create_verified_backup
 from src.operations.v1_readiness import assess_v1_readiness
@@ -139,7 +144,11 @@ def main() -> int:
         return 0
 
     if args.command == "restore-drill":
-        source = Path(args.backup).expanduser() if args.backup else resolve_latest_valid_backup()
+        source = (
+            Path(args.backup).expanduser()
+            if args.backup
+            else resolve_restore_drill_backup()
+        )
         result = run_restore_drill(source)
         if args.json:
             _print_json(result.as_dict())
