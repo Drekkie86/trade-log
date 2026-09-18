@@ -457,10 +457,7 @@ def freeze_h2_h3_followup_confirmation_v1(
                     hypothesis_state,
                     decision_enabled
                 ) VALUES (
-                    ?, ?,
-                    'Confirm whether persisted V1 nearest-bracket local-linear '
-                    'residuals generalize better than raw quadratic V2 LOO '
-                    'residuals on fresh paired observations.',
+                    ?, ?, ?,
                     'INDEPENDENT_SESSION_DATE_WITH_PAIRED_OPTION_OBSERVATIONS',
                     'PAIRED_RAW_RESIDUAL_MODEL_FORM_CONFIRMATION_V1',
                     5, 20, ?,
@@ -471,6 +468,12 @@ def freeze_h2_h3_followup_confirmation_v1(
                 (
                     program_id,
                     H2_KEY,
+                    (
+                        "Confirm whether persisted V1 nearest-bracket "
+                        "local-linear residuals generalize against raw "
+                        "quadratic V2 LOO residuals on fresh paired "
+                        "observations."
+                    ),
                     _canonical_json(h2_selection),
                 ),
             )
@@ -489,10 +492,7 @@ def freeze_h2_h3_followup_confirmation_v1(
                     hypothesis_state,
                     decision_enabled
                 ) VALUES (
-                    ?, ?,
-                    'Confirm whether worse spread and Greek freshness buckets '
-                    'show strictly increasing residual scale within fresh '
-                    'independent date x DTE cells.',
+                    ?, ?, ?,
                     'INDEPENDENT_SESSION_DATE_X_DTE_BUCKET',
                     'MARKET_QUALITY_MONOTONIC_CONFIRMATION_V1',
                     5, 20, ?,
@@ -503,6 +503,11 @@ def freeze_h2_h3_followup_confirmation_v1(
                 (
                     program_id,
                     H3_KEY,
+                    (
+                        "Confirm whether worse spread and Greek freshness "
+                        "buckets show strictly increasing residual scale "
+                        "within fresh independent date x DTE cells."
+                    ),
                     _canonical_json(h3_selection),
                 ),
             )
