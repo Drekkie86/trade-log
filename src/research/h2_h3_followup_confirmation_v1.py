@@ -291,6 +291,30 @@ def _discovery_context() -> dict[str, Any]:
                         "total": 3359,
                     },
                 },
+                "per_date_gap": {
+                    "2026-09-04": 779,
+                    "2026-09-11": 53,
+                    "2026-09-14": 885,
+                    "2026-09-15": 594,
+                    "2026-09-16": 695,
+                    "2026-09-17": 353,
+                },
+                "minimum_geometry_rule": {
+                    "min_usable_strikes": 5,
+                    "quadratic_parameter_count": 3,
+                    "loo_peer_count_at_minimum": 4,
+                    "residual_degrees_of_freedom_at_minimum": 1,
+                    "documented_rationale": (
+                        "Five usable strikes leave four peers after target "
+                        "omission for a three-parameter quadratic, preserving "
+                        "one positive residual degree of freedom."
+                    ),
+                    "audit_boundary": (
+                        "This reconciliation verifies consistent enforcement "
+                        "and fully explains the population gap; it does not "
+                        "independently establish that five is statistically optimal."
+                    ),
+                },
                 "gap_reconciliation_state": "FULLY_EXPLAINED_BY_V2_MINIMUM_GEOMETRY",
             },
             "raw_vs_raw_all_population": {
