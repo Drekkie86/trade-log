@@ -12,6 +12,10 @@ from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
 )
+from src.operations.backup_compression import (
+    backup_data_files,
+    manifest_path_for,
+)
 
 
 DEFAULT_BACKUP_RETENTION = 14
@@ -379,9 +383,7 @@ def _prune_backups(
     keep: int,
 ) -> int:
     backups = sorted(
-        directory.glob(
-            "christiania_backup_*.db"
-        ),
+        backup_data_files(directory),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -390,6 +392,12 @@ def _prune_backups(
 
     for stale in backups[keep:]:
         stale.unlink()
+
+        if stale.name.endswith(".db.gz"):
+            manifest = manifest_path_for(stale)
+            if manifest.exists():
+                manifest.unlink()
+
         pruned += 1
 
     return pruned
