@@ -7,6 +7,7 @@ from pathlib import Path
 from src.dashboard.read_model import load_command_deck
 from src.operations.audit_export import export_audit_snapshot
 from src.operations.backup_recovery import inventory_backups, resolve_latest_valid_backup, run_restore_drill
+from src.operations.backup_compression import maintain_compressed_backups
 from src.operations.sqlite_runtime import create_verified_backup
 from src.operations.v1_readiness import assess_v1_readiness
 from src.operations.secure_edge import inspect_secure_edge_configuration
@@ -94,10 +95,26 @@ def main() -> int:
 
     if args.command == "backup":
         result = create_verified_backup()
+        compression = maintain_compressed_backups(
+            Path(result.backup_path).parent,
+            keep_latest_uncompressed=1,
+        )
+        payload = {
+            "backup": result.as_dict(),
+            "compression": compression.as_dict(),
+        }
         if args.json:
-            _print_json(result.as_dict())
+            _print_json(payload)
         else:
             print(f"Created verified backup: {result.backup_path}")
+            print(
+                "Compressed older retained backups: "
+                f"{compression.compressed_count}"
+            )
+            print(
+                "Bytes reclaimed: "
+                f"{compression.reclaimed_bytes}"
+            )
         return 0
 
     if args.command == "restore-drill":
