@@ -102,10 +102,8 @@ def main() -> int:
             Path(result.backup_path).parent,
             keep_latest_uncompressed=1,
         )
-        payload = {
-            "backup": result.as_dict(),
-            "compression": compression.as_dict(),
-        }
+        payload = result.as_dict()
+        payload["compression"] = compression.as_dict()
         if args.json:
             _print_json(payload)
         else:
