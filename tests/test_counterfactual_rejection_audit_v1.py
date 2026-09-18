@@ -102,9 +102,14 @@ def _build_v32(path: Path) -> None:
                 proposal_id INTEGER NOT NULL,
                 original_decided_at TEXT NOT NULL,
                 original_reason_code TEXT NOT NULL,
+                counterfactual_reason_code TEXT NOT NULL,
                 estimated_cost_usd_minor INTEGER NOT NULL,
                 intrinsic_risk_usd_minor INTEGER NOT NULL,
                 counterfactual_decision TEXT NOT NULL
+            );
+
+            CREATE TABLE shadow_intrinsic_admission_decisions_v1(
+                id INTEGER PRIMARY KEY
             );
 
             CREATE TABLE historical_outcome_recovery_v1(
@@ -212,6 +217,8 @@ def _build_v32(path: Path) -> None:
             reason = (
                 "SHADOW_RESEARCH_ADMITTED_WITHIN_EUR_500_CAP"
                 if proposal_id <= 15
+                else "ONE_UNIT_EXCEEDS_EUR_500_BANKROLL"
+                if proposal_id == 16
                 else "ACTIVE_PORTFOLIO_EXCEEDS_EUR_500_BANKROLL"
             )
             conn.execute(
@@ -248,20 +255,110 @@ def _build_v32(path: Path) -> None:
                         proposal_id,
                         original_decided_at,
                         original_reason_code,
+                        counterfactual_reason_code,
                         estimated_cost_usd_minor,
                         intrinsic_risk_usd_minor,
                         counterfactual_decision
                     ) VALUES(
                         ?, 1, ?, ?,
                         '2026-09-04T15:00:00Z',
-                        'ACTIVE_PORTFOLIO_EXCEEDS_EUR_500_BANKROLL',
+                        ?,
+                        'LEGACY_WALLET_ONLY_BLOCK_REMOVED',
                         100,
                         10100,
                         'WOULD_ADMIT'
                     );
                     """,
-                    (proposal_id, proposal_id, proposal_id),
+                    (
+                        proposal_id,
+                        proposal_id,
+                        proposal_id,
+                        reason,
+                    ),
                 )
+
+        # Reproduce the exact structure-builder denominator observed in
+        # production. These blocked rows are outside the fixed V1 audit cohort.
+        next_id = 150
+        for _ in range(799):
+            conn.execute(
+                """
+                INSERT INTO shadow_structure_proposals(
+                    id,
+                    research_run_id,
+                    hypothesis_evaluation_id,
+                    underlying,
+                    expiration,
+                    right,
+                    target_strike,
+                    structure_id,
+                    structure_json,
+                    entry_pricing_json,
+                    max_theoretical_loss_minor,
+                    risk_currency,
+                    proposal_state
+                ) VALUES(
+                    ?, 1, 1, 'AAPL', '2026-10-30', 'C', 100.0,
+                    NULL, NULL, NULL, NULL, NULL, 'BLOCKED'
+                );
+                """,
+                (next_id,),
+            )
+            next_id += 1
+
+        for _ in range(223):
+            conn.execute(
+                """
+                INSERT INTO shadow_structure_proposals(
+                    id,
+                    research_run_id,
+                    hypothesis_evaluation_id,
+                    underlying,
+                    expiration,
+                    right,
+                    target_strike,
+                    structure_id,
+                    structure_json,
+                    entry_pricing_json,
+                    max_theoretical_loss_minor,
+                    risk_currency,
+                    proposal_state
+                ) VALUES(
+                    ?, 1, 1, 'AAPL', '2026-10-30', 'C', 100.0,
+                    NULL, NULL, NULL, NULL, NULL, 'BLOCKED'
+                );
+                """,
+                (next_id,),
+            )
+            next_id += 1
+
+        # Assign the exact blocked reason taxonomy through a test-only column
+        # update is not possible because this minimal source table omits the
+        # reason column. Add it now and populate the production counts.
+        conn.execute(
+            "ALTER TABLE shadow_structure_proposals ADD COLUMN reason_code TEXT;"
+        )
+        conn.execute(
+            """
+            UPDATE shadow_structure_proposals
+            SET reason_code = 'DEFINED_RISK_STRUCTURE_CONSTRUCTED'
+            WHERE proposal_state = 'PROPOSED';
+            """
+        )
+        conn.execute(
+            """
+            UPDATE shadow_structure_proposals
+            SET reason_code = 'NON_POSITIVE_TERMINAL_UPSIDE'
+            WHERE id BETWEEN 150 AND 948;
+            """
+        )
+        conn.execute(
+            """
+            UPDATE shadow_structure_proposals
+            SET reason_code = 'UNEQUAL_WING_WIDTHS'
+            WHERE id BETWEEN 949 AND 1171;
+            """
+        )
 
         # The exact six mature rows seen at freeze time are present but
         # unresolved. No recovered outcome label exists.
