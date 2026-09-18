@@ -144,7 +144,11 @@ def _sha256_gzip_payload(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_plain_sqlite(path: Path) -> tuple[int, str, int]:
+def _verify_plain_sqlite(
+    path: Path,
+    *,
+    expected_version: int | None = EXPECTED_SCHEMA_VERSION,
+) -> tuple[int, str, int]:
     uri = path.resolve().as_uri() + "?mode=ro"
     conn = sqlite3.connect(uri, uri=True, timeout=30.0)
     try:
@@ -163,10 +167,13 @@ def _verify_plain_sqlite(path: Path) -> tuple[int, str, int]:
     finally:
         conn.close()
 
-    if version != EXPECTED_SCHEMA_VERSION:
+    if (
+        expected_version is not None
+        and version != expected_version
+    ):
         raise RuntimeError(
             f"Backup schema v{version} does not match expected "
-            f"v{EXPECTED_SCHEMA_VERSION}."
+            f"v{expected_version}."
         )
     if integrity != "ok":
         raise RuntimeError(
@@ -239,6 +246,7 @@ def verify_compressed_backup(
     compressed_path: str | Path,
     *,
     deep_payload: bool = True,
+    require_current_schema: bool = True,
 ) -> CompressedBackupManifest:
     path = Path(compressed_path).expanduser()
     if not path.is_file():
@@ -260,7 +268,10 @@ def verify_compressed_backup(
         raise RuntimeError(
             "Compressed backup manifest filename mismatch."
         )
-    if manifest.schema_version != EXPECTED_SCHEMA_VERSION:
+    if (
+        require_current_schema
+        and manifest.schema_version != EXPECTED_SCHEMA_VERSION
+    ):
         raise RuntimeError(
             f"Compressed backup schema v{manifest.schema_version} does not "
             f"match expected v{EXPECTED_SCHEMA_VERSION}."
@@ -335,7 +346,10 @@ def compress_verified_backup(
             f"Backup is not an uncompressed .db file: {source}"
         )
 
-    version, integrity, fk_count = _verify_plain_sqlite(source)
+    version, integrity, fk_count = _verify_plain_sqlite(
+        source,
+        expected_version=None,
+    )
 
     usage = shutil.disk_usage(source.parent)
     required = _required_free_bytes(
@@ -431,6 +445,7 @@ def compress_verified_backup(
         verify_compressed_backup(
             final,
             deep_payload=True,
+            require_current_schema=False,
         )
 
         source.unlink()
