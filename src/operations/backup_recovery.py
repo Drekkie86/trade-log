@@ -10,6 +10,7 @@ from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import resolve_backup_dir
 from src.operations.backup_compression import (
     backup_data_files,
+    load_compressed_manifest,
     restore_compressed_backup_to,
     verify_compressed_backup,
 )
@@ -247,12 +248,23 @@ def resolve_restore_drill_backup(
     directory = resolve_backup_dir(backup_dir)
 
     if directory.exists():
-        compressed = sorted(
-            (
-                path
-                for path in backup_data_files(directory)
-                if path.name.endswith(".db.gz")
-            ),
+        compressed: list[Path] = []
+
+        for path in backup_data_files(directory):
+            if not path.name.endswith(".db.gz"):
+                continue
+
+            try:
+                manifest = load_compressed_manifest(path)
+            except Exception:
+                # Corrupt/missing manifests are rejected by the actual drill.
+                # Do not prefer them over a current-schema verified plain backup.
+                continue
+
+            if manifest.schema_version == EXPECTED_SCHEMA_VERSION:
+                compressed.append(path)
+
+        compressed.sort(
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )

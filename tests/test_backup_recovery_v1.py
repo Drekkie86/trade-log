@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -14,6 +15,7 @@ from src.operations.backup_recovery import (
     run_restore_drill,
 )
 from src.operations.backup_compression import (
+    compress_verified_backup,
     maintain_compressed_backups,
 )
 from src.operations.sqlite_runtime import create_verified_backup
@@ -120,3 +122,56 @@ def test_restore_drill_resolver_prefers_verified_compressed_backup(
     assert selected.name.endswith(".db.gz")
     drill = run_restore_drill(selected)
     assert drill.state == "PASSED"
+
+
+def test_restore_drill_resolver_skips_historical_schema_compressed_backup(
+    db_path,
+    tmp_path,
+):
+    backup_dir = tmp_path / "backups"
+    current = create_verified_backup(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        retention=5,
+    )
+
+    historical = backup_dir / "christiania_backup_20260101T000000Z.db"
+    conn = sqlite3.connect(historical)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE schema_version(
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO schema_version(version, applied_at)
+            VALUES(32, '2026-09-01T00:00:00Z');
+            """
+        )
+        conn.execute(
+            "CREATE TABLE evidence(id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
+        )
+        conn.execute(
+            "INSERT INTO evidence(value) VALUES('historical');"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    historical_compressed = Path(
+        compress_verified_backup(
+            historical
+        ).compressed_path
+    )
+
+    assert historical_compressed.exists()
+
+    selected = resolve_restore_drill_backup(
+        backup_dir
+    )
+
+    assert selected == Path(current.backup_path)
