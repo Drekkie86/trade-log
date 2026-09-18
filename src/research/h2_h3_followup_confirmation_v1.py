@@ -620,12 +620,27 @@ def _eligible_dates(
     try:
         rows = conn.execute(
             """
+            WITH exact_scanner_runs AS (
+                SELECT
+                    research_run_id,
+                    MIN(id) AS scanner_run_id,
+                    COUNT(*) AS scanner_run_count
+                FROM hypothesis_scanner_runs
+                WHERE scanner_family_id = ?
+                  AND scanner_version = ?
+                  AND rule_version = ?
+                  AND hypothesis_family = ?
+                  AND hypothesis_version = ?
+                  AND config_hash = ?
+                GROUP BY research_run_id
+                HAVING COUNT(*) = 1
+            )
             SELECT DISTINCT p.us_session_date
             FROM v_h2_h3_followup_partition_v1 AS p
-            JOIN hypothesis_scanner_runs AS hsr
-              ON hsr.research_run_id = p.research_run_id
+            JOIN exact_scanner_runs AS esr
+              ON esr.research_run_id = p.research_run_id
             JOIN hypothesis_scanner_evaluations AS hse
-              ON hse.scanner_run_id = hsr.id
+              ON hse.scanner_run_id = esr.scanner_run_id
              AND hse.option_quote_id = p.option_quote_id
             WHERE p.followup_program_id = ?
               AND p.followup_evidence_phase = 'FOLLOWUP_PROSPECTIVE'
@@ -635,25 +650,19 @@ def _eligible_dates(
               AND p.model_version = ?
               AND p.fit_spec_version = ?
               AND p.surface_config_hash = ?
-              AND hsr.scanner_family_id = ?
-              AND hsr.scanner_version = ?
-              AND hsr.rule_version = ?
-              AND hsr.hypothesis_family = ?
-              AND hsr.hypothesis_version = ?
-              AND hsr.config_hash = ?
             ORDER BY p.us_session_date;
             """,
             (
-                int(program["id"]),
-                quadratic["model_version"],
-                quadratic["fit_spec_version"],
-                quadratic["config_hash"],
                 scanner["scanner_family_id"],
                 scanner["scanner_version"],
                 scanner["rule_version"],
                 scanner["hypothesis_family"],
                 scanner["hypothesis_version"],
                 scanner["config_hash"],
+                int(program["id"]),
+                quadratic["model_version"],
+                quadratic["fit_spec_version"],
+                quadratic["config_hash"],
             ),
         ).fetchall()
     finally:
@@ -772,6 +781,21 @@ def _h2_metrics(
     try:
         rows = conn.execute(
             f"""
+            WITH exact_scanner_runs AS (
+                SELECT
+                    research_run_id,
+                    MIN(id) AS scanner_run_id,
+                    COUNT(*) AS scanner_run_count
+                FROM hypothesis_scanner_runs
+                WHERE scanner_family_id = ?
+                  AND scanner_version = ?
+                  AND rule_version = ?
+                  AND hypothesis_family = ?
+                  AND hypothesis_version = ?
+                  AND config_hash = ?
+                GROUP BY research_run_id
+                HAVING COUNT(*) = 1
+            )
             SELECT
                 p.us_session_date,
                 p.dte,
@@ -780,10 +804,10 @@ def _h2_metrics(
                 p.loo_residual AS quadratic_raw_residual,
                 hse.iv_residual AS local_linear_residual
             FROM v_h2_h3_followup_partition_v1 AS p
-            JOIN hypothesis_scanner_runs AS hsr
-              ON hsr.research_run_id = p.research_run_id
+            JOIN exact_scanner_runs AS esr
+              ON esr.research_run_id = p.research_run_id
             JOIN hypothesis_scanner_evaluations AS hse
-              ON hse.scanner_run_id = hsr.id
+              ON hse.scanner_run_id = esr.scanner_run_id
              AND hse.option_quote_id = p.option_quote_id
             WHERE p.followup_program_id = ?
               AND p.followup_evidence_phase = 'FOLLOWUP_PROSPECTIVE'
@@ -795,12 +819,6 @@ def _h2_metrics(
               AND p.model_version = ?
               AND p.fit_spec_version = ?
               AND p.surface_config_hash = ?
-              AND hsr.scanner_family_id = ?
-              AND hsr.scanner_version = ?
-              AND hsr.rule_version = ?
-              AND hsr.hypothesis_family = ?
-              AND hsr.hypothesis_version = ?
-              AND hsr.config_hash = ?
             ORDER BY
                 p.us_session_date,
                 p.research_run_id,
@@ -810,17 +828,17 @@ def _h2_metrics(
                 p.strike;
             """,
             (
-                int(program["id"]),
-                *session_dates,
-                quadratic["model_version"],
-                quadratic["fit_spec_version"],
-                quadratic["config_hash"],
                 scanner["scanner_family_id"],
                 scanner["scanner_version"],
                 scanner["rule_version"],
                 scanner["hypothesis_family"],
                 scanner["hypothesis_version"],
                 scanner["config_hash"],
+                int(program["id"]),
+                *session_dates,
+                quadratic["model_version"],
+                quadratic["fit_spec_version"],
+                quadratic["config_hash"],
             ),
         )
         primary: dict[tuple[str, str], dict[str, Any]] = {}
