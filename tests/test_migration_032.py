@@ -136,7 +136,7 @@ def test_migration_032_keeps_original_freeze_views_and_adds_fixed_followup_parti
                 id, option_quote_id, model_run_id
             ) VALUES (?, ?, 1);
             """,
-            [(10, 100, 1), (11, 101, 1)],
+            [(10, 100), (11, 101)],
         )
         conn.executemany(
             "INSERT INTO discovery_rows(observation_id, us_session_date) VALUES (?, ?);",
