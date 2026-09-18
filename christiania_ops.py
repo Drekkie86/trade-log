@@ -39,6 +39,9 @@ def main() -> int:
     backup = sub.add_parser("backup")
     backup.add_argument("--json", action="store_true")
 
+    compress_backups = sub.add_parser("compress-backups")
+    compress_backups.add_argument("--json", action="store_true")
+
     drill = sub.add_parser("restore-drill")
     drill.add_argument("--backup", default=None)
     drill.add_argument("--json", action="store_true")
@@ -109,6 +112,26 @@ def main() -> int:
             print(f"Created verified backup: {result.backup_path}")
             print(
                 "Compressed older retained backups: "
+                f"{compression.compressed_count}"
+            )
+            print(
+                "Bytes reclaimed: "
+                f"{compression.reclaimed_bytes}"
+            )
+        return 0
+
+    if args.command == "compress-backups":
+        from src.operations.sqlite_runtime import resolve_backup_dir
+
+        compression = maintain_compressed_backups(
+            resolve_backup_dir(),
+            keep_latest_uncompressed=1,
+        )
+        if args.json:
+            _print_json(compression.as_dict())
+        else:
+            print(
+                "Compressed retained backups: "
                 f"{compression.compressed_count}"
             )
             print(
