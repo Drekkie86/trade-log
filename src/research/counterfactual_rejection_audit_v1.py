@@ -296,6 +296,126 @@ def _wallet_rejected_rows(
     return [dict(row) for row in rows]
 
 
+def _freeze_inventory(conn) -> dict[str, Any]:
+    builder_rows = conn.execute(
+        """
+        SELECT proposal_state, reason_code, COUNT(*) AS n
+        FROM shadow_structure_proposals
+        GROUP BY proposal_state, reason_code;
+        """
+    ).fetchall()
+    builder = {
+        (str(row["proposal_state"]), str(row["reason_code"])): int(row["n"])
+        for row in builder_rows
+    }
+    expected_builder = {
+        ("BLOCKED", "NON_POSITIVE_TERMINAL_UPSIDE"): 799,
+        ("BLOCKED", "UNEQUAL_WING_WIDTHS"): 223,
+        ("PROPOSED", "DEFINED_RISK_STRUCTURE_CONSTRUCTED"): 149,
+    }
+    if builder != expected_builder:
+        raise CounterfactualRejectionAuditError(
+            "Structure-builder inventory changed before freeze: "
+            f"{builder!r}."
+        )
+
+    legacy_rows = conn.execute(
+        """
+        SELECT decision, reason_code, COUNT(*) AS n
+        FROM shadow_admission_decisions
+        GROUP BY decision, reason_code;
+        """
+    ).fetchall()
+    legacy = {
+        (str(row["decision"]), str(row["reason_code"])): int(row["n"])
+        for row in legacy_rows
+    }
+    expected_legacy = {
+        (
+            "ADMITTED",
+            "SHADOW_RESEARCH_ADMITTED_WITHIN_EUR_500_CAP",
+        ): 15,
+        (
+            "BLOCKED",
+            "ACTIVE_PORTFOLIO_EXCEEDS_EUR_500_BANKROLL",
+        ): 133,
+        (
+            "BLOCKED",
+            "ONE_UNIT_EXCEEDS_EUR_500_BANKROLL",
+        ): 1,
+    }
+    if legacy != expected_legacy:
+        raise CounterfactualRejectionAuditError(
+            "Legacy admission inventory changed before freeze: "
+            f"{legacy!r}."
+        )
+
+    replay_rows = conn.execute(
+        """
+        SELECT original_reason_code, counterfactual_reason_code, COUNT(*) AS n
+        FROM historical_policy_replay_v1
+        WHERE counterfactual_decision = 'WOULD_ADMIT'
+        GROUP BY original_reason_code, counterfactual_reason_code;
+        """
+    ).fetchall()
+    replay = {
+        (
+            str(row["original_reason_code"]),
+            str(row["counterfactual_reason_code"]),
+        ): int(row["n"])
+        for row in replay_rows
+    }
+    expected_replay = {
+        (
+            "ACTIVE_PORTFOLIO_EXCEEDS_EUR_500_BANKROLL",
+            "LEGACY_WALLET_ONLY_BLOCK_REMOVED",
+        ): 133,
+        (
+            "ONE_UNIT_EXCEEDS_EUR_500_BANKROLL",
+            "LEGACY_WALLET_ONLY_BLOCK_REMOVED",
+        ): 1,
+    }
+    if replay != expected_replay:
+        raise CounterfactualRejectionAuditError(
+            "Historical wallet replay inventory changed before freeze: "
+            f"{replay!r}."
+        )
+
+    intrinsic_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM shadow_intrinsic_admission_decisions_v1;
+            """
+        ).fetchone()[0]
+    )
+    if intrinsic_count != 0:
+        raise CounterfactualRejectionAuditError(
+            "Intrinsic-risk admission evidence already exists; this historical "
+            "V1 cohort must remain the pre-intrinsic population."
+        )
+
+    return {
+        "structure_builder": {
+            "blocked_non_positive_terminal_upside": 799,
+            "blocked_unequal_wing_widths": 223,
+            "defined_risk_proposed": 149,
+        },
+        "legacy_admission": {
+            "admitted": 15,
+            "blocked_active_portfolio_wallet": 133,
+            "blocked_one_unit_wallet": 1,
+            "wallet_blocked_total": 134,
+        },
+        "wallet_replay": {
+            "would_admit_active_portfolio_wallet": 133,
+            "would_admit_one_unit_wallet": 1,
+            "would_admit_total": 134,
+        },
+        "intrinsic_risk_admission_decisions": intrinsic_count,
+    }
+
+
 def _future_expiry_distribution(
     rows: list[dict[str, Any]],
     *,
@@ -355,7 +475,9 @@ def _outcome_state_at_freeze(
             policy_replay_id,
             proposal_id,
             recovery_state,
-            reason_code
+            reason_code,
+            measurement_role,
+            outcome_eligible
         FROM historical_outcome_recovery_v1
         WHERE replay_run_id = ?;
         """,
@@ -380,20 +502,51 @@ def _outcome_state_at_freeze(
         if key in expected_keys and int(item["proposal_id"]) in proposal_ids:
             relevant.append(dict(item))
 
+    for row in relevant:
+        if str(row["measurement_role"]) != "RETROSPECTIVE_EXPIRY_RECONSTRUCTION":
+            raise CounterfactualRejectionAuditError(
+                "Unexpected outcome-recovery measurement role in frozen cohort."
+            )
+        if int(row["outcome_eligible"]) != 0:
+            raise CounterfactualRejectionAuditError(
+                "Frozen retrospective outcome recovery must remain outcome_eligible=0."
+            )
+
     recovered = sum(row["recovery_state"] == "RECOVERED" for row in relevant)
     unresolved = sum(row["recovery_state"] == "UNRESOLVED" for row in relevant)
 
+    maturity_by_group = {}
+    for group in (ADMITTED_GROUP, REJECTED_GROUP):
+        group_rows = [
+            row for row in cohort_rows
+            if row["selection_group"] == group
+        ]
+        maturity_by_group[group] = {
+            "matured_before_latest_session": sum(
+                str(row["expiration"]) < latest_session_date
+                for row in group_rows
+            ),
+            "expires_on_latest_session": sum(
+                str(row["expiration"]) == latest_session_date
+                for row in group_rows
+            ),
+            "future_expiry": sum(
+                str(row["expiration"]) > latest_session_date
+                for row in group_rows
+            ),
+        }
+
     matured = sum(
-        str(row["expiration"]) < latest_session_date
-        for row in cohort_rows
+        item["matured_before_latest_session"]
+        for item in maturity_by_group.values()
     )
     expires_on_latest = sum(
-        str(row["expiration"]) == latest_session_date
-        for row in cohort_rows
+        item["expires_on_latest_session"]
+        for item in maturity_by_group.values()
     )
     future = sum(
-        str(row["expiration"]) > latest_session_date
-        for row in cohort_rows
+        item["future_expiry"]
+        for item in maturity_by_group.values()
     )
 
     return {
@@ -401,6 +554,7 @@ def _outcome_state_at_freeze(
         "matured_before_latest_session": matured,
         "expires_on_latest_session": expires_on_latest,
         "future_expiry": future,
+        "maturity_by_selection_group": maturity_by_group,
         "recovered": recovered,
         "unresolved": unresolved,
         "no_recovery_record": len(cohort_rows) - len(relevant),
@@ -494,6 +648,7 @@ def _discovery_context(
     cohort_rows: list[dict[str, Any]],
     latest_session_date: str,
     outcome_state: dict[str, Any],
+    freeze_inventory: dict[str, Any],
 ) -> dict[str, Any]:
     admitted_n = sum(
         row["selection_group"] == ADMITTED_GROUP
@@ -514,19 +669,7 @@ def _discovery_context(
         "freeze_inventory": {
             "latest_completed_session_date": latest_session_date,
             "source_replay_run_id": replay_run_id,
-            "structure_builder": {
-                "blocked_non_positive_terminal_upside": 799,
-                "blocked_unequal_wing_widths": 223,
-                "defined_risk_proposed": 149,
-            },
-            "legacy_admission": {
-                "admitted": admitted_n,
-                "wallet_blocked": rejected_n,
-            },
-            "wallet_replay": {
-                "would_admit": rejected_n,
-            },
-            "intrinsic_risk_admission_decisions": 0,
+            **freeze_inventory,
         },
         "fixed_cohort": {
             "total": len(cohort_rows),
@@ -614,6 +757,7 @@ def freeze_counterfactual_rejection_audit_v1(
             )
 
         replay_run_id = _source_replay_run_id(conn)
+        freeze_inventory = _freeze_inventory(conn)
         admitted = _admitted_rows(conn)
         rejected = _wallet_rejected_rows(
             conn,
@@ -690,6 +834,28 @@ def freeze_counterfactual_rejection_audit_v1(
                 "Unexpected unresolved-outcome count at freeze: "
                 f"{outcome_state['unresolved']}."
             )
+        if outcome_state["matured_before_latest_session"] != 6:
+            raise CounterfactualRejectionAuditError(
+                "Unexpected mature-cohort count at freeze."
+            )
+        if outcome_state["expires_on_latest_session"] != 0:
+            raise CounterfactualRejectionAuditError(
+                "Unexpected same-session expiry at freeze."
+            )
+        if outcome_state["future_expiry"] != 143:
+            raise CounterfactualRejectionAuditError(
+                "Unexpected future-expiry cohort count at freeze."
+            )
+        if outcome_state["no_recovery_record"] != 143:
+            raise CounterfactualRejectionAuditError(
+                "Unexpected no-recovery-record count at freeze."
+            )
+        if outcome_state["unresolved_reason_counts"] != {
+            "MISSING_EXPIRY_SESSION_UNDERLYING_SNAPSHOT": 6
+        }:
+            raise CounterfactualRejectionAuditError(
+                "Unexpected unresolved-outcome reason distribution at freeze."
+            )
 
         config = _protocol_config(
             cohort_max_expiration=cohort_max_expiration,
@@ -700,6 +866,7 @@ def freeze_counterfactual_rejection_audit_v1(
             cohort_rows=cohort_rows,
             latest_session_date=latest_session,
             outcome_state=outcome_state,
+            freeze_inventory=freeze_inventory,
         )
         discovery_json = _canonical_json(discovery_context)
         frozen_at = _utc_now()
