@@ -43,7 +43,22 @@ confirmation**:
     - 2,524 observations had 4 usable strikes;
     - all 3,359 are persisted as `NOT_EVALUABLE` with
       `INSUFFICIENT_USABLE_STRIKES`;
+    - per-date gap reconciliation:
+      - Sep-04: 779;
+      - Sep-11: 53;
+      - Sep-14: 885;
+      - Sep-15: 594;
+      - Sep-16: 695;
+      - Sep-17: 353;
+      - total: 3,359;
     - zero V2 observations are unexplained or missing;
+    - the five-strike minimum is a pre-existing V2 geometry rule, not a
+      conclusion of this reconciliation audit. Its documented rationale is:
+      a quadratic has three fitted parameters; requiring five usable strikes in
+      the full group leaves four peers after target omission and therefore one
+      positive residual degree of freedom. This audit verifies that the rule was
+      enforced consistently and fully explains the population gap; it does not
+      independently prove that five is statistically optimal;
 - raw-vs-raw H2, ALL population:
   - 24 date x DTE cells;
   - local-linear lower median absolute residual in 24/24 cells;
