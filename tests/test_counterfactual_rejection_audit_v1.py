@@ -503,9 +503,42 @@ def test_freeze_snapshots_exact_fixed_cohort_and_prelabel_state(
         ],
     }
 
+    inventory = discovery["freeze_inventory"]
+    assert inventory["structure_builder"] == {
+        "blocked_non_positive_terminal_upside": 799,
+        "blocked_unequal_wing_widths": 223,
+        "defined_risk_proposed": 149,
+    }
+    assert inventory["legacy_admission"] == {
+        "admitted": 15,
+        "blocked_active_portfolio_wallet": 133,
+        "blocked_one_unit_wallet": 1,
+        "wallet_blocked_total": 134,
+    }
+    assert inventory["wallet_replay"] == {
+        "would_admit_active_portfolio_wallet": 133,
+        "would_admit_one_unit_wallet": 1,
+        "would_admit_total": 134,
+    }
+    assert inventory["intrinsic_risk_admission_decisions"] == 0
+
     outcome = discovery["outcome_state_at_freeze"]
     assert outcome["latest_completed_session_date"] == "2026-09-17"
     assert outcome["matured_before_latest_session"] == 6
+    assert outcome["expires_on_latest_session"] == 0
+    assert outcome["future_expiry"] == 143
+    assert outcome["maturity_by_selection_group"] == {
+        ADMITTED_GROUP: {
+            "matured_before_latest_session": 5,
+            "expires_on_latest_session": 0,
+            "future_expiry": 10,
+        },
+        REJECTED_GROUP: {
+            "matured_before_latest_session": 1,
+            "expires_on_latest_session": 0,
+            "future_expiry": 133,
+        },
+    }
     assert outcome["recovered"] == 0
     assert outcome["unresolved"] == 6
     assert outcome["no_recovery_record"] == 143
