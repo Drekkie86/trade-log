@@ -23,11 +23,27 @@ def test_storage_audit_attributes_sqlite_objects(tmp_path):
     finally:
         conn.close()
 
-    audit = audit_storage(db)
+    messages = []
+
+    audit = audit_storage(
+        db,
+        progress=messages.append,
+        progress_interval_seconds=0.001,
+    )
 
     assert audit.database_size_bytes > 0
     assert audit.page_size_bytes > 0
     assert audit.page_count > 0
+
+    assert audit.object_attribution_elapsed_seconds >= 0
+    assert any(
+        "dbstat attribution started" in message
+        for message in messages
+    )
+    assert any(
+        "dbstat attribution finished" in message
+        for message in messages
+    )
 
     assert audit.object_attribution_state in {
         "AVAILABLE",
