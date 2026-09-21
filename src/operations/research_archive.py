@@ -942,6 +942,7 @@ def create_research_archive(
         ":memory:",
         uri=True,
         timeout=30.0,
+        isolation_level=None,
     )
 
     try:
