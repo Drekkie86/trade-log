@@ -14,6 +14,7 @@ from src.operations.backup_recovery import (
 )
 from src.operations.backup_compression import maintain_compressed_backups
 from src.operations.sqlite_runtime import create_verified_backup
+from src.operations.storage_audit import audit_storage
 from src.operations.v1_readiness import assess_v1_readiness
 from src.operations.secure_edge import inspect_secure_edge_configuration
 
@@ -65,6 +66,9 @@ def main() -> int:
 
     edge = sub.add_parser("secure-edge")
     edge.add_argument("--json", action="store_true")
+
+    storage = sub.add_parser("storage-audit")
+    storage.add_argument("--json", action="store_true")
 
     copenhagen = sub.add_parser("copenhagen")
     copenhagen.add_argument("--json", action="store_true")
@@ -170,6 +174,23 @@ def main() -> int:
             for check in edge.checks:
                 print(f"[{check.state}] {check.name}: {check.detail}")
         return 0 if edge.ready else 2
+
+    if args.command == "storage-audit":
+        result = audit_storage()
+        if args.json:
+            _print_json(result.as_dict())
+        else:
+            print(f"Database: {result.database_path}")
+            print(f"Size: {result.database_size_bytes} bytes")
+            print(f"Freelist: {result.freelist_bytes} bytes")
+            print("Largest SQLite objects:")
+            for item in result.objects[:25]:
+                print(
+                    f"{item.bytes:>14}  "
+                    f"{item.object_type:<8}  "
+                    f"{item.name}"
+                )
+        return 0
 
     if args.command == "copenhagen":
         deck = _deck(True)
