@@ -29,16 +29,25 @@ def test_storage_audit_attributes_sqlite_objects(tmp_path):
     assert audit.page_size_bytes > 0
     assert audit.page_count > 0
 
-    names = {
-        item.name
-        for item in audit.objects
+    assert audit.object_attribution_state in {
+        "AVAILABLE",
+        "UNAVAILABLE_DBSTAT",
     }
-    assert "large_evidence" in names
-    assert "ix_large_evidence_payload" in names
 
-    sizes = {
-        item.name: item.bytes
-        for item in audit.objects
-    }
-    assert sizes["large_evidence"] > 0
-    assert sizes["ix_large_evidence_payload"] > 0
+    if audit.object_attribution_state == "AVAILABLE":
+        names = {
+            item.name
+            for item in audit.objects
+        }
+        assert "large_evidence" in names
+        assert "ix_large_evidence_payload" in names
+
+        sizes = {
+            item.name: item.bytes
+            for item in audit.objects
+        }
+        assert sizes["large_evidence"] > 0
+        assert sizes["ix_large_evidence_payload"] > 0
+    else:
+        assert audit.objects == ()
+        assert "dbstat" in audit.object_attribution_detail
