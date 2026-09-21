@@ -240,6 +240,14 @@ PY
 stop_unit_for_release() {
   local unit="$1"
   local state=""
+  local load_state=""
+
+  load_state="$(systemctl show --property=LoadState --value "${unit}" 2>/dev/null || true)"
+
+  if [[ "${load_state}" == "not-found" || -z "${load_state}" ]]; then
+    echo "Skipping release quiescence for target-only unit ${unit}; not installed in current release."
+    return 0
+  fi
 
   systemctl stop "${unit}"
   state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
