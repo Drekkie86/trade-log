@@ -74,3 +74,53 @@ def test_backup_entrypoint_only_creates_verified_backup(
     assert "compression" not in payload
     assert "Starting Christiania verified SQLite backup" in captured.err
     assert "Verified backup promoted" in captured.err
+
+
+def test_backup_entrypoint_skips_when_policy_says_nothing_new(
+    monkeypatch,
+    capsys,
+):
+    decision = SimpleNamespace(
+        due=False,
+        reason="NO_NEW_COMPLETED_RESEARCH",
+        latest_backup_path="/tmp/existing.db",
+        latest_completed_research_at="2026-09-18T19:00:00Z",
+        as_dict=lambda: {
+            "due": False,
+            "reason": "NO_NEW_COMPLETED_RESEARCH",
+        },
+    )
+
+    monkeypatch.setattr(
+        backup_christiania,
+        "evaluate_backup_due",
+        lambda **kwargs: decision,
+    )
+
+    def forbidden_backup(**kwargs):
+        raise AssertionError(
+            "Redundant full backup must not start."
+        )
+
+    monkeypatch.setattr(
+        backup_christiania,
+        "create_verified_backup",
+        forbidden_backup,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["backup_christiania.py", "--json"],
+    )
+
+    backup_christiania.main()
+
+    payload = json.loads(
+        capsys.readouterr().out
+    )
+
+    assert payload["state"] == "SKIPPED"
+    assert (
+        payload["decision"]["reason"]
+        == "NO_NEW_COMPLETED_RESEARCH"
+    )
