@@ -199,7 +199,8 @@ def create_s3_client(
                 "mode": "standard",
             },
             s3={
-                "addressing_style": "path",
+                "payload_signing_enabled": False,
+                "addressing_style": "virtual",
             },
         ),
     )
@@ -1005,6 +1006,8 @@ def upload_and_verify_remote_archive(
             manifest.archive_filename,
         "manifest_filename":
             manifest.manifest_filename,
+        "manifest_sha256":
+            manifest_sha,
         "archive_object_key":
             archive_object.key,
         "archive_object_version_id":
@@ -1226,6 +1229,37 @@ def verify_remote_archive_proof(
         raise RuntimeError(
             "Remote verification receipt SHA-256 mismatch."
         )
+
+    receipt = json.loads(
+        receipt_payload.decode("utf-8")
+    )
+    expected_receipt = {
+        "session_date": proof.session_date,
+        "archive_filename":
+            proof.local_archive_filename,
+        "manifest_filename":
+            proof.local_manifest_filename,
+        "archive_object_key":
+            proof.archive_object.key,
+        "archive_object_version_id":
+            proof.archive_object.version_id,
+        "manifest_object_key":
+            proof.manifest_object.key,
+        "manifest_object_version_id":
+            proof.manifest_object.version_id,
+        "compressed_sha256":
+            proof.remote_restore_compressed_sha256,
+        "uncompressed_sha256":
+            proof.remote_restore_uncompressed_sha256,
+        "result":
+            "OFFHOST_IMMUTABLE_RESTORE_VERIFIED",
+    }
+    for key, expected in expected_receipt.items():
+        if receipt.get(key) != expected:
+            raise RuntimeError(
+                "Remote verification receipt semantic "
+                f"mismatch for {key}."
+            )
 
     if progress is not None:
         progress(
