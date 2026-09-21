@@ -26,6 +26,8 @@ class StorageAudit:
     page_count: int
     freelist_pages: int
     freelist_bytes: int
+    object_attribution_state: str
+    object_attribution_detail: str
     objects: tuple[StorageObject, ...]
 
     def as_dict(self) -> dict[str, object]:
@@ -71,29 +73,37 @@ def audit_storage(
             ).fetchone()[0]
         )
 
-        rows = conn.execute(
-            """
-            SELECT
-                d.name,
-                COALESCE(m.type, 'internal') AS object_type,
-                SUM(d.pgsize) AS bytes,
-                COUNT(*) AS pages
-            FROM dbstat AS d
-            LEFT JOIN sqlite_master AS m
-              ON m.name = d.name
-            GROUP BY
-                d.name,
-                COALESCE(m.type, 'internal')
-            ORDER BY
-                bytes DESC,
-                d.name;
-            """
-        ).fetchall()
-    except sqlite3.Error as exc:
-        raise RuntimeError(
-            "SQLite dbstat storage attribution is unavailable: "
-            f"{type(exc).__name__}:{exc}"
-        ) from exc
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    d.name,
+                    COALESCE(m.type, 'internal') AS object_type,
+                    SUM(d.pgsize) AS bytes,
+                    COUNT(*) AS pages
+                FROM dbstat AS d
+                LEFT JOIN sqlite_master AS m
+                  ON m.name = d.name
+                GROUP BY
+                    d.name,
+                    COALESCE(m.type, 'internal')
+                ORDER BY
+                    bytes DESC,
+                    d.name;
+                """
+            ).fetchall()
+        except sqlite3.Error as exc:
+            rows = []
+            attribution_state = "UNAVAILABLE_DBSTAT"
+            attribution_detail = (
+                "SQLite dbstat virtual table is unavailable: "
+                f"{type(exc).__name__}:{exc}"
+            )
+        else:
+            attribution_state = "AVAILABLE"
+            attribution_detail = (
+                "SQLite dbstat object attribution available."
+            )
     finally:
         conn.close()
 
@@ -114,5 +124,7 @@ def audit_storage(
         page_count=page_count,
         freelist_pages=freelist,
         freelist_bytes=freelist * page_size,
+        object_attribution_state=attribution_state,
+        object_attribution_detail=attribution_detail,
         objects=objects,
     )
