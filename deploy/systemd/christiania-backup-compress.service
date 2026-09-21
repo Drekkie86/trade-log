@@ -1,0 +1,16 @@
+[Unit]
+Description=Christiania Bounded Backup Compression Maintenance
+After=network-online.target christiania-backup.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=christiania
+Group=christiania
+WorkingDirectory=/opt/christiania
+EnvironmentFile=/etc/christiania/christiania.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/christiania_ops.py compress-backups --max-files 1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

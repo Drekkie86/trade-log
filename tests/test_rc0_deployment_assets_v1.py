@@ -161,12 +161,12 @@ def test_canonical_policy_generates_core_resource_limits():
         assert "OOMPolicy=stop" in dropin
 
 
-def test_all_14_services_have_canonical_resource_policy():
+def test_all_15_services_have_canonical_resource_policy():
     assert (
         len(
             SERVICE_RESOURCE_POLICIES
         )
-        == 14
+        == 15
     )
 
     for unit, policy in (

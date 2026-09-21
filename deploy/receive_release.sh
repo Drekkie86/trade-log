@@ -25,6 +25,7 @@ QUIESCE_SERVICES=(
 QUIESCE_TIMER_UNITS=(
   "christiania-audit.timer"
   "christiania-backup.timer"
+  "christiania-backup-compress.timer"
   "christiania-burn-in.timer"
   "christiania-health.timer"
   "christiania-restore-drill.timer"
@@ -37,6 +38,7 @@ QUIESCE_TIMER_UNITS=(
 QUIESCE_ONESHOT_SERVICES=(
   "christiania-audit.service"
   "christiania-backup.service"
+  "christiania-backup-compress.service"
   "christiania-burn-in.service"
   "christiania-health.service"
   "christiania-restore-drill.service"
@@ -48,7 +50,7 @@ QUIESCE_ONESHOT_SERVICES=(
 )
 
 usage() {
-  echo "Usage: sudo bash receive_release.sh <archive.tar.gz> <40-char-commit> <sha256>" >&2
+  echo "Usage: sudo bash receive_release.sh <archive.tar.gz> <40-char-commit> <sha256> [--recovery-no-schema-change]" >&2
   exit 2
 }
 
@@ -111,6 +113,128 @@ print(
 )
 PY
   )
+}
+
+validate_target_no_schema_change() {
+  (
+    cd "${RELEASE_DIR}"
+    sudo -u "${SERVICE_USER}" \
+      "${RELEASE_DIR}/.venv/bin/python" \
+      - "${ENV_FILE}" <<'PY'
+import sys
+
+from src.config import load_runtime_env_file
+from src.database.repository import EXPECTED_SCHEMA_VERSION
+from src.operations.sqlite_runtime import inspect_database
+
+if not load_runtime_env_file(sys.argv[1], overwrite=False):
+    raise SystemExit(f"Environment file missing or empty: {sys.argv[1]}")
+
+health = inspect_database(deep_integrity=False)
+if not health.exists:
+    raise SystemExit("Recovery deployment refused: live database is missing.")
+if health.schema_version != EXPECTED_SCHEMA_VERSION:
+    raise SystemExit(
+        "Recovery deployment refused: target release expects schema "
+        f"v{EXPECTED_SCHEMA_VERSION}, live database is v{health.schema_version}."
+    )
+if health.journal_mode != "wal":
+    raise SystemExit(
+        "Recovery deployment refused: live database is not in WAL mode."
+    )
+
+print(
+    "Recovery deployment schema guard passed: "
+    f"live/target schema v{EXPECTED_SCHEMA_VERSION}; WAL."
+)
+PY
+  )
+}
+
+validate_recovery_operational_gate() {
+  local status_json="$1"
+
+  STATUS_JSON="${status_json}" \
+  SUPERVISOR_JSON="${STATE_ROOT}/audit/rc0_supervisor_status.json" \
+  "${RELEASE_DIR}/.venv/bin/python" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+status = json.loads(os.environ["STATUS_JSON"])
+
+required = {
+    "release_identity_state": "PASS",
+    "core_services_state": "PASS",
+    "supervisor_freshness_state": "PASS",
+    "resource_policy_state": "PASS",
+}
+
+for field, expected in required.items():
+    actual = str(status.get(field) or "UNKNOWN").upper()
+    if actual != expected:
+        raise SystemExit(
+            f"Recovery deployment refused: {field}={actual}, expected {expected}."
+        )
+
+supervisor_path = Path(os.environ["SUPERVISOR_JSON"])
+if not supervisor_path.is_file():
+    raise SystemExit(
+        "Recovery deployment refused: supervisor evidence is missing."
+    )
+
+supervisor = json.loads(
+    supervisor_path.read_text(encoding="utf-8")
+)
+checks = supervisor.get("checks")
+if not isinstance(checks, list):
+    raise SystemExit(
+        "Recovery deployment refused: supervisor checks are malformed."
+    )
+
+allowed_backup_checks = {
+    "backup-freshness-metadata",
+    "backup-recovery-point",
+}
+
+for check in checks:
+    if not isinstance(check, dict):
+        raise SystemExit(
+            "Recovery deployment refused: malformed supervisor check."
+        )
+
+    state = str(check.get("state") or "UNKNOWN").upper()
+    if state in {"PASS", "INFO"}:
+        continue
+
+    if check.get("blocking") is False:
+        continue
+
+    name = str(check.get("name") or "")
+    detail = str(check.get("detail") or "")
+
+    if name == "research-progress":
+        continue
+
+    if (
+        name.startswith("memory:")
+        and "reached warning=" in detail
+    ):
+        continue
+
+    if name in allowed_backup_checks:
+        continue
+
+    raise SystemExit(
+        "Recovery deployment refused by supervisor check "
+        f"{name}: {detail}"
+    )
+
+print(
+    "Recovery deployment operational gate passed; "
+    "only backup recovery-point debt may remain."
+)
+PY
 }
 
 stop_unit_for_release() {
@@ -185,13 +309,21 @@ if [[ "${EUID}" -ne 0 ]]; then
   fail "receiver must run as root"
 fi
 
-if [[ "$#" -ne 3 ]]; then
+if [[ "$#" -lt 3 || "$#" -gt 4 ]]; then
   usage
 fi
 
 ARCHIVE="$1"
 EXPECTED_COMMIT="${2,,}"
 EXPECTED_SHA256="${3,,}"
+RECOVERY_NO_SCHEMA_CHANGE=0
+
+if [[ "$#" -eq 4 ]]; then
+  if [[ "$4" != "--recovery-no-schema-change" ]]; then
+    usage
+  fi
+  RECOVERY_NO_SCHEMA_CHANGE=1
+fi
 
 if [[ ! -f "${ARCHIVE}" ]]; then
   fail "release archive does not exist: ${ARCHIVE}"
@@ -449,11 +581,24 @@ chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
 chmod -R g+rX,o-rwx "${RELEASE_DIR}"
 
 phase_start "Validating current production deployment safety"
-sudo -u "${SERVICE_USER}" \
-  "${RELEASE_DIR}/.venv/bin/python" \
-  "${RELEASE_DIR}/christiania_status.py" \
-  --json \
-  --deployment-safe
+if [[ "${RECOVERY_NO_SCHEMA_CHANGE}" -eq 1 ]]; then
+  validate_target_no_schema_change
+  CURRENT_STATUS_JSON="$(
+    sudo -u "${SERVICE_USER}" \
+      "${PREVIOUS_TARGET}/.venv/bin/python" \
+      "${PREVIOUS_TARGET}/christiania_status.py" \
+      --json \
+      || true
+  )"
+  printf '%s\n' "${CURRENT_STATUS_JSON}"
+  validate_recovery_operational_gate "${CURRENT_STATUS_JSON}"
+else
+  sudo -u "${SERVICE_USER}" \
+    "${RELEASE_DIR}/.venv/bin/python" \
+    "${RELEASE_DIR}/christiania_status.py" \
+    --json \
+    --deployment-safe
+fi
 phase_done
 
 phase_start "Validating current database schema/WAL metadata"
@@ -658,7 +803,15 @@ echo "Refreshing authoritative supervisor evidence."
 systemctl start christiania-supervisor.service || true
 
 echo "Running deployment-safety control-plane status."
-"${LOCAL_BIN}/christiania-status" --json --deployment-safe
+if [[ "${RECOVERY_NO_SCHEMA_CHANGE}" -eq 1 ]]; then
+  POST_STATUS_JSON="$(
+    "${LOCAL_BIN}/christiania-status" --json || true
+  )"
+  printf '%s\n' "${POST_STATUS_JSON}"
+  validate_recovery_operational_gate "${POST_STATUS_JSON}"
+else
+  "${LOCAL_BIN}/christiania-status" --json --deployment-safe
+fi
 
 echo "Operational status (informational after deployment safety has passed)."
 "${LOCAL_BIN}/christiania-status" --json || true

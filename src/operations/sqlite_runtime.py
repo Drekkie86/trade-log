@@ -6,6 +6,7 @@ import shutil
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Callable
 
 from src.config import get_runtime_setting
 from src.database.repository import (
@@ -330,7 +331,11 @@ def assert_backup_capacity(
         )
 
 
-def _verify_backup(path: Path) -> tuple[int, str, int]:
+def _verify_backup(
+    path: Path,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[int, str, int]:
     conn = sqlite3.connect(path)
 
     try:
@@ -351,15 +356,33 @@ def _verify_backup(path: Path) -> tuple[int, str, int]:
 
         version = int(version_row[0])
 
+        if progress is not None:
+            progress("verification: integrity_check started")
+
         integrity = str(
             conn.execute(
                 "PRAGMA integrity_check;"
             ).fetchone()[0]
         )
 
+        if progress is not None:
+            progress(
+                "verification: integrity_check completed "
+                f"result={integrity}"
+            )
+            progress(
+                "verification: foreign_key_check started"
+            )
+
         fk_rows = conn.execute(
             "PRAGMA foreign_key_check;"
         ).fetchall()
+
+        if progress is not None:
+            progress(
+                "verification: foreign_key_check completed "
+                f"violations={len(fk_rows)}"
+            )
 
     finally:
         conn.close()
@@ -408,6 +431,7 @@ def create_verified_backup(
     db_path: str | Path | None = None,
     backup_dir: str | Path | None = None,
     retention: int | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> BackupResult:
     source = resolve_db_path(db_path)
 
@@ -428,6 +452,12 @@ def create_verified_backup(
         source=source,
         target_dir=target_dir,
     )
+
+    if progress is not None:
+        progress(
+            "capacity: passed "
+            f"source_bytes={source.stat().st_size}"
+        )
 
     keep = (
         retention
@@ -469,18 +499,77 @@ def create_verified_backup(
         temp_path
     )
 
+    next_report_fraction = 0.0
+
+    def report_copy(
+        status: int,
+        remaining: int,
+        total: int,
+    ) -> None:
+        nonlocal next_report_fraction
+
+        if progress is None or total <= 0:
+            return
+
+        completed = max(
+            0,
+            total - remaining,
+        )
+        fraction = min(
+            1.0,
+            completed / total,
+        )
+
+        if (
+            fraction + 1e-12
+            < next_report_fraction
+            and remaining > 0
+        ):
+            return
+
+        progress(
+            "copy: "
+            f"{fraction:.0%} "
+            f"pages={completed}/{total} "
+            f"status={status}"
+        )
+
+        while (
+            next_report_fraction
+            <= fraction
+        ):
+            next_report_fraction += 0.10
+
+    if progress is not None:
+        progress(
+            "copy: started "
+            f"source={source} "
+            f"temp={temp_path}"
+        )
+
     try:
         source_conn.backup(
-            target_conn
+            target_conn,
+            pages=8192,
+            progress=report_copy,
         )
         target_conn.commit()
+
+        if progress is not None:
+            progress(
+                "copy: completed "
+                f"temp_bytes={temp_path.stat().st_size}"
+            )
     finally:
         target_conn.close()
         source_conn.close()
 
     try:
         version, integrity, fk_count = (
-            _verify_backup(temp_path)
+            _verify_backup(
+                temp_path,
+                progress=progress,
+            )
         )
 
         if version != EXPECTED_SCHEMA_VERSION:
@@ -494,6 +583,12 @@ def create_verified_backup(
             final_path,
         )
 
+        if progress is not None:
+            progress(
+                "promotion: completed "
+                f"path={final_path}"
+            )
+
     except Exception:
         if temp_path.exists():
             temp_path.unlink()
@@ -503,6 +598,12 @@ def create_verified_backup(
         target_dir,
         keep=keep,
     )
+
+    if progress is not None:
+        progress(
+            "retention: completed "
+            f"pruned={pruned}"
+        )
 
     return BackupResult(
         source_path=str(source),

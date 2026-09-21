@@ -1,0 +1,11 @@
+[Unit]
+Description=Christiania Bounded Backup Compression Timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=christiania-backup-compress.service
+
+[Install]
+WantedBy=timers.target

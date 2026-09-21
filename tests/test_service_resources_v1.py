@@ -18,6 +18,7 @@ EXPECTED_UNITS = {
     "christiania-app.service",
     "christiania-audit.service",
     "christiania-backup.service",
+    "christiania-backup-compress.service",
     "christiania-burn-in.service",
     "christiania-daemon.service",
     "christiania-health.service",
