@@ -226,7 +226,7 @@ def test_control_plane_status_ready_from_existing_evidence(
 
     assert (
         status.resource_policy_passed
-        == 14
+        == 15
     )
 
     assert (
@@ -622,7 +622,7 @@ def test_control_plane_status_detects_resource_policy_drift(
 
     assert (
         status.resource_policy_passed
-        == 13
+        == 14
     )
 
     assert (
