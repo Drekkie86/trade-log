@@ -55,6 +55,7 @@ RUNTIME_MEMORY_SERVICES = CORE_SERVICES
 
 EXPECTED_ENABLED_TIMERS = (
     "christiania-backup.timer",
+    "christiania-backup-compress.timer",
     "christiania-audit.timer",
     "christiania-restore-drill.timer",
     "christiania-supervisor.timer",
