@@ -8,6 +8,10 @@ from pathlib import Path
 from src.config import load_runtime_env_file
 from src.dashboard.read_model import load_command_deck
 from src.operations.audit_export import export_audit_snapshot
+from src.operations.archive_pruning import (
+    plan_prune_session,
+    prune_research_session,
+)
 from src.operations.backup_recovery import (
     inventory_backups,
     resolve_latest_valid_backup,
@@ -145,6 +149,16 @@ def main() -> int:
 
     remote_inventory = sub.add_parser("archive-remote-inventory")
     remote_inventory.add_argument("--json", action="store_true")
+
+    prune_plan = sub.add_parser("archive-prune-plan")
+    prune_plan.add_argument("--session-date", required=True)
+    prune_plan.add_argument("--verify-remote", action="store_true")
+    prune_plan.add_argument("--json", action="store_true")
+
+    prune_session = sub.add_parser("archive-prune-session")
+    prune_session.add_argument("--session-date", required=True)
+    prune_session.add_argument("--confirm-session", required=True)
+    prune_session.add_argument("--json", action="store_true")
 
     copenhagen = sub.add_parser("copenhagen")
     copenhagen.add_argument("--json", action="store_true")
@@ -495,6 +509,67 @@ def main() -> int:
                     file=sys.stderr,
                 )
         return 0 if not inventory.invalid_proofs else 2
+
+    if args.command == "archive-prune-plan":
+        plan = plan_prune_session(
+            args.session_date,
+            verify_remote=args.verify_remote,
+        )
+        if args.json:
+            _print_json(plan.as_dict())
+        else:
+            print(
+                f"Session: {plan.session_date} "
+                f"runs={plan.min_run_id}-{plan.max_run_id}"
+            )
+            print(
+                f"Apply eligible: {plan.apply_eligible}"
+            )
+            print(
+                f"Hot floor run: {plan.hot_floor_run_id}"
+            )
+            print(
+                f"Remote gate: {plan.remote_gate_state}"
+            )
+            for item in plan.tables:
+                print(
+                    f"{item.table_name}: "
+                    f"archived={item.archived_rows} "
+                    f"deletable={item.deletable_rows} "
+                    f"preserved={item.preserved_rows}"
+                )
+            for blocker in plan.blockers:
+                print(
+                    f"BLOCKER: {blocker}",
+                    file=sys.stderr,
+                )
+        return 0 if plan.apply_eligible else 2
+
+    if args.command == "archive-prune-session":
+        receipt = prune_research_session(
+            args.session_date,
+            confirm_session=args.confirm_session,
+        )
+        if args.json:
+            _print_json(receipt.as_dict())
+        else:
+            print("Reference-aware hot pruning committed.")
+            print(f"Session: {receipt.session_date}")
+            print(
+                f"Remote gate: {receipt.remote_gate_state}"
+            )
+            for table_name, count in receipt.rows_deleted.items():
+                print(
+                    f"{table_name}: deleted={count} "
+                    f"preserved={receipt.rows_preserved[table_name]}"
+                )
+            print(
+                f"Freelist before: {receipt.freelist_bytes_before} bytes"
+            )
+            print(
+                f"Freelist after: {receipt.freelist_bytes_after} bytes"
+            )
+        return 0
 
     if args.command == "copenhagen":
         deck = _deck(True)

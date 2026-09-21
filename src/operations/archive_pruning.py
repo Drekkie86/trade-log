@@ -1,0 +1,1430 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Iterable
+
+from src.database.repository import (
+    EXPECTED_SCHEMA_VERSION,
+    resolve_db_path,
+)
+from src.operations.remote_archive import (
+    RemoteArchiveProof,
+    load_remote_archive_proof,
+    verify_remote_archive_proof,
+)
+from src.operations.research_archive import (
+    ResearchArchiveManifest,
+    inventory_research_archives,
+    keep_hot_completed_runs,
+    resolve_archive_dir,
+    verify_research_archive,
+)
+
+
+PRUNE_FORMAT_VERSION = 1
+PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
+PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
+
+TARGET_TABLES = (
+    "local_surface_residual_v2_observations",
+    "hypothesis_scanner_evaluations",
+    "provider_model_observations",
+    "provider_observation_availability",
+    "listing_reference_contracts",
+    "option_quotes",
+)
+
+DELETE_TRIGGER_BY_TABLE = {
+    "local_surface_residual_v2_observations":
+        "trg_local_surface_v2_observation_no_delete",
+    "hypothesis_scanner_evaluations":
+        "trg_hypothesis_scanner_evaluations_no_delete",
+    "provider_model_observations":
+        "trg_provider_model_no_delete",
+    "provider_observation_availability":
+        "trg_provider_observation_no_delete",
+    "listing_reference_contracts":
+        "trg_listing_reference_no_delete",
+    "option_quotes":
+        "trg_option_quotes_no_delete",
+}
+
+DELETE_ORDER = (
+    "local_surface_residual_v2_observations",
+    "hypothesis_scanner_evaluations",
+    "provider_model_observations",
+    "provider_observation_availability",
+    "listing_reference_contracts",
+    "option_quotes",
+)
+
+
+@dataclass(frozen=True)
+class PruneTablePlan:
+    table_name: str
+    archived_rows: int
+    deletable_rows: int
+    preserved_rows: int
+    archive_count_matches_hot: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PruneSessionPlan:
+    session_date: str
+    run_ids: tuple[int, ...]
+    min_run_id: int
+    max_run_id: int
+    current_schema_version: int
+    expected_schema_version: int
+    hot_floor_run_id: int | None
+    outside_hot_window: bool
+    archive_manifest_filename: str
+    remote_proof_filename: str
+    remote_gate_state: str
+    local_archive_fast_verified: bool
+    run_lineage_verified: bool
+    tables: tuple[PruneTablePlan, ...]
+    total_archived_rows: int
+    total_deletable_rows: int
+    total_preserved_rows: int
+    apply_eligible: bool
+    blockers: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            **asdict(self),
+            "run_ids": list(self.run_ids),
+            "tables": [
+                item.as_dict()
+                for item in self.tables
+            ],
+            "blockers": list(self.blockers),
+        }
+
+
+@dataclass(frozen=True)
+class PruneReceipt:
+    format_version: int
+    state: str
+    committed_at: str
+    session_date: str
+    run_ids: tuple[int, ...]
+    archive_manifest_filename: str
+    archive_manifest_sha256: str
+    remote_proof_filename: str
+    remote_proof_sha256: str
+    remote_gate_state: str
+    schema_version: int
+    trigger_sql_sha256_before: dict[str, str]
+    trigger_sql_sha256_after: dict[str, str]
+    rows_before: dict[str, int]
+    rows_deleted: dict[str, int]
+    rows_preserved: dict[str, int]
+    freelist_bytes_before: int
+    freelist_bytes_after: int
+    database_size_bytes_before: int
+    database_size_bytes_after: int
+    foreign_key_check: str
+
+    def as_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["run_ids"] = list(self.run_ids)
+        return data
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _normalized_sql_sha256(sql: str) -> str:
+    normalized = " ".join(
+        sql.split()
+    ).strip()
+    return _sha256_bytes(
+        normalized.encode("utf-8")
+    )
+
+
+def _write_json_atomic(
+    path: Path,
+    payload: dict[str, object],
+) -> None:
+    temp = path.with_name(
+        f".{path.name}.{os.getpid()}.tmp"
+    )
+    text = (
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    try:
+        with temp.open(
+            "w",
+            encoding="utf-8",
+            newline="\n",
+        ) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temp, path)
+
+        if os.name != "nt":
+            flags = os.O_RDONLY | getattr(
+                os,
+                "O_DIRECTORY",
+                0,
+            )
+            fd = os.open(path.parent, flags)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def _manifest_for_session(
+    session_date: str,
+    archive_dir: Path,
+) -> tuple[Path, ResearchArchiveManifest]:
+    inventory = inventory_research_archives(
+        archive_dir
+    )
+    matches = [
+        manifest
+        for manifest in inventory.manifests
+        if manifest.session_date == session_date
+    ]
+    if not matches:
+        raise FileNotFoundError(
+            "No verified local research archive exists "
+            f"for session {session_date}."
+        )
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Expected exactly one local research archive "
+            f"for session {session_date}; found {len(matches)}."
+        )
+
+    manifest = matches[0]
+    path = (
+        archive_dir
+        / manifest.manifest_filename
+    )
+    return path, manifest
+
+
+def _proof_path_for_manifest(
+    manifest_path: Path,
+) -> Path:
+    suffix = ".manifest.json"
+    if not manifest_path.name.endswith(suffix):
+        raise ValueError(
+            "Unexpected archive manifest filename."
+        )
+    return manifest_path.with_name(
+        manifest_path.name[
+            :-len(suffix)
+        ]
+        + ".remote-proof.json"
+    )
+
+
+def _validate_local_proof_binding(
+    *,
+    manifest_path: Path,
+    manifest: ResearchArchiveManifest,
+    proof_path: Path,
+    proof: RemoteArchiveProof,
+) -> None:
+    if proof.pruning_gate_state != PRUNE_GATE_STATE:
+        raise RuntimeError(
+            "Remote proof does not satisfy Christiania's "
+            f"pruning gate: {proof.pruning_gate_state}"
+        )
+    if proof.session_date != manifest.session_date:
+        raise RuntimeError(
+            "Remote proof session does not match archive manifest."
+        )
+    if (
+        proof.local_manifest_filename
+        != manifest.manifest_filename
+    ):
+        raise RuntimeError(
+            "Remote proof manifest filename does not match "
+            "the local archive manifest."
+        )
+    if (
+        proof.local_archive_filename
+        != manifest.archive_filename
+    ):
+        raise RuntimeError(
+            "Remote proof archive filename does not match "
+            "the local archive manifest."
+        )
+    if (
+        proof.local_archive_compressed_sha256
+        != manifest.compressed_sha256
+    ):
+        raise RuntimeError(
+            "Remote proof compressed hash does not match "
+            "the local archive manifest."
+        )
+    if (
+        proof.local_archive_uncompressed_sha256
+        != manifest.uncompressed_sha256
+    ):
+        raise RuntimeError(
+            "Remote proof payload hash does not match "
+            "the local archive manifest."
+        )
+    manifest_hash = _sha256_file(
+        manifest_path
+    )
+    if (
+        proof.local_manifest_sha256
+        != manifest_hash
+    ):
+        raise RuntimeError(
+            "Remote proof does not bind to the current "
+            "local archive manifest bytes."
+        )
+    if not proof_path.is_file():
+        raise FileNotFoundError(
+            f"Remote proof missing: {proof_path}"
+        )
+
+
+def _sqlite_version(
+    conn: sqlite3.Connection,
+) -> int:
+    row = conn.execute(
+        """
+        SELECT MAX(version)
+        FROM schema_version;
+        """
+    ).fetchone()
+    if row is None or row[0] is None:
+        raise RuntimeError(
+            "Christiania database has no schema_version."
+        )
+    return int(row[0])
+
+
+def _page_freelist_bytes(
+    conn: sqlite3.Connection,
+) -> int:
+    page_size = int(
+        conn.execute(
+            "PRAGMA page_size;"
+        ).fetchone()[0]
+    )
+    freelist = int(
+        conn.execute(
+            "PRAGMA freelist_count;"
+        ).fetchone()[0]
+    )
+    return page_size * freelist
+
+
+def _prepare_run_scope(
+    conn: sqlite3.Connection,
+    run_ids: Iterable[int],
+) -> None:
+    conn.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS _prune_runs(
+            id INTEGER PRIMARY KEY
+        );
+        """
+    )
+    conn.execute(
+        "DELETE FROM _prune_runs;"
+    )
+    conn.executemany(
+        """
+        INSERT INTO _prune_runs(id)
+        VALUES(?);
+        """,
+        (
+            (int(run_id),)
+            for run_id in run_ids
+        ),
+    )
+
+
+def _prepare_delete_sets(
+    conn: sqlite3.Connection,
+) -> None:
+    for name in (
+        "_delete_surface_obs",
+        "_delete_scanner_evals",
+        "_delete_provider_models",
+        "_delete_provider_availability",
+        "_delete_listing_refs",
+        "_delete_option_quotes",
+    ):
+        conn.execute(
+            f"""
+            CREATE TEMP TABLE IF NOT EXISTS {name}(
+                id INTEGER PRIMARY KEY
+            );
+            """
+        )
+        conn.execute(
+            f"DELETE FROM {name};"
+        )
+
+    conn.execute(
+        """
+        INSERT INTO _delete_surface_obs(id)
+        SELECT o.id
+        FROM local_surface_residual_v2_observations AS o
+        JOIN local_surface_residual_v2_runs AS r
+          ON r.id = o.model_run_id
+        JOIN _prune_runs AS pr
+          ON pr.id = r.research_run_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM local_surface_null_v1_membership AS m
+            WHERE m.v2_observation_id = o.id
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO _delete_scanner_evals(id)
+        SELECT e.id
+        FROM hypothesis_scanner_evaluations AS e
+        JOIN hypothesis_scanner_runs AS r
+          ON r.id = e.scanner_run_id
+        JOIN _prune_runs AS pr
+          ON pr.id = r.research_run_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM shadow_structure_proposals AS p
+            WHERE p.hypothesis_evaluation_id = e.id
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO _delete_provider_models(id)
+        SELECT pmo.id
+        FROM provider_model_observations AS pmo
+        JOIN option_quotes AS oq
+          ON oq.id = pmo.option_quote_id
+        JOIN market_snapshots AS ms
+          ON ms.id = oq.snapshot_id
+        JOIN _prune_runs AS pr
+          ON pr.id = ms.research_run_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM provider_model_timing_reconstruction_v1 AS tr
+            WHERE tr.provider_model_observation_id = pmo.id
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO _delete_provider_availability(id)
+        SELECT poa.id
+        FROM provider_observation_availability AS poa
+        JOIN listing_reference_contracts AS lrc
+          ON lrc.id = poa.reference_contract_id
+        JOIN _prune_runs AS pr
+          ON pr.id = lrc.research_run_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM shadow_candidates AS sc
+            WHERE sc.entry_quote_observation_id = poa.id
+               OR sc.entry_greek_observation_id = poa.id
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO _delete_listing_refs(id)
+        SELECT lrc.id
+        FROM listing_reference_contracts AS lrc
+        JOIN _prune_runs AS pr
+          ON pr.id = lrc.research_run_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM shadow_candidates AS sc
+            WHERE sc.reference_contract_id = lrc.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM shadow_structure_proposals AS sp
+            WHERE sp.target_reference_contract_id = lrc.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM provider_observation_availability AS poa
+            WHERE poa.reference_contract_id = lrc.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM _delete_provider_availability AS d
+                  WHERE d.id = poa.id
+              )
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM hypothesis_scanner_evaluations AS e
+            WHERE e.reference_contract_id = lrc.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM _delete_scanner_evals AS d
+                  WHERE d.id = e.id
+              )
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM local_surface_residual_v2_observations AS o
+            WHERE o.reference_contract_id = lrc.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM _delete_surface_obs AS d
+                  WHERE d.id = o.id
+              )
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO _delete_option_quotes(id)
+        SELECT oq.id
+        FROM option_quotes AS oq
+        JOIN market_snapshots AS ms
+          ON ms.id = oq.snapshot_id
+        JOIN _prune_runs AS pr
+          ON pr.id = ms.research_run_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM candidate_legs AS cl
+            WHERE cl.option_quote_id = oq.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM candidate_controls AS cc
+            WHERE cc.control_quote_id = oq.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM research_selections AS rs
+            WHERE rs.option_quote_id = oq.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM selection_exclusions AS se
+            WHERE se.option_quote_id = oq.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM saxo_option_observations AS so
+            WHERE so.option_quote_id = oq.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM saxo_resolution_failures AS sf
+            WHERE sf.option_quote_id = oq.id
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM provider_model_observations AS pmo
+            WHERE pmo.option_quote_id = oq.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM _delete_provider_models AS d
+                  WHERE d.id = pmo.id
+              )
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM hypothesis_scanner_evaluations AS e
+            WHERE e.option_quote_id = oq.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM _delete_scanner_evals AS d
+                  WHERE d.id = e.id
+              )
+        )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM local_surface_residual_v2_observations AS o
+            WHERE o.option_quote_id = oq.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM _delete_surface_obs AS d
+                  WHERE d.id = o.id
+              )
+        );
+        """
+    )
+
+
+def _candidate_counts(
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    sql = {
+        "local_surface_residual_v2_observations": """
+            SELECT COUNT(*)
+            FROM local_surface_residual_v2_observations AS o
+            JOIN local_surface_residual_v2_runs AS r
+              ON r.id = o.model_run_id
+            JOIN _prune_runs AS pr
+              ON pr.id = r.research_run_id;
+        """,
+        "hypothesis_scanner_evaluations": """
+            SELECT COUNT(*)
+            FROM hypothesis_scanner_evaluations AS e
+            JOIN hypothesis_scanner_runs AS r
+              ON r.id = e.scanner_run_id
+            JOIN _prune_runs AS pr
+              ON pr.id = r.research_run_id;
+        """,
+        "provider_model_observations": """
+            SELECT COUNT(*)
+            FROM provider_model_observations AS pmo
+            JOIN option_quotes AS oq
+              ON oq.id = pmo.option_quote_id
+            JOIN market_snapshots AS ms
+              ON ms.id = oq.snapshot_id
+            JOIN _prune_runs AS pr
+              ON pr.id = ms.research_run_id;
+        """,
+        "provider_observation_availability": """
+            SELECT COUNT(*)
+            FROM provider_observation_availability AS poa
+            JOIN listing_reference_contracts AS lrc
+              ON lrc.id = poa.reference_contract_id
+            JOIN _prune_runs AS pr
+              ON pr.id = lrc.research_run_id;
+        """,
+        "listing_reference_contracts": """
+            SELECT COUNT(*)
+            FROM listing_reference_contracts AS lrc
+            JOIN _prune_runs AS pr
+              ON pr.id = lrc.research_run_id;
+        """,
+        "option_quotes": """
+            SELECT COUNT(*)
+            FROM option_quotes AS oq
+            JOIN market_snapshots AS ms
+              ON ms.id = oq.snapshot_id
+            JOIN _prune_runs AS pr
+              ON pr.id = ms.research_run_id;
+        """,
+    }
+    return {
+        table_name: int(
+            conn.execute(
+                statement
+            ).fetchone()[0]
+        )
+        for table_name, statement
+        in sql.items()
+    }
+
+
+def _delete_set_counts(
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    mapping = {
+        "local_surface_residual_v2_observations":
+            "_delete_surface_obs",
+        "hypothesis_scanner_evaluations":
+            "_delete_scanner_evals",
+        "provider_model_observations":
+            "_delete_provider_models",
+        "provider_observation_availability":
+            "_delete_provider_availability",
+        "listing_reference_contracts":
+            "_delete_listing_refs",
+        "option_quotes":
+            "_delete_option_quotes",
+    }
+    return {
+        table_name: int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {temp_table};"
+            ).fetchone()[0]
+        )
+        for table_name, temp_table
+        in mapping.items()
+    }
+
+
+def _hot_floor_run_id(
+    conn: sqlite3.Connection,
+) -> int | None:
+    keep = keep_hot_completed_runs()
+    rows = conn.execute(
+        """
+        SELECT id
+        FROM research_runs
+        WHERE status = 'COMPLETED'
+        ORDER BY id DESC
+        LIMIT ?;
+        """,
+        (keep,),
+    ).fetchall()
+    if len(rows) < keep:
+        return None
+    return min(
+        int(row[0])
+        for row in rows
+    )
+
+
+def _validate_run_lineage(
+    conn: sqlite3.Connection,
+    *,
+    manifest: ResearchArchiveManifest,
+) -> bool:
+    rows = conn.execute(
+        """
+        SELECT
+            rr.id,
+            rr.us_session_date,
+            rr.status
+        FROM research_runs AS rr
+        JOIN _prune_runs AS pr
+          ON pr.id = rr.id
+        ORDER BY rr.id;
+        """
+    ).fetchall()
+
+    if tuple(
+        int(row[0])
+        for row in rows
+    ) != manifest.run_ids:
+        return False
+
+    for row in rows:
+        if str(row[1]) != manifest.session_date:
+            return False
+        if str(row[2]) not in {
+            "COMPLETED",
+            "FAILED",
+            "INVALID",
+        }:
+            return False
+
+    return True
+
+
+def _build_plan_from_connection(
+    conn: sqlite3.Connection,
+    *,
+    database: Path,
+    manifest_path: Path,
+    manifest: ResearchArchiveManifest,
+    proof_path: Path,
+    proof: RemoteArchiveProof,
+    local_archive_fast_verified: bool,
+) -> PruneSessionPlan:
+    schema_version = _sqlite_version(
+        conn
+    )
+    _prepare_run_scope(
+        conn,
+        manifest.run_ids,
+    )
+    lineage_ok = _validate_run_lineage(
+        conn,
+        manifest=manifest,
+    )
+    _prepare_delete_sets(conn)
+
+    candidates = _candidate_counts(conn)
+    deletable = _delete_set_counts(conn)
+
+    table_plans: list[
+        PruneTablePlan
+    ] = []
+    blockers: list[str] = []
+
+    for table_name in TARGET_TABLES:
+        archived_rows = candidates[
+            table_name
+        ]
+        expected = int(
+            manifest.table_counts.get(
+                table_name,
+                -1,
+            )
+        )
+        archive_matches = (
+            expected == archived_rows
+        )
+        if not archive_matches:
+            blockers.append(
+                "ARCHIVE_COUNT_MISMATCH:"
+                f"{table_name}:"
+                f"hot={archived_rows}:"
+                f"archive={expected}"
+            )
+
+        delete_count = deletable[
+            table_name
+        ]
+        if (
+            delete_count < 0
+            or delete_count > archived_rows
+        ):
+            blockers.append(
+                "INVALID_DELETE_COUNT:"
+                f"{table_name}"
+            )
+
+        table_plans.append(
+            PruneTablePlan(
+                table_name=table_name,
+                archived_rows=archived_rows,
+                deletable_rows=delete_count,
+                preserved_rows=(
+                    archived_rows
+                    - delete_count
+                ),
+                archive_count_matches_hot=
+                    archive_matches,
+            )
+        )
+
+    hot_floor = _hot_floor_run_id(conn)
+    outside_hot = (
+        hot_floor is not None
+        and manifest.max_run_id < hot_floor
+    )
+
+    if schema_version != EXPECTED_SCHEMA_VERSION:
+        blockers.append(
+            "SCHEMA_MISMATCH:"
+            f"{schema_version}!="
+            f"{EXPECTED_SCHEMA_VERSION}"
+        )
+    if not lineage_ok:
+        blockers.append(
+            "RUN_LINEAGE_MISMATCH"
+        )
+    if not outside_hot:
+        blockers.append(
+            "SESSION_NOT_OUTSIDE_HOT_WINDOW"
+        )
+    if (
+        proof.pruning_gate_state
+        != PRUNE_GATE_STATE
+    ):
+        blockers.append(
+            "REMOTE_GATE_NOT_VERIFIED"
+        )
+    if not local_archive_fast_verified:
+        blockers.append(
+            "LOCAL_ARCHIVE_NOT_VERIFIED"
+        )
+
+    total_archived = sum(
+        item.archived_rows
+        for item in table_plans
+    )
+    total_deletable = sum(
+        item.deletable_rows
+        for item in table_plans
+    )
+    total_preserved = sum(
+        item.preserved_rows
+        for item in table_plans
+    )
+
+    if total_deletable <= 0:
+        blockers.append(
+            "NO_REFERENCE_SAFE_ROWS_TO_PRUNE"
+        )
+
+    return PruneSessionPlan(
+        session_date=manifest.session_date,
+        run_ids=manifest.run_ids,
+        min_run_id=manifest.min_run_id,
+        max_run_id=manifest.max_run_id,
+        current_schema_version=schema_version,
+        expected_schema_version=
+            EXPECTED_SCHEMA_VERSION,
+        hot_floor_run_id=hot_floor,
+        outside_hot_window=outside_hot,
+        archive_manifest_filename=
+            manifest.manifest_filename,
+        remote_proof_filename=
+            proof_path.name,
+        remote_gate_state=
+            proof.pruning_gate_state,
+        local_archive_fast_verified=
+            local_archive_fast_verified,
+        run_lineage_verified=lineage_ok,
+        tables=tuple(table_plans),
+        total_archived_rows=total_archived,
+        total_deletable_rows=
+            total_deletable,
+        total_preserved_rows=
+            total_preserved,
+        apply_eligible=not blockers,
+        blockers=tuple(blockers),
+    )
+
+
+def plan_prune_session(
+    session_date: str,
+    *,
+    db_path: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+    verify_remote: bool = False,
+) -> PruneSessionPlan:
+    database = resolve_db_path(
+        db_path
+    )
+    directory = resolve_archive_dir(
+        archive_dir
+    )
+
+    (
+        manifest_path,
+        manifest,
+    ) = _manifest_for_session(
+        session_date,
+        directory,
+    )
+    proof_path = _proof_path_for_manifest(
+        manifest_path
+    )
+    if not proof_path.is_file():
+        raise FileNotFoundError(
+            "No off-host immutable proof exists for "
+            f"session {session_date}."
+        )
+
+    local_archive = verify_research_archive(
+        manifest_path,
+        deep_payload=False,
+    )
+    local_verified = (
+        local_archive.compressed_sha256
+        == manifest.compressed_sha256
+    )
+
+    proof = load_remote_archive_proof(
+        proof_path
+    )
+    _validate_local_proof_binding(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        proof_path=proof_path,
+        proof=proof,
+    )
+
+    if verify_remote:
+        proof = verify_remote_archive_proof(
+            proof_path
+        )
+
+    uri = (
+        database.resolve().as_uri()
+        + "?mode=ro"
+    )
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=60.0,
+    )
+    try:
+        return _build_plan_from_connection(
+            conn,
+            database=database,
+            manifest_path=manifest_path,
+            manifest=manifest,
+            proof_path=proof_path,
+            proof=proof,
+            local_archive_fast_verified=
+                local_verified,
+        )
+    finally:
+        conn.close()
+
+
+def _capture_delete_triggers(
+    conn: sqlite3.Connection,
+) -> dict[str, str]:
+    captured: dict[str, str] = {}
+
+    for (
+        table_name,
+        trigger_name,
+    ) in DELETE_TRIGGER_BY_TABLE.items():
+        row = conn.execute(
+            """
+            SELECT
+                tbl_name,
+                sql
+            FROM sqlite_master
+            WHERE type = 'trigger'
+              AND name = ?;
+            """,
+            (trigger_name,),
+        ).fetchone()
+
+        if row is None:
+            raise RuntimeError(
+                "Required immutability trigger is missing: "
+                f"{trigger_name}"
+            )
+
+        if str(row[0]) != table_name:
+            raise RuntimeError(
+                "Immutability trigger is attached to an "
+                "unexpected table: "
+                f"{trigger_name}:{row[0]}"
+            )
+
+        sql = str(
+            row[1] or ""
+        )
+        if (
+            "BEFORE DELETE"
+            not in " ".join(
+                sql.upper().split()
+            )
+        ):
+            raise RuntimeError(
+                "Expected a BEFORE DELETE immutability trigger: "
+                f"{trigger_name}"
+            )
+
+        captured[
+            trigger_name
+        ] = sql
+
+    return captured
+
+
+def _trigger_hashes(
+    trigger_sql: dict[str, str],
+) -> dict[str, str]:
+    return {
+        name: _normalized_sql_sha256(
+            sql
+        )
+        for name, sql
+        in trigger_sql.items()
+    }
+
+
+def _drop_delete_triggers(
+    conn: sqlite3.Connection,
+    trigger_sql: dict[str, str],
+) -> None:
+    for trigger_name in trigger_sql:
+        if not trigger_name.replace(
+            "_",
+            "",
+        ).isalnum():
+            raise RuntimeError(
+                "Unsafe trigger name."
+            )
+        conn.execute(
+            f'DROP TRIGGER "{trigger_name}";'
+        )
+
+
+def _restore_delete_triggers(
+    conn: sqlite3.Connection,
+    trigger_sql: dict[str, str],
+) -> dict[str, str]:
+    for sql in trigger_sql.values():
+        conn.execute(sql)
+
+    restored = _capture_delete_triggers(
+        conn
+    )
+    return restored
+
+
+def _delete_reference_safe_rows(
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    temp_by_table = {
+        "local_surface_residual_v2_observations":
+            "_delete_surface_obs",
+        "hypothesis_scanner_evaluations":
+            "_delete_scanner_evals",
+        "provider_model_observations":
+            "_delete_provider_models",
+        "provider_observation_availability":
+            "_delete_provider_availability",
+        "listing_reference_contracts":
+            "_delete_listing_refs",
+        "option_quotes":
+            "_delete_option_quotes",
+    }
+
+    deleted: dict[str, int] = {}
+    for table_name in DELETE_ORDER:
+        temp_table = temp_by_table[
+            table_name
+        ]
+        cursor = conn.execute(
+            f"""
+            DELETE FROM {table_name}
+            WHERE id IN (
+                SELECT id
+                FROM {temp_table}
+            );
+            """
+        )
+        deleted[
+            table_name
+        ] = int(
+            cursor.rowcount
+            if cursor.rowcount is not None
+            else -1
+        )
+
+    return deleted
+
+
+def _foreign_key_violations(
+    conn: sqlite3.Connection,
+) -> list[tuple]:
+    return list(
+        conn.execute(
+            "PRAGMA foreign_key_check;"
+        ).fetchall()
+    )
+
+
+def prune_receipt_path(
+    manifest_path: Path,
+) -> Path:
+    suffix = ".manifest.json"
+    stem = manifest_path.name[
+        :-len(suffix)
+    ]
+    return manifest_path.with_name(
+        stem
+        + ".prune-receipt.json"
+    )
+
+
+def prune_research_session(
+    session_date: str,
+    *,
+    db_path: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+    confirm_session: str,
+) -> PruneReceipt:
+    if confirm_session != session_date:
+        raise RuntimeError(
+            "Destructive prune confirmation does not match "
+            "the requested session."
+        )
+
+    database = resolve_db_path(
+        db_path
+    )
+    directory = resolve_archive_dir(
+        archive_dir
+    )
+    (
+        manifest_path,
+        manifest,
+    ) = _manifest_for_session(
+        session_date,
+        directory,
+    )
+    proof_path = _proof_path_for_manifest(
+        manifest_path
+    )
+
+    receipt_path = prune_receipt_path(
+        manifest_path
+    )
+    if receipt_path.exists():
+        raise FileExistsError(
+            "A prune receipt already exists for this "
+            f"session: {receipt_path}"
+        )
+
+    # Destructive work is blocked until both independent copies are
+    # revalidated immediately before the database transaction.
+    verified_manifest = verify_research_archive(
+        manifest_path,
+        deep_payload=True,
+    )
+    if (
+        verified_manifest.compressed_sha256
+        != manifest.compressed_sha256
+    ):
+        raise RuntimeError(
+            "Local archive deep verification does not match "
+            "the manifest selected for pruning."
+        )
+
+    verified_proof = verify_remote_archive_proof(
+        proof_path
+    )
+    _validate_local_proof_binding(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        proof_path=proof_path,
+        proof=verified_proof,
+    )
+
+    db_size_before = (
+        database.stat().st_size
+    )
+
+    conn = sqlite3.connect(
+        database,
+        timeout=60.0,
+        isolation_level=None,
+    )
+    try:
+        conn.execute(
+            "PRAGMA foreign_keys = ON;"
+        )
+        conn.execute(
+            "PRAGMA busy_timeout = 60000;"
+        )
+
+        freelist_before = (
+            _page_freelist_bytes(
+                conn
+            )
+        )
+
+        conn.execute("BEGIN IMMEDIATE;")
+        try:
+            plan = _build_plan_from_connection(
+                conn,
+                database=database,
+                manifest_path=manifest_path,
+                manifest=manifest,
+                proof_path=proof_path,
+                proof=verified_proof,
+                local_archive_fast_verified=True,
+            )
+            if not plan.apply_eligible:
+                raise RuntimeError(
+                    "Session is not eligible for reference-aware "
+                    "hot pruning: "
+                    + "; ".join(
+                        plan.blockers
+                    )
+                )
+
+            trigger_sql = (
+                _capture_delete_triggers(
+                    conn
+                )
+            )
+            trigger_before = (
+                _trigger_hashes(
+                    trigger_sql
+                )
+            )
+
+            rows_before = {
+                item.table_name:
+                    item.archived_rows
+                for item in plan.tables
+            }
+            expected_delete = {
+                item.table_name:
+                    item.deletable_rows
+                for item in plan.tables
+            }
+
+            _drop_delete_triggers(
+                conn,
+                trigger_sql,
+            )
+            deleted = (
+                _delete_reference_safe_rows(
+                    conn
+                )
+            )
+
+            for (
+                table_name,
+                expected,
+            ) in expected_delete.items():
+                if deleted[
+                    table_name
+                ] != expected:
+                    raise RuntimeError(
+                        "Prune row-count mismatch for "
+                        f"{table_name}: "
+                        f"deleted={deleted[table_name]} "
+                        f"expected={expected}."
+                    )
+
+            restored = (
+                _restore_delete_triggers(
+                    conn,
+                    trigger_sql,
+                )
+            )
+            trigger_after = (
+                _trigger_hashes(
+                    restored
+                )
+            )
+            if (
+                trigger_after
+                != trigger_before
+            ):
+                raise RuntimeError(
+                    "Immutability triggers were not restored "
+                    "byte-semantically after pruning."
+                )
+
+            violations = (
+                _foreign_key_violations(
+                    conn
+                )
+            )
+            if violations:
+                raise RuntimeError(
+                    "Foreign-key violations detected after "
+                    "reference-aware pruning: "
+                    f"{violations[:10]}"
+                )
+
+            remaining = (
+                _candidate_counts(
+                    conn
+                )
+            )
+            rows_preserved = {
+                table_name:
+                    int(
+                        remaining[
+                            table_name
+                        ]
+                    )
+                for table_name
+                in TARGET_TABLES
+            }
+
+            for table_name in TARGET_TABLES:
+                if (
+                    rows_before[
+                        table_name
+                    ]
+                    - deleted[
+                        table_name
+                    ]
+                    != rows_preserved[
+                        table_name
+                    ]
+                ):
+                    raise RuntimeError(
+                        "Post-prune row reconciliation failed "
+                        f"for {table_name}."
+                    )
+
+            conn.execute("COMMIT;")
+
+        except BaseException:
+            conn.execute("ROLLBACK;")
+            raise
+
+        freelist_after = (
+            _page_freelist_bytes(
+                conn
+            )
+        )
+
+    finally:
+        conn.close()
+
+    receipt = PruneReceipt(
+        format_version=
+            PRUNE_FORMAT_VERSION,
+        state=PRUNE_RECEIPT_STATE,
+        committed_at=(
+            datetime.now(UTC)
+            .isoformat()
+            .replace("+00:00", "Z")
+        ),
+        session_date=session_date,
+        run_ids=manifest.run_ids,
+        archive_manifest_filename=
+            manifest.manifest_filename,
+        archive_manifest_sha256=
+            _sha256_file(
+                manifest_path
+            ),
+        remote_proof_filename=
+            proof_path.name,
+        remote_proof_sha256=
+            _sha256_file(
+                proof_path
+            ),
+        remote_gate_state=
+            verified_proof.pruning_gate_state,
+        schema_version=
+            EXPECTED_SCHEMA_VERSION,
+        trigger_sql_sha256_before=
+            trigger_before,
+        trigger_sql_sha256_after=
+            trigger_after,
+        rows_before=rows_before,
+        rows_deleted=deleted,
+        rows_preserved=
+            rows_preserved,
+        freelist_bytes_before=
+            freelist_before,
+        freelist_bytes_after=
+            freelist_after,
+        database_size_bytes_before=
+            db_size_before,
+        database_size_bytes_after=
+            database.stat().st_size,
+        foreign_key_check="ok",
+    )
+
+    _write_json_atomic(
+        receipt_path,
+        receipt.as_dict(),
+    )
+    return receipt

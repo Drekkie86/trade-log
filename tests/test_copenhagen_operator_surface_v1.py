@@ -23,6 +23,8 @@ def test_operator_cli_contains_expected_commands():
         "archive-remote-upload",
         "archive-remote-verify",
         "archive-remote-inventory",
+        "archive-prune-plan",
+        "archive-prune-session",
         "export",
         "copenhagen",
     ):
