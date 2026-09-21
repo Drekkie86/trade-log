@@ -25,6 +25,7 @@ QUIESCE_SERVICES=(
 QUIESCE_TIMER_UNITS=(
   "christiania-audit.timer"
   "christiania-backup.timer"
+  "christiania-backup-compress.timer"
   "christiania-burn-in.timer"
   "christiania-health.timer"
   "christiania-restore-drill.timer"
@@ -37,6 +38,7 @@ QUIESCE_TIMER_UNITS=(
 QUIESCE_ONESHOT_SERVICES=(
   "christiania-audit.service"
   "christiania-backup.service"
+  "christiania-backup-compress.service"
   "christiania-burn-in.service"
   "christiania-health.service"
   "christiania-restore-drill.service"
