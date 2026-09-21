@@ -160,14 +160,95 @@ include:
 
 No off-host provider is hard-coded in V1.
 
-## Hot/cold research evidence
+## Hot/cold research evidence — Storage V2
 
-No table is archived or deleted from the primary database by this change.
+Production measurement on 21-Sep-2026 showed that primary-database growth is
+real evidence allocation rather than freelist waste. The high-volume families
+are provider observation availability, provider-model observations, normalized
+option quotes, listing-reference contracts, LOCAL_SURFACE_RESIDUAL_V2
+observations, and hypothesis-scanner evaluations. A recent normal 15-minute
+research run persists roughly 282k rows across those six families, so the hot
+database cannot remain an unbounded historical warehouse.
 
-The read-only `storage-audit` operator command identifies high-growth SQLite
-objects before a cold-evidence split is designed. Any future archive must
-preserve immutable provenance and allow deterministic reconstruction of
-research datasets; archival must never silently change historical denominators.
+Storage V2 introduces **whole-session cold archives** without deleting hot
+evidence.
+
+### Hot retention boundary
+
+The default hot window is the newest 50 completed research runs
+(`CHRISTIANIA_EVIDENCE_KEEP_HOT_COMPLETED_RUNS=50`). An older US session is
+archive-eligible only when:
+
+- every run in that session is terminal;
+- the entire session lies below the hot-run boundary; and
+- no verified archive manifest already exists for the session.
+
+A session is never split across the hot/cold boundary.
+
+### Archive coverage V1
+
+Each archive contains the high-volume research evidence closure required to
+reconstruct one archived session:
+
+- `research_runs`;
+- `research_daemon_iterations`;
+- `market_snapshots`;
+- `option_quotes`;
+- `provider_model_observations`;
+- `listing_reference_contracts`;
+- `provider_observation_availability`;
+- `hypothesis_scanner_runs`;
+- `hypothesis_scanner_evaluations`;
+- `local_surface_residual_v2_runs`;
+- `local_surface_residual_v2_observations`.
+
+The archive is a compact SQLite database without production query indexes.
+Index pages are an execution concern for the hot store, not evidence.
+
+### Archive creation contract
+
+Creation is fail-closed:
+
+1. select one whole eligible terminal session;
+2. create one read-consistent source snapshot transaction;
+3. copy every covered table subset into a temporary archive database;
+4. compare source and archive row counts table by table;
+5. run SQLite `integrity_check` on the archive;
+6. SHA-256 the uncompressed archive;
+7. gzip to a temporary payload;
+8. stream-decompress and prove the payload SHA-256 matches the uncompressed
+   archive;
+9. SHA-256 the compressed file;
+10. atomically promote the compressed payload and JSON manifest;
+11. re-verify the promoted archive; and only then
+12. remove the temporary uncompressed archive.
+
+The manifest records format version, coverage contract, source schema, session
+date, exact run IDs, per-table row counts, sizes, both hashes and integrity
+state.
+
+### Read-through
+
+`archive-find-run` resolves a historical run ID to its session archive without
+materializing the payload. `archive-read-run` then materializes that archive
+transiently, opens it read-only and proves the archived run's per-table evidence
+counts. This is the first read-through contract for future historical research
+consumers.
+
+### Pruning remains blocked
+
+Storage V2 deliberately does **not** delete archived rows from the hot database
+yet. Every manifest is emitted with:
+
+- `prune_eligible=false`; and
+- `prune_block_reason=OFFHOST_IMMUTABLE_COPY_NOT_CONFIRMED`.
+
+A same-disk archive is not enough evidence redundancy to justify destroying
+the hot copy. Hot-row pruning is a later gate after an independently verified
+off-host immutable copy exists and the full downstream foreign-key closure for
+provider/reference evidence is proven.
+
+This avoids turning a storage optimization into silent research-data loss.
 
 ## Capacity interpretation
 
