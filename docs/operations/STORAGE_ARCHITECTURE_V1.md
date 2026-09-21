@@ -31,13 +31,22 @@ conditions is true:
 
 - no recovery point exists;
 - the newest recovery point uses a different schema version;
-- completed research exists after the newest recovery point;
-- the newest recovery point exceeds the hard maximum age
+- completed research accumulated after the newest recovery point reaches the
+  materiality threshold (`CHRISTIANIA_BACKUP_MIN_NEW_RESEARCH_ITERATIONS`,
+  default 25 — one normal full sampling window);
+- at least one completed research iteration is still unprotected and the
+  recovery point exceeds the hard maximum age
   (`CHRISTIANIA_BACKUP_MAX_AGE_HOURS`, default 168 hours).
 
 If none apply, the scheduled job exits successfully with `SKIPPED` and does
-not copy the database. This prevents weekends or provider outages with no new
-completed research from producing redundant 15+ GB copies.
+not copy the database. Small post-backup research deltas are tracked but do not
+immediately trigger another 15+ GB copy; weekends or provider outages with no
+new completed research never trigger a copy merely because time passed.
+
+The protection boundary is the backup snapshot-start timestamp encoded in the
+backup filename, not the file's completion mtime. This conservatively treats a
+research iteration that completed while the online copy was running as new
+unprotected evidence.
 
 Local backups are fast recovery points for logical/operator failures. They are
 not disaster recovery when they share the same underlying device as the
@@ -88,7 +97,8 @@ Full backup creation reports explicit phases and coarse copy progress:
 - retention pruning.
 
 The systemd journal therefore shows which O(database-size) phase is consuming
-time instead of appearing hung.
+time instead of appearing hung. Storage attribution likewise emits periodic
+progress while SQLite `dbstat` scans the database.
 
 `python christiania_ops.py storage-audit` provides read-only SQLite
 `dbstat` attribution so hot/cold design is based on measured table/index

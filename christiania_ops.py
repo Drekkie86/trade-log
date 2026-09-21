@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from src.dashboard.read_model import load_command_deck
@@ -176,7 +177,16 @@ def main() -> int:
         return 0 if edge.ready else 2
 
     if args.command == "storage-audit":
-        result = audit_storage()
+        def storage_progress(message: str) -> None:
+            print(
+                f"[storage-audit] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = audit_storage(
+            progress=storage_progress,
+        )
         if args.json:
             _print_json(result.as_dict())
         else:
