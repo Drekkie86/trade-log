@@ -1334,6 +1334,9 @@ def verify_research_archive(
             "Research archive compressed SHA-256 mismatch."
         )
 
+    if not deep_payload:
+        return manifest
+
     payload_sha = _sha256_gzip_payload(
         archive_path
     )
@@ -1344,9 +1347,6 @@ def verify_research_archive(
         raise RuntimeError(
             "Research archive payload SHA-256 mismatch."
         )
-
-    if not deep_payload:
-        return manifest
 
     with tempfile.TemporaryDirectory(
         prefix="christiania-research-archive-"
@@ -1480,6 +1480,7 @@ def read_archived_run_evidence(
             Path(temp_dir)
             / "archive.db"
         )
+        digest = hashlib.sha256()
         with gzip.open(
             archive_path,
             "rb",
@@ -1487,11 +1488,23 @@ def read_archived_run_evidence(
             with restored.open(
                 "wb"
             ) as dst:
-                shutil.copyfileobj(
-                    src,
-                    dst,
-                    length=CHUNK_SIZE,
-                )
+                while True:
+                    chunk = src.read(
+                        CHUNK_SIZE
+                    )
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    dst.write(chunk)
+
+        if (
+            digest.hexdigest()
+            != manifest.uncompressed_sha256
+        ):
+            raise RuntimeError(
+                "Archived run read-through payload "
+                "SHA-256 mismatch."
+            )
 
         uri = (
             restored.resolve().as_uri()
