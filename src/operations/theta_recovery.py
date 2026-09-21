@@ -29,6 +29,7 @@ class ThetaRecoveryResult:
     daemon_was_active: bool
     daemon_started: bool
     theta_health: dict[str, object]
+    daemon_was_failed: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -96,6 +97,19 @@ def recover_theta(
 
     observed = _utc_now().isoformat().replace("+00:00", "Z")
     daemon_was_active = active(DAEMON_UNIT)
+    daemon_was_failed = False
+
+    if not daemon_was_active:
+        failed_state = systemctl(
+            "is-failed",
+            DAEMON_UNIT,
+            check=False,
+        )
+        daemon_was_failed = (
+            failed_state.returncode == 0
+            and failed_state.stdout.strip() == "failed"
+        )
+
     daemon_started = False
 
     _append_event(
@@ -104,6 +118,7 @@ def recover_theta(
             "event": "THETA_RECOVERY_STARTED",
             "reason": reason,
             "daemon_was_active": daemon_was_active,
+            "daemon_was_failed": daemon_was_failed,
         },
         audit_dir=audit_dir,
     )
@@ -131,7 +146,14 @@ def recover_theta(
             "christiania-theta-watchdog.service",
             check=False,
         )
-        if daemon_was_active:
+        if daemon_was_failed:
+            systemctl(
+                "reset-failed",
+                DAEMON_UNIT,
+                check=False,
+            )
+
+        if daemon_was_active or daemon_was_failed:
             systemctl("start", DAEMON_UNIT)
             daemon_started = True
 
@@ -142,6 +164,7 @@ def recover_theta(
             daemon_was_active=daemon_was_active,
             daemon_started=daemon_started,
             theta_health=health.as_dict(),
+            daemon_was_failed=daemon_was_failed,
         )
         _append_event(
             {
@@ -158,6 +181,7 @@ def recover_theta(
                 "event": "THETA_RECOVERY_FAILED",
                 "reason": reason,
                 "daemon_was_active": daemon_was_active,
+                "daemon_was_failed": daemon_was_failed,
                 "daemon_started": daemon_started,
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
