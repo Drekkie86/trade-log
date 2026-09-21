@@ -258,7 +258,7 @@ def test_all_15_effective_resource_policies_are_checked(
         len(
             policy_checks
         )
-        == 14
+        == 15
     )
 
     assert all(
