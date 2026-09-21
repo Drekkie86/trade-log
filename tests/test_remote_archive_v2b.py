@@ -365,6 +365,14 @@ def test_remote_archive_round_trip_and_proof(
     assert inventory.invalid_proofs == ()
 
     assert any(
+        "remote-upload-archive:" in message
+        for message in progress
+    )
+    assert any(
+        "remote-restore-download:" in message
+        for message in progress
+    )
+    assert any(
         "round-trip verification passed"
         in message
         for message in progress
