@@ -489,11 +489,19 @@ def maintain_compressed_backups(
     backup_dir: str | Path,
     *,
     keep_latest_uncompressed: int = 1,
+    max_compressions: int | None = None,
 ) -> CompressionMaintenanceResult:
     directory = Path(backup_dir).expanduser()
     if keep_latest_uncompressed < 1:
         raise ValueError(
             "keep_latest_uncompressed must be >= 1."
+        )
+    if (
+        max_compressions is not None
+        and max_compressions < 1
+    ):
+        raise ValueError(
+            "max_compressions must be >= 1 when provided."
         )
     if not directory.exists():
         return CompressionMaintenanceResult(
@@ -524,6 +532,13 @@ def maintain_compressed_backups(
         if not path.name.endswith(PLAIN_SUFFIX):
             continue
         if path in protected_plain:
+            skipped.append(str(path))
+            continue
+
+        if (
+            max_compressions is not None
+            and len(compressed) >= max_compressions
+        ):
             skipped.append(str(path))
             continue
 
