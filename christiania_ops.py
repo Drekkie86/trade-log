@@ -23,6 +23,7 @@ from src.operations.research_archive import (
     inventory_research_archives,
     maintain_research_archives,
     plan_archive_sessions,
+    read_archived_run_evidence,
     verify_research_archive,
 )
 from src.operations.v1_readiness import assess_v1_readiness
@@ -115,6 +116,10 @@ def main() -> int:
     archive_find = sub.add_parser("archive-find-run")
     archive_find.add_argument("--run-id", type=int, required=True)
     archive_find.add_argument("--json", action="store_true")
+
+    archive_read = sub.add_parser("archive-read-run")
+    archive_read.add_argument("--run-id", type=int, required=True)
+    archive_read.add_argument("--json", action="store_true")
 
     archive_verify = sub.add_parser("archive-verify")
     archive_verify.add_argument("--manifest", required=True)
@@ -362,6 +367,23 @@ def main() -> int:
                 f"Run {args.run_id} -> "
                 f"{manifest.archive_filename}"
             )
+        return 0
+
+    if args.command == "archive-read-run":
+        result = read_archived_run_evidence(
+            args.run_id,
+        )
+        if args.json:
+            _print_json(result.as_dict())
+        else:
+            print(
+                f"Archived run {result.run_id} "
+                f"from {result.archive_filename}"
+            )
+            for table_name, count in result.table_counts.items():
+                print(
+                    f"{table_name}: {count}"
+                )
         return 0
 
     if args.command == "archive-verify":
