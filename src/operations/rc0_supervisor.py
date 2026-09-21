@@ -21,6 +21,9 @@ from src.database.repository import (
     resolve_db_path,
 )
 from src.operations.audit_export import resolve_audit_dir
+from src.operations.backup_policy import (
+    evaluate_backup_due,
+)
 from src.operations.backup_recovery import (
     inventory_backups_fast,
 )
@@ -36,7 +39,6 @@ from src.operations.service_resources import (
 
 DEFAULT_MIN_FREE_BYTES = 15 * 1024**3
 DEFAULT_MIN_FREE_FRACTION = 0.15
-DEFAULT_BACKUP_METADATA_MAX_AGE_HOURS = 30.0
 DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
 DEFAULT_STATUS_FILENAME = "rc0_supervisor_status.json"
 DEFAULT_STATE_FILENAME = "rc0_supervisor_state.json"
@@ -1692,87 +1694,49 @@ def collect_snapshot(
         inventory_backups_fast().as_dict()
     )
 
-    backup_entries = (
-        backup_inventory.get(
-            "entries",
-            [],
-        )
-    )
-
-    latest_backup_age = min(
-        (
-            float(
-                entry[
-                    "age_hours"
-                ]
-            )
-            for entry in (
-                backup_entries
-            )
-            if entry.get(
-                "age_hours"
-            )
-            is not None
-        ),
-        default=None,
-    )
-
-    max_backup_age = (
-        _setting_float(
-            (
-                "CHRISTIANIA_RC0_BACKUP_"
-                "METADATA_MAX_AGE_HOURS"
-            ),
-            (
-                DEFAULT_BACKUP_METADATA_MAX_AGE_HOURS
-            ),
-        )
-    )
-
-    backup_ok = (
-        int(
-            backup_inventory.get(
-                "total_files",
-                0,
-            )
-            or 0
-        )
-        > 0
-        and latest_backup_age
-        is not None
-        and latest_backup_age
-        <= max_backup_age
-    )
-
-    checks.append(
-        SupervisorCheck(
-            (
-                "backup-freshness-"
-                "metadata"
-            ),
-            (
-                "PASS"
-                if backup_ok
-                else "FAIL"
-            ),
-            (
-                (
-                    "Latest backup file "
-                    "metadata age "
-                    f"{latest_backup_age:.2f}h; "
-                    "deep validity is checked "
-                    "separately."
-                )
-                if latest_backup_age
-                is not None
-                else (
-                    "No backup file found."
-                )
-            ),
-        )
-    )
-
     db_path = resolve_db_path()
+
+    try:
+        backup_decision = evaluate_backup_due(
+            db_path=db_path,
+            now=observed,
+        )
+    except Exception as exc:
+        backup_decision = None
+        latest_backup_age = None
+        checks.append(
+            SupervisorCheck(
+                "backup-recovery-point",
+                "FAIL",
+                (
+                    "Backup policy evaluation failed: "
+                    f"{type(exc).__name__}:{exc}"
+                ),
+            )
+        )
+    else:
+        latest_backup_age = (
+            backup_decision.latest_backup_age_hours
+        )
+        checks.append(
+            SupervisorCheck(
+                "backup-recovery-point",
+                (
+                    "FAIL"
+                    if backup_decision.due
+                    else "PASS"
+                ),
+                (
+                    "Recovery point due="
+                    f"{backup_decision.due}; "
+                    f"reason={backup_decision.reason}; "
+                    "age_hours="
+                    f"{backup_decision.latest_backup_age_hours}; "
+                    "latest_completed_research="
+                    f"{backup_decision.latest_completed_research_at or 'none'}."
+                ),
+            )
+        )
 
     checks.append(
         _research_progress_check(
