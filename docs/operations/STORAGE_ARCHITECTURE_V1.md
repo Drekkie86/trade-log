@@ -284,3 +284,80 @@ set can add roughly three bytes of retained backup footprint over the same
 period, in addition to the byte added to the primary database. Capacity
 planning therefore considers copy amplification, not only primary database
 growth.
+
+
+## Reference-aware hot pruning — Storage V2C
+
+Storage V2C is the first destructive phase and therefore has a stricter gate
+than archive creation.
+
+A session may be considered only when:
+
+- its local Storage V2 archive still verifies;
+- its separate V2B remote proof exists;
+- the proof state is `OFFHOST_IMMUTABLE_RESTORE_VERIFIED`;
+- the local manifest bytes still match the manifest hash recorded by the remote
+  proof;
+- the run IDs still belong to the same terminal session;
+- the session remains completely outside the newest 50 completed-run hot
+  window;
+- the live row counts for every high-volume family still match the archive
+  manifest; and
+- the active database schema is the reviewed expected schema.
+
+### References decide what can leave the hot store
+
+V2C does not blindly remove every archived row. Rows that remain parents of
+later research/governance evidence stay hot.
+
+The first reference-aware families are:
+
+- `local_surface_residual_v2_observations`: preserved when referenced by
+  empirical-null membership;
+- `hypothesis_scanner_evaluations`: preserved when referenced by shadow
+  structure proposals;
+- `provider_model_observations`: preserved when referenced by timing
+  reconstruction;
+- `provider_observation_availability`: preserved when referenced by shadow
+  candidates;
+- `listing_reference_contracts`: preserved while any surviving shadow,
+  scanner, provider-availability or Surface V2 evidence refers to the contract;
+- `option_quotes`: preserved while any surviving candidate/control,
+  selection/exclusion, Saxo, provider-model, scanner or Surface V2 evidence
+  refers to the quote.
+
+The prune planner computes the full delete sets in dependency order before any
+destructive action.
+
+### Immutability-trigger handling
+
+Christiania's hot evidence tables deliberately have no-delete triggers. V2C
+does not remove those protections permanently.
+
+For an explicitly confirmed prune transaction Christiania:
+
+1. re-verifies the local archive deeply;
+2. re-downloads and re-verifies the exact immutable remote archive object
+   versions;
+3. acquires a SQLite write transaction;
+4. captures and hashes the exact reviewed no-delete trigger SQL;
+5. temporarily drops only the six allow-listed delete triggers;
+6. deletes only the precomputed reference-safe row IDs;
+7. recreates the exact captured triggers;
+8. proves the restored trigger hashes match the pre-prune hashes;
+9. runs SQLite `foreign_key_check`;
+10. reconciles before/deleted/preserved row counts; and only then
+11. commits and writes a prune receipt.
+
+Any failure before commit rolls back both data changes and transactional DDL.
+
+The session and `research_runs` lineage remain in the hot database. V2C does
+not delete research-run identity.
+
+### Physical compaction
+
+Reference-aware deletion increases SQLite freelist space but does not
+immediately reduce the file size. Physical compaction is deliberately a
+separate follow-up operation after the first production prune receipt has been
+reviewed. This keeps logical evidence deletion and O(database-size) file
+rewriting as two independently auditable gates.
