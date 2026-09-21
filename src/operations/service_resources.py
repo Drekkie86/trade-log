@@ -102,6 +102,13 @@ SERVICE_RESOURCE_POLICIES: dict[str, ServiceResourcePolicy] = {
         memory_max_bytes=_mib(1024),
         timeout_start_seconds=3600,
     ),
+    "christiania-backup-compress.service": ServiceResourcePolicy(
+        unit="christiania-backup-compress.service",
+        memory_warning_bytes=_mib(512),
+        memory_high_bytes=_mib(768),
+        memory_max_bytes=_mib(1024),
+        timeout_start_seconds=5400,
+    ),
     "christiania-restore-drill.service": ServiceResourcePolicy(
         unit="christiania-restore-drill.service",
         memory_warning_bytes=_mib(768),
