@@ -70,3 +70,20 @@ def test_bounded_compression_timer_is_staged_but_not_enabled_by_policy():
     assert "christiania-backup-compress.timer" in disabled_block
     assert "OnCalendar=*-*-* 03:30:00 UTC" in timer
     assert "--max-files 1" in service
+
+
+def test_receiver_quiesce_skips_target_only_units():
+    script = _read("deploy/receive_release.sh")
+
+    assert (
+        'load_state="$(systemctl show --property=LoadState --value "${unit}"' 
+        in script
+    )
+    assert (
+        'if [[ "${load_state}" == "not-found" || -z "${load_state}" ]]; then'
+        in script
+    )
+    assert (
+        "Skipping release quiescence for target-only unit"
+        in script
+    )
