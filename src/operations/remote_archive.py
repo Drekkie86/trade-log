@@ -365,9 +365,15 @@ def check_remote_bucket(
     s3.head_bucket(
         Bucket=resolved.bucket
     )
-    lock = s3.get_object_lock_configuration(
-        Bucket=resolved.bucket
-    )
+    try:
+        lock = s3.get_object_lock_configuration(
+            Bucket=resolved.bucket
+        )
+    except ClientError as exc:
+        raise RuntimeError(
+            "Unable to confirm S3 Object Lock on the "
+            "remote archive bucket."
+        ) from exc
     lock_config = lock.get(
         "ObjectLockConfiguration"
     ) or {}
@@ -913,6 +919,8 @@ def upload_and_verify_remote_archive(
         + timedelta(
             days=resolved.retention_days
         )
+    ).replace(
+        microsecond=0
     )
 
     archive_key = _archive_object_key(
