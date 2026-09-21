@@ -68,6 +68,13 @@ def test_recovery_preserves_intentionally_stopped_daemon(
 
     def systemctl(*args, check=True):
         calls.append(args)
+        if args == ("is-failed", theta_recovery.DAEMON_UNIT):
+            return subprocess.CompletedProcess(
+                args=["systemctl", *args],
+                returncode=1,
+                stdout="inactive\n",
+                stderr="",
+            )
         return _completed()
 
     monkeypatch.setattr(
@@ -90,6 +97,51 @@ def test_recovery_preserves_intentionally_stopped_daemon(
     assert ("stop", theta_recovery.DAEMON_UNIT) not in calls
     assert ("restart", theta_recovery.THETA_UNIT) in calls
     assert ("start", theta_recovery.DAEMON_UNIT) not in calls
+
+
+def test_recovery_revives_daemon_failed_by_theta_outage(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+
+    def systemctl(*args, check=True):
+        calls.append(args)
+        if args == ("is-failed", theta_recovery.DAEMON_UNIT):
+            return subprocess.CompletedProcess(
+                args=["systemctl", *args],
+                returncode=0,
+                stdout="failed\n",
+                stderr="",
+            )
+        return _completed()
+
+    monkeypatch.setattr(
+        theta_recovery,
+        "reset_watchdog_state",
+        lambda **kwargs: calls.append(("reset-watchdog",)),
+    )
+
+    result = theta_recovery.recover_theta(
+        reason="watchdog-threshold",
+        audit_dir=tmp_path,
+        systemctl=systemctl,
+        active=lambda unit: False,
+        wait_ready=lambda **kwargs: Health(True),
+    )
+
+    assert result.state == "RECOVERED"
+    assert result.daemon_was_active is False
+    assert result.daemon_was_failed is True
+    assert result.daemon_started is True
+    assert ("stop", theta_recovery.DAEMON_UNIT) not in calls
+    assert ("reset-failed", theta_recovery.DAEMON_UNIT) in calls
+    assert ("start", theta_recovery.DAEMON_UNIT) in calls
+    assert calls.index(
+        ("reset-failed", theta_recovery.DAEMON_UNIT)
+    ) < calls.index(
+        ("start", theta_recovery.DAEMON_UNIT)
+    )
 
 
 def test_recovery_leaves_daemon_stopped_when_theta_stays_bad(
