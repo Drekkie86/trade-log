@@ -114,6 +114,19 @@ def _prepare_collect_snapshot(
 
     monkeypatch.setattr(
         rc0_supervisor,
+        "evaluate_backup_due",
+        lambda **kwargs: SimpleNamespace(
+            due=False,
+            reason="NO_NEW_COMPLETED_RESEARCH",
+            latest_backup_age_hours=1.0,
+            latest_completed_research_at=(
+                "2026-09-06T10:00:00Z"
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        rc0_supervisor,
         "get_runtime_setting",
         lambda name: None,
     )
@@ -222,11 +235,11 @@ def test_supervisor_uses_canonical_resource_policy():
         len(
             SERVICE_RESOURCE_POLICIES
         )
-        == 14
+        == 15
     )
 
 
-def test_all_14_effective_resource_policies_are_checked(
+def test_all_15_effective_resource_policies_are_checked(
     monkeypatch,
 ):
     snapshot = _healthy_snapshot(
