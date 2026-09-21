@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from src.config import load_runtime_env_file
 from src.dashboard.read_model import load_command_deck
 from src.operations.audit_export import export_audit_snapshot
 from src.operations.backup_recovery import (
@@ -20,6 +21,19 @@ from src.operations.v1_readiness import assess_v1_readiness
 from src.operations.secure_edge import inspect_secure_edge_configuration
 
 
+DEPLOYMENT_ENV_FILE = Path(
+    "/etc/christiania/christiania.env"
+)
+
+
+def _load_deployment_env_if_present() -> None:
+    if DEPLOYMENT_ENV_FILE.is_file():
+        load_runtime_env_file(
+            DEPLOYMENT_ENV_FILE,
+            overwrite=False,
+        )
+
+
 def _print_json(value) -> None:
     print(json.dumps(value, indent=2, sort_keys=True, default=str))
 
@@ -29,6 +43,8 @@ def _deck(provider: bool) -> dict:
 
 
 def main() -> int:
+    _load_deployment_env_if_present()
+
     parser = argparse.ArgumentParser(description="Christiania V1 operator control surface.")
     sub = parser.add_subparsers(dest="command", required=True)
 
