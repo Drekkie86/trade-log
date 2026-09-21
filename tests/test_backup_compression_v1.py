@@ -262,3 +262,63 @@ def test_retention_prunes_compressed_backup_and_manifest(db_path, tmp_path):
     assert newest.exists()
     assert not compressed.exists()
     assert not manifest.exists()
+
+
+def test_maintenance_can_bound_number_of_compressions(db_path, tmp_path):
+    backup_dir = tmp_path / "backups"
+    created = create_verified_backup(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        retention=5,
+    )
+
+    newest = Path(created.backup_path)
+    older_one = backup_dir / "christiania_backup_20260102T000000Z.db"
+    older_two = backup_dir / "christiania_backup_20260101T000000Z.db"
+    shutil.copy2(newest, older_one)
+    shutil.copy2(newest, older_two)
+
+    now = datetime.now(UTC)
+    newest_time = now.timestamp()
+    older_one_time = (now - timedelta(days=1)).timestamp()
+    older_two_time = (now - timedelta(days=2)).timestamp()
+
+    os.utime(newest, (newest_time, newest_time))
+    os.utime(older_one, (older_one_time, older_one_time))
+    os.utime(older_two, (older_two_time, older_two_time))
+
+    result = maintain_compressed_backups(
+        backup_dir,
+        keep_latest_uncompressed=1,
+        max_compressions=1,
+    )
+
+    assert result.compressed_count == 1
+    assert newest.exists()
+
+    remaining_old_plain = [
+        path
+        for path in (older_one, older_two)
+        if path.exists()
+    ]
+    compressed_old = [
+        Path(str(path) + ".gz")
+        for path in (older_one, older_two)
+        if Path(str(path) + ".gz").exists()
+    ]
+
+    assert len(remaining_old_plain) == 1
+    assert len(compressed_old) == 1
+
+
+def test_maintenance_rejects_nonpositive_compression_bound(tmp_path):
+    import pytest
+
+    with pytest.raises(
+        ValueError,
+        match="max_compressions",
+    ):
+        maintain_compressed_backups(
+            tmp_path,
+            max_compressions=0,
+        )

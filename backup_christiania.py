@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+import sys
 
 from src.operations.sqlite_runtime import (
     create_verified_backup,
 )
-from src.operations.backup_compression import (
-    maintain_compressed_backups,
-)
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -36,20 +32,26 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    print(
+        "Starting Christiania verified SQLite backup...",
+        file=sys.stderr,
+        flush=True,
+    )
+
     result = create_verified_backup(
         db_path=args.db,
         backup_dir=args.backup_dir,
         retention=args.retention,
     )
 
-    compression = maintain_compressed_backups(
-        Path(result.backup_path).parent,
-        keep_latest_uncompressed=1,
+    print(
+        f"Verified backup promoted: {result.backup_path}",
+        file=sys.stderr,
+        flush=True,
     )
 
     if args.json:
         payload = result.as_dict()
-        payload["compression"] = compression.as_dict()
         print(
             json.dumps(
                 payload,
@@ -73,14 +75,6 @@ def main() -> None:
     )
     print(
         f"Old backups pruned: {result.pruned_count}"
-    )
-    print(
-        "Older retained backups compressed: "
-        f"{compression.compressed_count}"
-    )
-    print(
-        "Bytes reclaimed by compression: "
-        f"{compression.reclaimed_bytes}"
     )
 
 
