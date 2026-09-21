@@ -23,7 +23,21 @@ No research evidence is deleted from the hot database by this change.
 
 ### Local verified backups
 
-Daily SQLite backups remain full, verified, and retention-controlled.
+The daily timer is now a **backup-decision check**, not an instruction to
+blindly write another full database copy.
+
+A new full verified SQLite recovery point is created when at least one of these
+conditions is true:
+
+- no recovery point exists;
+- the newest recovery point uses a different schema version;
+- completed research exists after the newest recovery point;
+- the newest recovery point exceeds the hard maximum age
+  (`CHRISTIANIA_BACKUP_MAX_AGE_HOURS`, default 168 hours).
+
+If none apply, the scheduled job exits successfully with `SKIPPED` and does
+not copy the database. This prevents weekends or provider outages with no new
+completed research from producing redundant 15+ GB copies.
 
 Local backups are fast recovery points for logical/operator failures. They are
 not disaster recovery when they share the same underlying device as the
@@ -62,12 +76,36 @@ Release-directory pruning is post-activation housekeeping. A pruning failure is
 reported as a warning and does not invalidate an otherwise healthy activation.
 
 
+## Backup observability
+
+Full backup creation reports explicit phases and coarse copy progress:
+
+- capacity preflight;
+- copy start / percentage progress / completion;
+- SQLite `integrity_check`;
+- `foreign_key_check`;
+- atomic promotion;
+- retention pruning.
+
+The systemd journal therefore shows which O(database-size) phase is consuming
+time instead of appearing hung.
+
+`python christiania_ops.py storage-audit` provides read-only SQLite
+`dbstat` attribution so hot/cold design is based on measured table/index
+footprint rather than total-file guesses.
+
 ## Compressed local backup tier
 
 To reduce full-copy amplification without weakening recoverability, Christiania
 stores the newest retained verified backup as an ordinary SQLite `.db` file
 for the fastest local restore path and may compress older retained backups with
 gzip.
+
+Compression is no longer part of the daily recovery-point job. It is a separate
+bounded maintenance operation and processes at most one eligible older backup
+per invocation by default. A systemd service/timer definition is shipped with
+Reliability V2, but the timer remains intentionally disabled until the separated
+path has been validated in production.
 
 Compression is permitted only after the source backup has already passed:
 
@@ -116,10 +154,10 @@ No off-host provider is hard-coded in V1.
 
 No table is archived or deleted from the primary database by this change.
 
-A separate size-attribution audit must identify the actual high-growth tables
-before a cold-evidence split is designed. Any future archive must preserve
-immutable provenance and allow deterministic reconstruction of research
-datasets; archival must never silently change historical denominators.
+The read-only `storage-audit` operator command identifies high-growth SQLite
+objects before a cold-evidence split is designed. Any future archive must
+preserve immutable provenance and allow deterministic reconstruction of
+research datasets; archival must never silently change historical denominators.
 
 ## Capacity interpretation
 
