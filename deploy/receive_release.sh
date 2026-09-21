@@ -241,6 +241,9 @@ stop_unit_for_release() {
   local unit="$1"
   local state=""
   local load_state=""
+  local started_at=""
+  local finished_at=""
+  local elapsed=""
 
   load_state="$(systemctl show --property=LoadState --value "${unit}" 2>/dev/null || true)"
 
@@ -249,8 +252,15 @@ stop_unit_for_release() {
     return 0
   fi
 
+  started_at="$(date +%s)"
+  echo "Quiescing ${unit}..."
   systemctl stop "${unit}"
+  finished_at="$(date +%s)"
+  elapsed=$((finished_at - started_at))
+
   state="$(systemctl show --property=ActiveState --value "${unit}" 2>/dev/null || true)"
+  echo "Quiesced ${unit} in ${elapsed}s; ActiveState=${state}"
+
   case "${state}" in
     active|activating|reloading|deactivating)
       fail "${unit} did not become inactive during release quiescence"

@@ -5,7 +5,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_operator_cli_contains_expected_commands():
     text = (ROOT / "christiania_ops.py").read_text(encoding="utf-8")
-    for command in ("status", "readiness", "backups", "backup", "restore-drill", "export", "copenhagen"):
+    for command in (
+        "status",
+        "readiness",
+        "backups",
+        "backup",
+        "restore-drill",
+        "storage-audit",
+        "archive-plan",
+        "archive-inventory",
+        "archive-session",
+        "archive-maintenance",
+        "archive-find-run",
+        "archive-read-run",
+        "archive-verify",
+        "export",
+        "copenhagen",
+    ):
         assert f'"{command}"' in text
 
 

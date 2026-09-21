@@ -17,6 +17,15 @@ from src.operations.backup_recovery import (
 from src.operations.backup_compression import maintain_compressed_backups
 from src.operations.sqlite_runtime import create_verified_backup
 from src.operations.storage_audit import audit_storage
+from src.operations.research_archive import (
+    create_research_archive,
+    find_archive_for_run,
+    inventory_research_archives,
+    maintain_research_archives,
+    plan_archive_sessions,
+    read_archived_run_evidence,
+    verify_research_archive,
+)
 from src.operations.v1_readiness import assess_v1_readiness
 from src.operations.secure_edge import inspect_secure_edge_configuration
 
@@ -86,6 +95,36 @@ def main() -> int:
 
     storage = sub.add_parser("storage-audit")
     storage.add_argument("--json", action="store_true")
+
+    archive_plan = sub.add_parser("archive-plan")
+    archive_plan.add_argument("--keep-hot-runs", type=int, default=None)
+    archive_plan.add_argument("--json", action="store_true")
+
+    archive_inventory = sub.add_parser("archive-inventory")
+    archive_inventory.add_argument("--json", action="store_true")
+
+    archive_session = sub.add_parser("archive-session")
+    archive_session.add_argument("--session-date", required=True)
+    archive_session.add_argument("--keep-hot-runs", type=int, default=None)
+    archive_session.add_argument("--json", action="store_true")
+
+    archive_maintenance = sub.add_parser("archive-maintenance")
+    archive_maintenance.add_argument("--keep-hot-runs", type=int, default=None)
+    archive_maintenance.add_argument("--max-sessions", type=int, default=1)
+    archive_maintenance.add_argument("--json", action="store_true")
+
+    archive_find = sub.add_parser("archive-find-run")
+    archive_find.add_argument("--run-id", type=int, required=True)
+    archive_find.add_argument("--json", action="store_true")
+
+    archive_read = sub.add_parser("archive-read-run")
+    archive_read.add_argument("--run-id", type=int, required=True)
+    archive_read.add_argument("--json", action="store_true")
+
+    archive_verify = sub.add_parser("archive-verify")
+    archive_verify.add_argument("--manifest", required=True)
+    archive_verify.add_argument("--deep", action="store_true")
+    archive_verify.add_argument("--json", action="store_true")
 
     copenhagen = sub.add_parser("copenhagen")
     copenhagen.add_argument("--json", action="store_true")
@@ -216,6 +255,149 @@ def main() -> int:
                     f"{item.object_type:<8}  "
                     f"{item.name}"
                 )
+        return 0
+
+    if args.command == "archive-plan":
+        plan = plan_archive_sessions(
+            keep_hot_runs=args.keep_hot_runs,
+        )
+        payload = [
+            item.as_dict()
+            for item in plan
+        ]
+        if args.json:
+            _print_json(payload)
+        else:
+            for item in plan:
+                print(
+                    f"{item.session_date} "
+                    f"runs={item.min_run_id}-{item.max_run_id} "
+                    f"terminal={item.terminal_run_count} "
+                    f"completed={item.completed_run_count} "
+                    f"eligible={item.eligible} "
+                    f"reason={item.reason}"
+                )
+        return 0
+
+    if args.command == "archive-inventory":
+        inventory = inventory_research_archives()
+        if args.json:
+            _print_json(inventory.as_dict())
+        else:
+            print(f"Archive directory: {inventory.directory}")
+            print(f"Verified manifest count: {inventory.archive_count}")
+            for manifest in inventory.manifests:
+                print(
+                    f"{manifest.session_date} "
+                    f"runs={manifest.min_run_id}-{manifest.max_run_id} "
+                    f"bytes={manifest.compressed_size_bytes} "
+                    f"prune_eligible={manifest.prune_eligible}"
+                )
+            for invalid in inventory.invalid_manifests:
+                print(f"INVALID: {invalid}", file=sys.stderr)
+        return 0 if not inventory.invalid_manifests else 2
+
+    if args.command == "archive-session":
+        def archive_progress(message: str) -> None:
+            print(
+                f"[archive] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        manifest = create_research_archive(
+            args.session_date,
+            keep_hot_runs=args.keep_hot_runs,
+            progress=archive_progress,
+        )
+        if args.json:
+            _print_json(manifest.as_dict())
+        else:
+            print(
+                "Created verified research archive: "
+                f"{manifest.archive_filename}"
+            )
+        return 0
+
+    if args.command == "archive-maintenance":
+        def archive_progress(message: str) -> None:
+            print(
+                f"[archive] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = maintain_research_archives(
+            keep_hot_runs=args.keep_hot_runs,
+            max_sessions=args.max_sessions,
+            progress=archive_progress,
+        )
+        if args.json:
+            _print_json(result.as_dict())
+        else:
+            print(f"Archived sessions: {result.archived_count}")
+            for session in result.archived_sessions:
+                print(f"ARCHIVED {session}")
+            for session in result.skipped_sessions:
+                print(f"SKIPPED {session}")
+        return 0
+
+    if args.command == "archive-find-run":
+        manifest = find_archive_for_run(
+            args.run_id,
+        )
+        if manifest is None:
+            if args.json:
+                _print_json(
+                    {
+                        "run_id": args.run_id,
+                        "archive": None,
+                    }
+                )
+            else:
+                print(
+                    f"No research archive contains run {args.run_id}."
+                )
+            return 2
+
+        if args.json:
+            _print_json(manifest.as_dict())
+        else:
+            print(
+                f"Run {args.run_id} -> "
+                f"{manifest.archive_filename}"
+            )
+        return 0
+
+    if args.command == "archive-read-run":
+        result = read_archived_run_evidence(
+            args.run_id,
+        )
+        if args.json:
+            _print_json(result.as_dict())
+        else:
+            print(
+                f"Archived run {result.run_id} "
+                f"from {result.archive_filename}"
+            )
+            for table_name, count in result.table_counts.items():
+                print(
+                    f"{table_name}: {count}"
+                )
+        return 0
+
+    if args.command == "archive-verify":
+        manifest = verify_research_archive(
+            args.manifest,
+            deep_payload=args.deep,
+        )
+        if args.json:
+            _print_json(manifest.as_dict())
+        else:
+            print("Research archive verification PASSED")
+            print(f"Session: {manifest.session_date}")
+            print(f"Archive: {manifest.archive_filename}")
+            print(f"Deep payload: {args.deep}")
         return 0
 
     if args.command == "copenhagen":

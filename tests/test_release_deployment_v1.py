@@ -350,6 +350,8 @@ def test_release_receiver_reports_phase_timings():
     assert 'completed in ${elapsed}s' in receiver
     assert 'phase_start "Preparing release database"' in receiver
     assert 'phase_start "Verifying live application and secure edge"' in receiver
+    assert 'echo "Quiescing ${unit}..."' in receiver
+    assert 'echo "Quiesced ${unit} in ${elapsed}s; ActiveState=${state}"' in receiver
 
 
 def test_release_client_keeps_long_ssh_sessions_alive():
