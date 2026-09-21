@@ -46,6 +46,15 @@ def main() -> int:
 
     compress_backups = sub.add_parser("compress-backups")
     compress_backups.add_argument("--json", action="store_true")
+    compress_backups.add_argument(
+        "--max-files",
+        type=int,
+        default=1,
+        help=(
+            "Maximum number of older verified backups to compress "
+            "during this invocation. Defaults to 1."
+        ),
+    )
 
     drill = sub.add_parser("restore-drill")
     drill.add_argument("--backup", default=None)
@@ -103,24 +112,10 @@ def main() -> int:
 
     if args.command == "backup":
         result = create_verified_backup()
-        compression = maintain_compressed_backups(
-            Path(result.backup_path).parent,
-            keep_latest_uncompressed=1,
-        )
-        payload = result.as_dict()
-        payload["compression"] = compression.as_dict()
         if args.json:
-            _print_json(payload)
+            _print_json(result.as_dict())
         else:
             print(f"Created verified backup: {result.backup_path}")
-            print(
-                "Compressed older retained backups: "
-                f"{compression.compressed_count}"
-            )
-            print(
-                "Bytes reclaimed: "
-                f"{compression.reclaimed_bytes}"
-            )
         return 0
 
     if args.command == "compress-backups":
@@ -129,6 +124,7 @@ def main() -> int:
         compression = maintain_compressed_backups(
             resolve_backup_dir(),
             keep_latest_uncompressed=1,
+            max_compressions=args.max_files,
         )
         if args.json:
             _print_json(compression.as_dict())
