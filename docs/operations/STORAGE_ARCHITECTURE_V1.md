@@ -143,22 +143,49 @@ integrity, and foreign-key checks as an ordinary backup restore.
 Compression is a local capacity optimization only. It does not satisfy the
 off-host disaster-recovery requirement.
 
-## Off-host recovery requirement
+## Off-host recovery requirement — Storage V2B
 
-Same-device local backups do not protect against total server or disk loss.
+Same-device local backups and evidence archives do not protect against total
+server or disk loss.
 
-Christiania therefore still requires an off-host immutable backup tier before
-local backup retention should be reduced further. The off-host design must
-include:
+Storage V2B uses an S3-compatible remote object store with **Object Lock** as
+the off-host immutability boundary. Hetzner Object Storage is the production
+target, but the implementation remains S3-compatible.
 
-- verified source backup before upload;
-- cryptographic checksum / manifest;
-- independent retention;
-- restore drill from the remote object, not merely upload success;
-- no deletion of the only verified copy;
-- explicit failure alerting.
+The remote bucket must have Object Lock enabled at bucket creation time.
+Christiania refuses a bucket where Object Lock cannot be proven enabled.
 
-No off-host provider is hard-coded in V1.
+For every uploaded research-evidence archive Christiania:
+
+1. deep-verifies the local archive before upload;
+2. uploads the compressed archive with S3 `COMPLIANCE` retention;
+3. uploads the exact local manifest with the same retention;
+4. requires a version ID for both objects;
+5. verifies remote object size and SHA-256 metadata;
+6. verifies object retention mode and retain-until timestamp;
+7. downloads the archive back from the remote object version;
+8. verifies the downloaded compressed SHA-256;
+9. decompresses the remote object and verifies the uncompressed SHA-256;
+10. downloads the remote manifest and proves byte-for-byte equality;
+11. uploads an immutable verification receipt; and
+12. writes a separate local remote-proof record only after the whole remote
+    restore round trip succeeds.
+
+The remote-proof gate is:
+
+`OFFHOST_IMMUTABLE_RESTORE_VERIFIED`
+
+The original local archive manifest remains immutable and is never rewritten
+from `prune_eligible=false`. A later pruning package must require a valid
+remote-proof record and revalidate the corresponding immutable remote object
+versions before deleting any hot evidence.
+
+Default remote retention is 365 days and is configurable, but Christiania
+refuses values below 30 days.
+
+No automatic remote upload timer is enabled by Storage V2B. The first remote
+archive is promoted manually and verified before unattended scheduling is
+considered.
 
 ## Hot/cold research evidence — Storage V2
 

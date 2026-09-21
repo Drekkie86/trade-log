@@ -17,6 +17,12 @@ from src.operations.backup_recovery import (
 from src.operations.backup_compression import maintain_compressed_backups
 from src.operations.sqlite_runtime import create_verified_backup
 from src.operations.storage_audit import audit_storage
+from src.operations.remote_archive import (
+    check_remote_bucket,
+    inventory_remote_archive_proofs,
+    upload_and_verify_remote_archive,
+    verify_remote_archive_proof,
+)
 from src.operations.research_archive import (
     create_research_archive,
     find_archive_for_run,
@@ -125,6 +131,20 @@ def main() -> int:
     archive_verify.add_argument("--manifest", required=True)
     archive_verify.add_argument("--deep", action="store_true")
     archive_verify.add_argument("--json", action="store_true")
+
+    remote_check = sub.add_parser("archive-remote-check")
+    remote_check.add_argument("--json", action="store_true")
+
+    remote_upload = sub.add_parser("archive-remote-upload")
+    remote_upload.add_argument("--manifest", required=True)
+    remote_upload.add_argument("--json", action="store_true")
+
+    remote_verify = sub.add_parser("archive-remote-verify")
+    remote_verify.add_argument("--proof", required=True)
+    remote_verify.add_argument("--json", action="store_true")
+
+    remote_inventory = sub.add_parser("archive-remote-inventory")
+    remote_inventory.add_argument("--json", action="store_true")
 
     copenhagen = sub.add_parser("copenhagen")
     copenhagen.add_argument("--json", action="store_true")
@@ -399,6 +419,82 @@ def main() -> int:
             print(f"Archive: {manifest.archive_filename}")
             print(f"Deep payload: {args.deep}")
         return 0
+
+    if args.command == "archive-remote-check":
+        result = check_remote_bucket()
+        if args.json:
+            _print_json(result)
+        else:
+            print("Remote archive bucket check PASSED")
+            print(f"Endpoint: {result['endpoint_url']}")
+            print(f"Region: {result['region']}")
+            print(f"Bucket: {result['bucket']}")
+            print(f"Prefix: {result['prefix']}")
+            print(f"Retention days: {result['retention_days']}")
+            print("Object Lock: enabled")
+        return 0
+
+    if args.command == "archive-remote-upload":
+        def remote_progress(message: str) -> None:
+            print(
+                f"[remote-archive] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        proof = upload_and_verify_remote_archive(
+            args.manifest,
+            progress=remote_progress,
+        )
+        if args.json:
+            _print_json(proof.as_dict())
+        else:
+            print("Off-host immutable archive verification PASSED")
+            print(f"Session: {proof.session_date}")
+            print(f"Bucket: {proof.bucket}")
+            print(f"Archive key: {proof.archive_object.key}")
+            print(f"Retention: {proof.archive_object.retain_until}")
+            print(f"Gate: {proof.pruning_gate_state}")
+        return 0
+
+    if args.command == "archive-remote-verify":
+        def remote_progress(message: str) -> None:
+            print(
+                f"[remote-archive] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        proof = verify_remote_archive_proof(
+            args.proof,
+            progress=remote_progress,
+        )
+        if args.json:
+            _print_json(proof.as_dict())
+        else:
+            print("Remote archive proof verification PASSED")
+            print(f"Session: {proof.session_date}")
+            print(f"Gate: {proof.pruning_gate_state}")
+        return 0
+
+    if args.command == "archive-remote-inventory":
+        inventory = inventory_remote_archive_proofs()
+        if args.json:
+            _print_json(inventory.as_dict())
+        else:
+            print(f"Remote proofs: {inventory.proof_count}")
+            for proof in inventory.proofs:
+                print(
+                    f"{proof.session_date} "
+                    f"gate={proof.pruning_gate_state} "
+                    f"retain_until={proof.archive_object.retain_until}"
+                )
+            for invalid in inventory.invalid_proofs:
+                print(
+                    f"INVALID: {invalid}",
+                    file=sys.stderr,
+                )
+        return 0 if not inventory.invalid_proofs else 2
 
     if args.command == "copenhagen":
         deck = _deck(True)

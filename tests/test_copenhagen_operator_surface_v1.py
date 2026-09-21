@@ -19,6 +19,10 @@ def test_operator_cli_contains_expected_commands():
         "archive-find-run",
         "archive-read-run",
         "archive-verify",
+        "archive-remote-check",
+        "archive-remote-upload",
+        "archive-remote-verify",
+        "archive-remote-inventory",
         "export",
         "copenhagen",
     ):
