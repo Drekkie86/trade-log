@@ -29,6 +29,56 @@ REMOTE_PROOF_FORMAT_VERSION = 1
 DEFAULT_REMOTE_RETENTION_DAYS = 365
 DEFAULT_REMOTE_PREFIX = "christiania/research-evidence/v1"
 CHUNK_SIZE = 1024 * 1024
+PROGRESS_STEP_BYTES = 64 * 1024**2
+MAX_SINGLE_PUT_BYTES = 5 * 1024**3
+
+
+class ProgressReader:
+    def __init__(
+        self,
+        handle,
+        *,
+        total_bytes: int,
+        label: str,
+        progress: Callable[[str], None] | None,
+    ) -> None:
+        self._handle = handle
+        self._total_bytes = int(total_bytes)
+        self._label = label
+        self._progress = progress
+        self._read_bytes = 0
+        self._next_report = PROGRESS_STEP_BYTES
+
+    def read(self, size: int = -1):
+        chunk = self._handle.read(size)
+        if chunk:
+            self._read_bytes += len(chunk)
+            if (
+                self._progress is not None
+                and (
+                    self._read_bytes >= self._next_report
+                    or self._read_bytes >= self._total_bytes
+                )
+            ):
+                self._progress(
+                    f"{self._label}: "
+                    f"{self._read_bytes}/{self._total_bytes} bytes"
+                )
+                while (
+                    self._next_report
+                    <= self._read_bytes
+                ):
+                    self._next_report += PROGRESS_STEP_BYTES
+        return chunk
+
+    def tell(self):
+        return self._handle.tell()
+
+    def seek(self, offset, whence=0):
+        return self._handle.seek(offset, whence)
+
+    def fileno(self):
+        return self._handle.fileno()
 
 
 @dataclass(frozen=True)
@@ -561,6 +611,8 @@ def _download_object_to_file(
     key: str,
     version_id: str | None,
     target: Path,
+    expected_size: int | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> str:
     kwargs: dict[str, Any] = {
         "Bucket": bucket,
@@ -572,13 +624,41 @@ def _download_object_to_file(
     response = s3.get_object(**kwargs)
     body = response["Body"]
 
+    digest = hashlib.sha256()
+    transferred = 0
+    next_report = PROGRESS_STEP_BYTES
+
     with target.open("wb") as output:
-        compressed_sha = _sha256_stream(
-            body,
-            output=output,
-        )
+        while True:
+            chunk = body.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            output.write(chunk)
+            digest.update(chunk)
+            transferred += len(chunk)
+
+            if (
+                progress is not None
+                and (
+                    transferred >= next_report
+                    or (
+                        expected_size is not None
+                        and transferred >= expected_size
+                    )
+                )
+            ):
+                progress(
+                    "remote-restore-download: "
+                    f"{transferred}/"
+                    f"{expected_size if expected_size is not None else '?'} bytes"
+                )
+                while next_report <= transferred:
+                    next_report += PROGRESS_STEP_BYTES
+
         output.flush()
         os.fsync(output.fileno())
+
+    compressed_sha = digest.hexdigest()
 
     close = getattr(
         body,
@@ -648,6 +728,8 @@ def _verify_remote_restore(
                 key=archive_object.key,
                 version_id=archive_object.version_id,
                 target=remote_archive,
+                expected_size=archive_object.size_bytes,
+                progress=progress,
             )
         )
         if (
@@ -951,12 +1033,24 @@ def upload_and_verify_remote_archive(
             "remote-upload: local archive deep verification passed"
         )
 
+    if manifest.compressed_size_bytes > MAX_SINGLE_PUT_BYTES:
+        raise RuntimeError(
+            "Remote archive exceeds the supported single-object "
+            "upload size. Multipart immutable upload is not yet "
+            "enabled."
+        )
+
     with archive_path.open("rb") as archive_body:
         archive_object = _put_locked_object(
             s3=s3,
             config=resolved,
             key=archive_key,
-            body=archive_body,
+            body=ProgressReader(
+                archive_body,
+                total_bytes=manifest.compressed_size_bytes,
+                label="remote-upload-archive",
+                progress=progress,
+            ),
             size_bytes=manifest.compressed_size_bytes,
             sha256=manifest.compressed_sha256,
             metadata={
@@ -973,7 +1067,12 @@ def upload_and_verify_remote_archive(
             s3=s3,
             config=resolved,
             key=manifest_key,
-            body=manifest_body,
+            body=ProgressReader(
+                manifest_body,
+                total_bytes=path.stat().st_size,
+                label="remote-upload-manifest",
+                progress=progress,
+            ),
             size_bytes=path.stat().st_size,
             sha256=manifest_sha,
             metadata=base_metadata,
