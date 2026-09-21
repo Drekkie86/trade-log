@@ -11,6 +11,7 @@ from src.operations.research_archive import (
     find_archive_for_run,
     inventory_research_archives,
     plan_archive_sessions,
+    read_archived_run_evidence,
     verify_research_archive,
 )
 
@@ -250,6 +251,15 @@ def test_create_verify_inventory_and_find_archive(
     )
     assert found is not None
     assert found.session_date == "2026-09-01"
+
+    readback = read_archived_run_evidence(
+        old_run,
+        archive_dir=archive_dir,
+    )
+    assert readback.run_id == old_run
+    assert readback.table_counts["research_runs"] == 1
+    assert readback.table_counts["market_snapshots"] == 1
+    assert readback.table_counts["option_quotes"] == 1
 
     assert any(
         "option_quotes=1" in message
