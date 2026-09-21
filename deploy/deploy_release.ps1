@@ -1,7 +1,8 @@
 param(
     [string]$Server = "2.28.76.101",
     [string]$User = "dirk",
-    [string]$KeyPath = "$env:USERPROFILE\.ssh\christiania_hetzner_ed25519"
+    [string]$KeyPath = "$env:USERPROFILE\.ssh\christiania_hetzner_ed25519",
+    [switch]$RecoveryNoSchemaChange
 )
 
 $ErrorActionPreference = "Stop"
@@ -153,7 +154,17 @@ try {
         throw "SCP of release receiver failed."
     }
 
-    $remoteCommand = "sudo bash $remoteReceiver $remoteArchive $head $sha256"
+    $recoveryArg = if ($RecoveryNoSchemaChange) {
+        " --recovery-no-schema-change"
+    }
+    else {
+        ""
+    }
+
+    $remoteCommand = (
+        "sudo bash $remoteReceiver $remoteArchive $head $sha256" +
+        $recoveryArg
+    )
 
     & ssh @SshOptions -t -i $KeyPath "${User}@${Server}" $remoteCommand
 
