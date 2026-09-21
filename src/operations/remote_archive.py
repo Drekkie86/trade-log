@@ -484,6 +484,12 @@ def _put_locked_object(
     version_id = response.get(
         "VersionId"
     )
+    if version_id in (None, ""):
+        raise RuntimeError(
+            "Remote immutable object upload did not return "
+            "an S3 VersionId. Christiania requires versioned "
+            "Object Lock evidence."
+        )
 
     head = _head_object(
         s3=s3,
