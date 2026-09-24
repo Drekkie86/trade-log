@@ -107,6 +107,42 @@ resolve_database_path() {
   printf '%s\n' "${resolved}"
 }
 
+probe_holders_with() {
+  local tool="$1"
+  shift
+
+  local error_file
+  local output
+  local rc
+  local diagnostic
+
+  error_file="$(mktemp "${STATE_DIR}/holder-probe.XXXXXX")"
+
+  if output="$("${tool}" "$@" 2>"${error_file}")"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  diagnostic="$(
+    cat "${error_file}"
+  )"
+  rm -f "${error_file}"
+
+  if [[ "${rc}" -eq 0 ]]; then
+    printf '%s' "${output}"
+    return 0
+  fi
+
+  if [[ "${rc}" -eq 1 && -z "${diagnostic}" ]]; then
+    return 0
+  fi
+
+  echo "Holder probe ${tool} failed rc=${rc}: ${diagnostic:-${output:-unknown error}}" >&2
+  return 2
+}
+
+
 assert_no_database_holders() {
   local db_path
   local holders
@@ -126,9 +162,15 @@ assert_no_database_holders() {
   fi
 
   if command -v fuser >/dev/null 2>&1; then
-    holders="$(fuser "${paths[@]}" 2>/dev/null || true)"
+    if holders="$(probe_holders_with fuser "${paths[@]}")"; then
+      :
+    elif command -v lsof >/dev/null 2>&1; then
+      holders="$(probe_holders_with lsof -t -- "${paths[@]}")"         || fail "cannot prove database quiescence: fuser and lsof probes failed"
+    else
+      fail "cannot prove database quiescence: fuser probe failed and lsof is unavailable"
+    fi
   elif command -v lsof >/dev/null 2>&1; then
-    holders="$(lsof -t -- "${paths[@]}" 2>/dev/null || true)"
+    holders="$(probe_holders_with lsof -t -- "${paths[@]}")"       || fail "cannot prove database quiescence: lsof probe failed"
   else
     fail "cannot prove database quiescence: neither fuser nor lsof is installed"
   fi
