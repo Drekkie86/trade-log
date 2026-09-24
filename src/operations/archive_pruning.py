@@ -20,6 +20,9 @@ from src.operations.remote_archive import (
     load_remote_archive_proof,
     verify_remote_archive_proof,
 )
+from src.operations.historical_research import (
+    compare_hot_archive_session,
+)
 from src.operations.prune_fk_index_audit import (
     audit_prune_parent_fk_indexes,
 )
@@ -101,6 +104,9 @@ class PruneSessionPlan:
     run_lineage_verified: bool
     foreign_key_index_state: str
     missing_foreign_key_indexes: tuple[str, ...]
+    analytical_parity_state: str
+    hot_analytical_sha256: str
+    archive_analytical_sha256: str
     tables: tuple[PruneTablePlan, ...]
     total_archived_rows: int
     total_deletable_rows: int
@@ -1076,6 +1082,29 @@ def _build_plan_from_connection(
 
     _emit_progress(
         progress,
+        "planner: hot/archive analytical parity started",
+    )
+
+    analytical_parity = (
+        compare_hot_archive_session(
+            manifest.session_date,
+            hot_connection=conn,
+            manifest_path=
+                manifest_path,
+            manifest=manifest,
+        )
+    )
+
+    _emit_progress(
+        progress,
+        (
+            "planner: hot/archive analytical parity "
+            f"{analytical_parity.state}"
+        ),
+    )
+
+    _emit_progress(
+        progress,
         (
             "planner: prune-parent FK index audit "
             f"{fk_index_audit.state}; "
@@ -1155,6 +1184,14 @@ def _build_plan_from_connection(
             "SCHEMA_MISMATCH:"
             f"{schema_version}!="
             f"{EXPECTED_SCHEMA_VERSION}"
+        )
+
+    if not analytical_parity.passed:
+        blockers.append(
+            "HOT_ARCHIVE_ANALYTICAL_PARITY_FAILED:"
+            + ",".join(
+                analytical_parity.differing_sections
+            )
         )
 
     if not fk_index_audit.passed:
@@ -1242,6 +1279,12 @@ def _build_plan_from_connection(
                 for check
                 in fk_index_audit.missing
             ),
+        analytical_parity_state=
+            analytical_parity.state,
+        hot_analytical_sha256=
+            analytical_parity.hot_analytical_sha256,
+        archive_analytical_sha256=
+            analytical_parity.archive_analytical_sha256,
         tables=tuple(table_plans),
         total_archived_rows=total_archived,
         total_deletable_rows=
