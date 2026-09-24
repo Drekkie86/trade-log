@@ -16,7 +16,11 @@ from typing import Iterator
 from src.config import load_runtime_env_file
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
-from src.operations.sqlite_runtime import inspect_database, resolve_backup_dir
+from src.operations.sqlite_runtime import (
+    assert_backup_capacity,
+    inspect_database,
+    resolve_backup_dir,
+)
 
 
 HEARTBEAT_INTERVAL_SECONDS = 15.0
@@ -144,50 +148,156 @@ def _prune_release_rollback_backups(
     return pruned
 
 
-def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version: int) -> Path:
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    final_path = backup_dir / (
-        f"christiania_release_rollback_{stamp}_v{schema_version}.db"
+def _copy_sqlite_backup(
+    database: Path,
+    temp_path: Path,
+) -> None:
+    source_uri = (
+        database.resolve().as_uri()
+        + "?mode=ro"
     )
-    temp_path = final_path.with_suffix(".tmp.db")
-    if final_path.exists() or temp_path.exists():
-        raise FileExistsError("Release rollback backup timestamp collision.")
 
-    source_uri = database.resolve().as_uri() + "?mode=ro"
-    source = sqlite3.connect(source_uri, uri=True, timeout=30.0)
-    target = sqlite3.connect(temp_path, timeout=30.0)
+    source = sqlite3.connect(
+        source_uri,
+        uri=True,
+        timeout=30.0,
+    )
+    target = sqlite3.connect(
+        temp_path,
+        timeout=30.0,
+    )
+
     try:
-        source.backup(target)
+        source.backup(
+            target
+        )
         target.commit()
     finally:
         target.close()
         source.close()
 
+
+def _create_rollback_backup(
+    database: Path,
+    backup_dir: Path,
+    *,
+    schema_version: int,
+) -> Path:
+    backup_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # A release migration must never consume the free-space reserve merely
+    # to create its rollback point. Use the same WAL-aware logical SQLite
+    # capacity contract as normal verified backups before creating any copy.
+    assert_backup_capacity(
+        source=database,
+        target_dir=backup_dir,
+    )
+
+    stamp = datetime.now(
+        UTC
+    ).strftime(
+        "%Y%m%dT%H%M%S%fZ"
+    )
+
+    final_path = (
+        backup_dir
+        / (
+            "christiania_release_rollback_"
+            f"{stamp}_v{schema_version}.db"
+        )
+    )
+    temp_path = (
+        final_path.with_suffix(
+            ".tmp.db"
+        )
+    )
+
+    if (
+        final_path.exists()
+        or temp_path.exists()
+    ):
+        raise FileExistsError(
+            "Release rollback backup "
+            "timestamp collision."
+        )
+
+    promoted = False
+
     try:
-        _verify_sqlite_copy(temp_path, expected_version=schema_version)
+        _copy_sqlite_backup(
+            database,
+            temp_path,
+        )
+
+        _verify_sqlite_copy(
+            temp_path,
+            expected_version=(
+                schema_version
+            ),
+        )
+
         # Windows' os.fsync/_commit rejects a read-only descriptor; open the
         # already-written backup read/write so the durability barrier works on
         # both CI Windows and the production POSIX host.
-        with temp_path.open("r+b") as handle:
-            os.fsync(handle.fileno())
-        os.replace(temp_path, final_path)
-        _fsync_directory(backup_dir)
+        with temp_path.open(
+            "r+b"
+        ) as handle:
+            os.fsync(
+                handle.fileno()
+            )
+
+        os.replace(
+            temp_path,
+            final_path,
+        )
+        promoted = True
+
+        _fsync_directory(
+            backup_dir
+        )
+
     except BaseException:
         if temp_path.exists():
             temp_path.unlink()
+
+        # If promotion happened but the durability barrier failed, do not
+        # leave a rollback artifact that the release path never proved durable.
+        if (
+            promoted
+            and final_path.exists()
+        ):
+            try:
+                final_path.unlink()
+                _fsync_directory(
+                    backup_dir
+                )
+            except OSError:
+                pass
+
         raise
 
     try:
-        pruned = _prune_release_rollback_backups(backup_dir)
+        pruned = (
+            _prune_release_rollback_backups(
+                backup_dir
+            )
+        )
+
         if pruned:
             _progress(
-                f"Database preparation: pruned {pruned} stale release rollback backup(s)."
+                "Database preparation: "
+                f"pruned {pruned} stale "
+                "release rollback backup(s)."
             )
+
     except OSError as exc:
         _progress(
-            "Database preparation: warning: could not prune stale release rollback "
-            f"backup(s): {exc}"
+            "Database preparation: warning: "
+            "could not prune stale release "
+            f"rollback backup(s): {exc}"
         )
 
     return final_path
