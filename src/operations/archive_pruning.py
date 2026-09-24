@@ -305,6 +305,8 @@ def _database_holder_pids(
         ),
     )
 
+    probe_errors: list[str] = []
+
     for command in commands:
         try:
             completed = subprocess.run(
@@ -317,31 +319,52 @@ def _database_holder_pids(
         except FileNotFoundError:
             continue
 
-        if completed.returncode not in {
-            0,
-            1,
-        }:
-            detail = (
-                completed.stderr
-                or completed.stdout
-                or "unknown error"
-            ).strip()
+        stdout = (
+            completed.stdout
+            or ""
+        )
+        stderr = (
+            completed.stderr
+            or ""
+        ).strip()
 
-            raise RuntimeError(
-                "Database-holder probe failed: "
-                f"{command[0]}: {detail}"
+        if completed.returncode == 0:
+            return tuple(
+                sorted(
+                    {
+                        int(value)
+                        for value in re.findall(
+                            r"\d+",
+                            stdout,
+                        )
+                    }
+                )
             )
 
-        return tuple(
-            sorted(
-                {
-                    int(value)
-                    for value in re.findall(
-                        r"\d+",
-                        completed.stdout
-                        or "",
-                    )
-                }
+        # Both GNU fuser and lsof conventionally return 1 when no process
+        # matches. Accept that only when the probe emitted no diagnostic.
+        if (
+            completed.returncode == 1
+            and not stderr
+        ):
+            return ()
+
+        detail = (
+            stderr
+            or stdout.strip()
+            or "unknown error"
+        )
+
+        probe_errors.append(
+            f"{command[0]} rc={completed.returncode}: {detail}"
+        )
+
+    if probe_errors:
+        raise RuntimeError(
+            "Cannot prove database quiescence; "
+            "holder probes failed: "
+            + "; ".join(
+                probe_errors
             )
         )
 
