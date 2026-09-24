@@ -1797,6 +1797,11 @@ def prune_research_session(
             manifest_path
         )
     )
+    validated_parity_receipt_sha256 = (
+        _sha256_file(
+            parity_path
+        )
+    )
 
     # Destructive work is blocked until both independent copies are
     # revalidated immediately before the database transaction.
@@ -1821,6 +1826,12 @@ def prune_research_session(
             "the manifest selected for pruning."
         )
 
+    validated_manifest_sha256 = (
+        _sha256_file(
+            manifest_path
+        )
+    )
+
     _emit_progress(
         progress,
         "prune: immutable remote proof revalidation started",
@@ -1840,19 +1851,9 @@ def prune_research_session(
         proof=verified_proof,
     )
 
-    validated_manifest_sha256 = (
-        _sha256_file(
-            manifest_path
-        )
-    )
     validated_remote_proof_sha256 = (
         _sha256_file(
             proof_path
-        )
-    )
-    validated_parity_receipt_sha256 = (
-        _sha256_file(
-            parity_path
         )
     )
 
