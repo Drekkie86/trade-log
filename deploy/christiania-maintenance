@@ -39,7 +39,7 @@ DB_CONSUMER_SERVICES=(
 
 fail() {
   echo "CHRISTIANIA MAINTENANCE ERROR: $*" >&2
-  exit 1
+  return 1
 }
 
 require_root() {
