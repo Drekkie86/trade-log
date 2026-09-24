@@ -165,12 +165,16 @@ assert_no_database_holders() {
     if holders="$(probe_holders_with fuser "${paths[@]}")"; then
       :
     elif command -v lsof >/dev/null 2>&1; then
-      holders="$(probe_holders_with lsof -t -- "${paths[@]}")"         || fail "cannot prove database quiescence: fuser and lsof probes failed"
+      if ! holders="$(probe_holders_with lsof -t -- "${paths[@]}")"; then
+        fail "cannot prove database quiescence: fuser and lsof probes failed"
+      fi
     else
       fail "cannot prove database quiescence: fuser probe failed and lsof is unavailable"
     fi
   elif command -v lsof >/dev/null 2>&1; then
-    holders="$(probe_holders_with lsof -t -- "${paths[@]}")"       || fail "cannot prove database quiescence: lsof probe failed"
+    if ! holders="$(probe_holders_with lsof -t -- "${paths[@]}")"; then
+      fail "cannot prove database quiescence: lsof probe failed"
+    fi
   else
     fail "cannot prove database quiescence: neither fuser nor lsof is installed"
   fi
