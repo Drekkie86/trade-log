@@ -15,6 +15,9 @@ from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
 )
+from src.operations.historical_evidence import (
+    verify_hot_archive_parity,
+)
 from src.operations.remote_archive import (
     RemoteArchiveProof,
     load_remote_archive_proof,
@@ -136,6 +139,7 @@ class PruneSessionPlan:
     remote_gate_state: str
     local_archive_fast_verified: bool
     run_lineage_verified: bool
+    archive_parity_verified: bool
     foreign_key_indexes_verified: bool
     foreign_key_index_checks: tuple[
         PruneForeignKeyIndexCheck,
@@ -1281,6 +1285,7 @@ def _build_plan_from_connection(
     proof_path: Path,
     proof: RemoteArchiveProof,
     local_archive_fast_verified: bool,
+    archive_parity_verified: bool,
     progress: Callable[[str], None] | None = None,
 ) -> PruneSessionPlan:
     schema_version = _sqlite_version(
@@ -1389,6 +1394,10 @@ def _build_plan_from_connection(
         blockers.append(
             "RUN_LINEAGE_MISMATCH"
         )
+    if not archive_parity_verified:
+        blockers.append(
+            "HOT_ARCHIVE_PARITY_NOT_VERIFIED"
+        )
     if not outside_hot:
         blockers.append(
             "SESSION_NOT_OUTSIDE_HOT_WINDOW"
@@ -1442,6 +1451,9 @@ def _build_plan_from_connection(
         local_archive_fast_verified=
             local_archive_fast_verified,
         run_lineage_verified=lineage_ok,
+        archive_parity_verified=(
+            archive_parity_verified
+        ),
         foreign_key_indexes_verified=(
             not missing_foreign_key_indexes
         ),
@@ -1523,6 +1535,26 @@ def plan_prune_session(
             "planner: remote immutable proof revalidation complete",
         )
 
+    _emit_progress(
+        progress,
+        "planner: hot/archive exact parity verification started",
+    )
+    parity = verify_hot_archive_parity(
+        session_date,
+        db_path=database,
+        archive_dir=directory,
+        progress=progress,
+    )
+    _emit_progress(
+        progress,
+        "planner: hot/archive exact parity verification "
+        + (
+            "PASS"
+            if parity.passed
+            else "FAIL"
+        ),
+    )
+
     uri = (
         database.resolve().as_uri()
         + "?mode=ro"
@@ -1545,6 +1577,9 @@ def plan_prune_session(
             proof=proof,
             local_archive_fast_verified=
                 local_verified,
+            archive_parity_verified=(
+                parity.passed
+            ),
             progress=progress,
         )
     finally:
@@ -2026,6 +2061,34 @@ def prune_research_session(
         proof=verified_proof,
     )
 
+    _emit_progress(
+        progress,
+        "prune: hot/archive exact parity verification started",
+    )
+    parity = verify_hot_archive_parity(
+        session_date,
+        db_path=database,
+        archive_dir=directory,
+        progress=progress,
+    )
+    if not parity.passed:
+        mismatches = [
+            item.table_name
+            for item in parity.tables
+            if not item.matches
+        ]
+        raise RuntimeError(
+            "Hot/archive evidence parity failed "
+            "before pruning: "
+            + ",".join(
+                mismatches
+            )
+        )
+    _emit_progress(
+        progress,
+        "prune: hot/archive exact parity verification PASS",
+    )
+
     db_size_before = (
         database.stat().st_size
     )
@@ -2070,6 +2133,7 @@ def prune_research_session(
                 proof_path=proof_path,
                 proof=verified_proof,
                 local_archive_fast_verified=True,
+                archive_parity_verified=True,
                 progress=progress,
             )
             if not plan.apply_eligible:
