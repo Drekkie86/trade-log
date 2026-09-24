@@ -2304,6 +2304,7 @@ def prune_research_session(
     verified_manifest = verify_research_archive(
         manifest_path,
         deep_payload=True,
+        progress=progress,
     )
     _emit_progress(
         progress,
