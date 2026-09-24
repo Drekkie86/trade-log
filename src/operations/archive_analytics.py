@@ -455,10 +455,20 @@ def open_verified_archive_session(
         usage = shutil.disk_usage(
             temp_dir
         )
+        # Cold parity/profile queries may require a temporary sort
+        # because archive tables intentionally carry no production indexes.
+        # Reserve one uncompressed archive for materialization and a second
+        # full-size allowance for SQLite query/sort workspace, in addition to
+        # the normal Christiania filesystem reserve.
+        materialization_and_workspace = (
+            manifest.uncompressed_size_bytes
+            * 2
+        )
+
         required_free = (
             backup_required_free_bytes(
                 source_size_bytes=(
-                    manifest.uncompressed_size_bytes
+                    materialization_and_workspace
                 ),
                 filesystem_total_bytes=int(
                     usage.total
@@ -477,7 +487,9 @@ def open_verified_archive_session(
                 f"free={int(usage.free)} "
                 f"required={required_free} "
                 "uncompressed_archive="
-                f"{manifest.uncompressed_size_bytes}."
+                f"{manifest.uncompressed_size_bytes} "
+                "materialization_and_workspace="
+                f"{materialization_and_workspace}."
             )
 
         digest = hashlib.sha256()
