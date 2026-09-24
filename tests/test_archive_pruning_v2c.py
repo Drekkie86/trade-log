@@ -12,7 +12,9 @@ from src.database.repository import (
 )
 from src.operations.archive_pruning import (
     DELETE_TRIGGER_BY_TABLE,
+    _delete_temp_id_batches,
     plan_prune_session,
+    prune_delete_batch_size,
     prune_research_session,
 )
 from src.operations.remote_archive import (
@@ -763,3 +765,144 @@ def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
             assert row[0] == table_name
     finally:
         conn.close()
+
+
+
+def test_prune_batched_delete_remains_inside_outer_transaction():
+    conn = sqlite3.connect(
+        ":memory:",
+        isolation_level=None,
+    )
+
+    try:
+        conn.execute(
+            """
+            CREATE TABLE option_quotes(
+                id INTEGER PRIMARY KEY
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TEMP TABLE _delete_option_quotes(
+                id INTEGER PRIMARY KEY
+            ) WITHOUT ROWID;
+            """
+        )
+
+        conn.executemany(
+            "INSERT INTO option_quotes(id) "
+            "VALUES(?);",
+            (
+                (row_id,)
+                for row_id
+                in range(
+                    1,
+                    106,
+                )
+            ),
+        )
+
+        conn.executemany(
+            "INSERT INTO _delete_option_quotes(id) "
+            "VALUES(?);",
+            (
+                (row_id,)
+                for row_id
+                in range(
+                    1,
+                    106,
+                )
+            ),
+        )
+
+        conn.execute(
+            "BEGIN IMMEDIATE;"
+        )
+
+        progress: list[str] = []
+
+        deleted = (
+            _delete_temp_id_batches(
+                conn,
+                table_name="option_quotes",
+                temp_table=(
+                    "_delete_option_quotes"
+                ),
+                batch_size=25,
+                progress=progress.append,
+            )
+        )
+
+        assert deleted == 105
+        assert conn.in_transaction is True
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) "
+                "FROM option_quotes;"
+            ).fetchone()[0]
+            == 0
+        )
+
+        assert any(
+            "progress rows="
+            in message
+            for message in progress
+        )
+        assert any(
+            "complete rows=105"
+            in message
+            for message in progress
+        )
+
+        conn.rollback()
+
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) "
+                "FROM option_quotes;"
+            ).fetchone()[0]
+            == 105
+        )
+
+    finally:
+        conn.close()
+
+
+def test_prune_delete_batch_size_is_bounded(
+    monkeypatch,
+):
+    monkeypatch.delenv(
+        "CHRISTIANIA_PRUNE_DELETE_BATCH_SIZE",
+        raising=False,
+    )
+
+    assert (
+        prune_delete_batch_size()
+        == 25_000
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_PRUNE_DELETE_BATCH_SIZE",
+        "5000",
+    )
+
+    assert (
+        prune_delete_batch_size()
+        == 5000
+    )
+
+    for invalid in (
+        "99",
+        "100001",
+    ):
+        monkeypatch.setenv(
+            "CHRISTIANIA_PRUNE_DELETE_BATCH_SIZE",
+            invalid,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="must be between",
+        ):
+            prune_delete_batch_size()
