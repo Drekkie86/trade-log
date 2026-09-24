@@ -1618,6 +1618,11 @@ def read_archived_run_evidence(
             timeout=30.0,
         )
         try:
+            verify_materialized_archive_contract(
+                conn,
+                manifest,
+            )
+
             exists = conn.execute(
                 """
                 SELECT 1
