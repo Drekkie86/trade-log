@@ -216,21 +216,21 @@ def test_release_receiver_quiesces_all_scheduled_jobs_before_migration():
     quiesce = receiver.index(
         'phase_start "Quiescing scheduled jobs and database consumers"'
     )
-    quiesce_guard = receiver.index(
-        "SERVICES_QUIESCED=1",
-        quiesce,
-    )
     timer_stop = receiver.index(
         'for timer in "${QUIESCE_TIMER_UNITS[@]}"; do',
-        quiesce_guard,
+        quiesce,
     )
-    oneshot_stop = receiver.index(
-        'for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do',
+    oneshot_guard = receiver.index(
+        "assert_no_busy_oneshots",
         timer_stop,
+    )
+    quiesce_guard = receiver.index(
+        "SERVICES_QUIESCED=1",
+        oneshot_guard,
     )
     app_daemon_stop = receiver.index(
         'for service in "${QUIESCE_SERVICES[@]}"; do',
-        oneshot_stop,
+        quiesce_guard,
     )
     theta_guard = receiver.index(
         'systemctl is-active christiania-theta.service',
@@ -247,9 +247,9 @@ def test_release_receiver_quiesces_all_scheduled_jobs_before_migration():
 
     assert (
         quiesce
-        < quiesce_guard
         < timer_stop
-        < oneshot_stop
+        < oneshot_guard
+        < quiesce_guard
         < app_daemon_stop
         < theta_guard
         < prepare
@@ -285,7 +285,20 @@ def test_release_receiver_quiesces_all_scheduled_jobs_before_migration():
 
     assert 'ACTIVE_QUIESCE_TIMERS+=("${timer}")' in receiver
     assert 'stop_unit_for_release "${timer}"' in receiver
-    assert 'stop_unit_for_release "${service}"' in receiver
+    assert (
+        'stop_unit_for_release "${service}"'
+        not in receiver[
+            quiesce:prepare
+        ]
+    )
+    assert (
+        receiver[
+            quiesce:prepare
+        ].count(
+            "assert_no_busy_oneshots"
+        )
+        == 2
+    )
     assert 'systemctl start "${timer}"' in receiver
 
 
@@ -482,3 +495,52 @@ def test_release_receiver_capacity_preflight_happens_before_quiescence():
         "assert_backup_capacity("
         in release_db
     )
+
+
+
+def test_release_receiver_never_stops_busy_oneshot_during_rollback():
+    receiver = (
+        ROOT
+        / "deploy/receive_release.sh"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    rollback_start = receiver.index(
+        "rollback() {"
+    )
+    rollback_end = receiver.index(
+        "trap 'rollback $?'",
+        rollback_start,
+    )
+    rollback = receiver[
+        rollback_start:rollback_end
+    ]
+
+    assert (
+        'QUIESCE_ONESHOT_SERVICES'
+        not in rollback
+    )
+    assert (
+        "release refuses to interrupt busy one-shot service"
+        in receiver
+    )
+
+    helper_start = receiver.index(
+        "unit_is_busy_for_release()"
+    )
+    helper_end = receiver.index(
+        "assert_no_busy_oneshots()",
+        helper_start,
+    )
+    helper = receiver[
+        helper_start:helper_end
+    ]
+
+    for state in (
+        "active",
+        "activating",
+        "reloading",
+        "deactivating",
+    ):
+        assert state in helper
