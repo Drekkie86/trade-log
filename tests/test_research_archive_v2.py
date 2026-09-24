@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 import json
 
 import pytest
+
+import src.operations.archive_analytics as archive_analytics
 
 from src.database.repository import (
     create_market_snapshot,
@@ -624,3 +627,137 @@ def test_archive_session_profile_exposes_replayable_universe_summary(
         ]
         == 1
     )
+
+
+
+def test_verified_archive_materialization_preserves_runtime_free_space_reserve(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    create_research_archive(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+        keep_hot_runs=50,
+    )
+
+    monkeypatch.setattr(
+        archive_analytics.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(
+            total=100 * 1024**3,
+            free=1,
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Insufficient temporary "
+            "filesystem headroom"
+        ),
+    ):
+        with open_verified_archive_session(
+            "2026-09-01",
+            archive_dir=archive_dir,
+        ):
+            raise AssertionError(
+                "archive session must not "
+                "open without capacity"
+            )
+
+
+def test_parity_receipt_row_counts_are_bound_to_manifest(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = (
+        create_research_archive(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+            keep_hot_runs=50,
+        )
+    )
+
+    verify_archive_session_parity(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    receipt_path = (
+        parity_receipt_path(
+            archive_dir
+            / manifest.manifest_filename
+        )
+    )
+
+    payload = json.loads(
+        receipt_path.read_text(
+            encoding="utf-8",
+        )
+    )
+
+    for side in (
+        "hot_fingerprints",
+        "archive_fingerprints",
+    ):
+        payload[
+            side
+        ][
+            "option_quotes"
+        ][
+            "row_count"
+        ] = 999
+
+    receipt_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "row count does not "
+            "match manifest"
+        ),
+    ):
+        validate_archive_parity_receipt(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+        )
