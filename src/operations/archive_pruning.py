@@ -492,10 +492,6 @@ def _prepare_delete_sets(
     # could become effectively quadratic where downstream FK columns lacked
     # dedicated indexes. Materialize the one-session population once, then
     # scan each downstream evidence family once into indexed temp keep-sets.
-    conn.execute(
-        "PRAGMA temp_store = FILE;"
-    )
-
     for name in (
         *_SCOPE_TABLE_BY_TARGET.values(),
         *_DELETE_TABLE_BY_TARGET.values(),
@@ -1235,6 +1231,9 @@ def plan_prune_session(
         uri=True,
         timeout=60.0,
     )
+    conn.execute(
+        "PRAGMA temp_store = FILE;"
+    )
     try:
         return _build_plan_from_connection(
             conn,
@@ -1501,6 +1500,9 @@ def prune_research_session(
             )
         )
 
+        conn.execute(
+            "PRAGMA temp_store = FILE;"
+        )
         conn.execute("BEGIN IMMEDIATE;")
         try:
             plan = _build_plan_from_connection(
