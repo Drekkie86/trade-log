@@ -16,6 +16,20 @@ EXPECTED_V34_INDEXES = {
                 "reference_contract_id",
             ),
         ),
+    "idx_shadow_candidates_entry_quote_observation":
+        (
+            "shadow_candidates",
+            (
+                "entry_quote_observation_id",
+            ),
+        ),
+    "idx_shadow_candidates_entry_greek_observation":
+        (
+            "shadow_candidates",
+            (
+                "entry_greek_observation_id",
+            ),
+        ),
     "idx_hypothesis_scanner_evaluations_reference_contract":
         (
             "hypothesis_scanner_evaluations",
@@ -156,6 +170,22 @@ def test_all_prune_parent_foreign_keys_have_leading_indexes(
         "listing_reference_contracts",
         (
             "reference_contract_id",
+        ),
+    ) in observed
+
+    assert (
+        "shadow_candidates",
+        "provider_observation_availability",
+        (
+            "entry_quote_observation_id",
+        ),
+    ) in observed
+
+    assert (
+        "shadow_candidates",
+        "provider_observation_availability",
+        (
+            "entry_greek_observation_id",
         ),
     ) in observed
 
