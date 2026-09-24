@@ -585,3 +585,39 @@ def test_v33_archive_remains_readable_under_v34_runtime(
         parity.archive_source_schema_version
         == 33
     )
+
+
+
+def test_hot_parity_does_not_create_literal_uri_database(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    (
+        _,
+        archive_dir,
+        manifest,
+    ) = _create_old_session_archive(
+        db_path,
+        tmp_path,
+        monkeypatch,
+    )
+
+    before = {
+        path.name
+        for path in db_path.parent.iterdir()
+    }
+
+    result = verify_hot_archive_parity(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    after = {
+        path.name
+        for path in db_path.parent.iterdir()
+    }
+
+    assert result.passed is True
+    assert after == before
