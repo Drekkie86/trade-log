@@ -595,6 +595,7 @@ def _execute_with_progress(
     label: str,
     sql: str,
     progress: Callable[[str], None] | None,
+    parameters: tuple[object, ...] = (),
 ) -> int:
     started = time.monotonic()
     next_heartbeat = started + 10.0
@@ -625,7 +626,10 @@ def _execute_with_progress(
         250_000,
     )
     try:
-        conn.execute(sql)
+        conn.execute(
+            sql,
+            parameters,
+        )
         changed = int(
             conn.execute(
                 "SELECT changes();"
@@ -1666,40 +1670,49 @@ def _delete_reference_safe_rows(
             )
 
             if last_id is None:
-                cursor = conn.execute(
-                    f"""
-                    DELETE FROM {table_name}
-                    WHERE id IN (
-                        SELECT id
-                        FROM {temp_table}
-                        WHERE id <= ?
-                    );
+                changed = _execute_with_progress(
+                    conn,
+                    label=(
+                        "delete "
+                        f"{table_name} "
+                        f"batch {batch_number + 1}"
+                    ),
+                    sql=f"""
+                        DELETE FROM {table_name}
+                        WHERE id IN (
+                            SELECT id
+                            FROM {temp_table}
+                            WHERE id <= ?
+                        );
                     """,
-                    (batch_last_id,),
+                    parameters=(
+                        batch_last_id,
+                    ),
+                    progress=progress,
                 )
             else:
-                cursor = conn.execute(
-                    f"""
-                    DELETE FROM {table_name}
-                    WHERE id IN (
-                        SELECT id
-                        FROM {temp_table}
-                        WHERE id > ?
-                          AND id <= ?
-                    );
+                changed = _execute_with_progress(
+                    conn,
+                    label=(
+                        "delete "
+                        f"{table_name} "
+                        f"batch {batch_number + 1}"
+                    ),
+                    sql=f"""
+                        DELETE FROM {table_name}
+                        WHERE id IN (
+                            SELECT id
+                            FROM {temp_table}
+                            WHERE id > ?
+                              AND id <= ?
+                        );
                     """,
-                    (
+                    parameters=(
                         last_id,
                         batch_last_id,
                     ),
+                    progress=progress,
                 )
-
-            changed = int(
-                conn.execute(
-                    "SELECT changes();"
-                ).fetchone()[0]
-            )
-            del cursor
 
             batch_number += 1
             total += changed
