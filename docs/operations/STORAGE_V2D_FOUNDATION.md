@@ -260,7 +260,8 @@ Maintenance:
 2. records which core DB consumers, OAuth edge and timers were active;
 3. stops scheduling timers;
 4. refuses to proceed if any one-shot backup/audit/restore/health job is
-   already active;
+   active or in a transitional busy state such as `activating` or
+   `deactivating`;
 5. stops OAuth;
 6. stops daemon/app DB consumers;
 7. proves those consumers are down;
