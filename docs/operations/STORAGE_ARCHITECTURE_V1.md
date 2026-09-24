@@ -361,3 +361,113 @@ immediately reduce the file size. Physical compaction is deliberately a
 separate follow-up operation after the first production prune receipt has been
 reviewed. This keeps logical evidence deletion and O(database-size) file
 rewriting as two independently auditable gates.
+
+
+## Storage V2C reliability extension — historical research and bounded pruning
+
+The destructive-prune contract is strengthened by the Storage & Historical
+Research Reliability bundle.
+
+### Cold evidence is a supported research source
+
+A verified research archive is not treated as discarded data. Christiania
+materializes an archive only into a temporary directory, verifies the exact
+compressed and uncompressed hashes, opens the SQLite payload read-only with
+`query_only`, and removes the materialization when the reader closes.
+
+The public research API is session-oriented. It exposes:
+
+- a verified read-only archive connection for model replay and future
+  counterfactual research consumers;
+- a historical session profile covering quote completeness, provider-model
+  populations, scanner states and Surface V2 states; and
+- a hot-versus-archive exact evidence parity proof.
+
+Archive source schema version is retained as provenance. An immutable archive
+is never rewritten merely because the live Christiania schema advances.
+Compatibility is determined by the archive format/coverage contract and by the
+actual evidence-table layout required by the reader. Schema v34 adds indexes
+only, so a v33 Storage V2 archive remains a valid research source.
+
+### Exact parity is a destructive prerequisite
+
+Row counts are necessary but no longer sufficient for pruning.
+
+Before V2C may delete any hot evidence, Christiania streams every archived
+evidence row from both the hot-session subset and the verified cold archive in
+deterministic primary-key order. Values are encoded with stable type tags and
+hashed with SHA-256.
+
+For every archive table all three properties must match:
+
+1. ordered column identity;
+2. row count; and
+3. SHA-256 evidence fingerprint.
+
+A value change with identical row counts therefore blocks pruning.
+
+The complete parity result also receives a deterministic proof SHA-256. A
+successful V2C receipt records that proof hash together with the archive source
+schema version, remote immutable proof, trigger hashes, deletion counts and
+foreign-key verification.
+
+### Parent-delete foreign-key index contract
+
+SQLite validates referencing child rows when a parent is deleted. Every
+foreign key whose parent is `listing_reference_contracts` or `option_quotes`
+must therefore have a child-side index with the FK columns as its leading
+prefix.
+
+Schema v34 adds the four support indexes found missing in the production v33
+schema:
+
+- `shadow_candidates(reference_contract_id)`;
+- `hypothesis_scanner_evaluations(reference_contract_id)`;
+- `hypothesis_scanner_evaluations(option_quote_id)`; and
+- `local_surface_residual_v2_observations(reference_contract_id)`.
+
+This is not maintained as a hand-written allow-list. The V2C planner discovers
+the live SQLite foreign-key graph and index prefixes. A missing support index
+is a blocking prune condition, and the repository quality gate applies the
+same audit to a freshly migrated database so future schema changes fail CI
+before deployment.
+
+### Bounded deletes, one transaction
+
+V2C no longer issues a single million-row DELETE for each evidence family.
+Each precomputed delete set is consumed in ordered ID batches. The default is
+25,000 rows and the supported operator range is 100 to 100,000 rows.
+
+Batching changes execution granularity only. All batches, temporary trigger
+removal, trigger restoration, row reconciliation and the final
+`foreign_key_check` remain inside one `BEGIN IMMEDIATE` transaction.
+There is no partial-commit mode.
+
+Progress reports completed rows and percentage by evidence family. If a batch,
+integrity check or final reconciliation fails, the outer transaction rolls
+back.
+
+### Maintenance rehearsal
+
+`deploy/christiania-maintenance rehearse` performs a deliberately
+non-destructive production rehearsal:
+
+1. atomically records the runtime state;
+2. enters the standard maintenance quiescence;
+3. proves daemon/app/OAuth are stopped while Theta remains active;
+4. performs no database checkpoint, migration or prune;
+5. exits maintenance;
+6. proves the recorded runtime is restored; and
+7. requires the normal Christiania status contract to succeed.
+
+The rehearsal uses the same enter/exit implementation as real maintenance and
+has an emergency restore trap. It exists specifically to prove orchestration
+before trusting it with a destructive storage operation.
+
+### Physical compaction remains separate
+
+Logical pruning and physical SQLite compaction remain separate changes.
+Neither archive parity nor bounded V2C deletes authorize `VACUUM`.
+Any future Storage V2D compaction package must independently evaluate disk
+headroom, outage duration, rollback/recovery semantics and post-compaction
+integrity.
