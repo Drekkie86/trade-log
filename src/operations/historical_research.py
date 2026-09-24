@@ -693,6 +693,7 @@ def analyze_archived_session(
     session_date: str,
     *,
     archive_dir: str | Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> HistoricalSessionAnalysis:
     (
         manifest_path,
@@ -703,7 +704,8 @@ def analyze_archived_session(
     )
 
     with open_verified_research_archive(
-        manifest_path
+        manifest_path,
+        progress=progress,
     ) as (
         manifest,
         conn,
@@ -745,6 +747,7 @@ def analyze_hot_session(
     session_date: str,
     *,
     db_path: str | Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> HistoricalSessionAnalysis:
     database = resolve_db_path(
         db_path
@@ -780,6 +783,7 @@ def analyze_hot_session(
             source="HOT",
             source_schema_version=
                 _schema_version(conn),
+            progress=progress,
         )
     finally:
         conn.close()
@@ -821,6 +825,7 @@ def compare_hot_connection_to_archive(
                 manifest.source_schema_version,
             archive_filename=
                 manifest.archive_filename,
+            progress=progress,
         )
 
     hot_by_name = {
@@ -917,6 +922,7 @@ def compare_hot_archive_session(
         return compare_hot_connection_to_archive(
             conn,
             manifest_path=manifest_path,
+            progress=progress,
         )
     finally:
         conn.close()
