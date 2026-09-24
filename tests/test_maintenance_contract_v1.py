@@ -249,3 +249,44 @@ def test_maintenance_rehearsal_checks_quiescence_and_theta():
         'state_contains SERVICE "${SECURE_EDGE_SERVICE}"'
         in rehearsal
     )
+
+
+
+def test_maintenance_never_interrupts_active_one_shot_work():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    marker = (
+        "# Do not kill in-flight "
+        "backup/audit/health/recovery jobs."
+    )
+
+    start = script.index(
+        marker
+    )
+    end = script.index(
+        "# Stop the edge explicitly",
+        start,
+    )
+
+    section = script[
+        start:end
+    ]
+
+    assert (
+        'if unit_is_active "${unit}"'
+        in section
+    )
+    assert (
+        "refusing maintenance while one-shot unit is active"
+        in section
+    )
+    assert (
+        'systemctl stop "${unit}"'
+        not in section
+    )
+    assert (
+        'stop_optional_unit "${unit}"'
+        not in section
+    )
