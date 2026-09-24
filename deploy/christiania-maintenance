@@ -246,6 +246,14 @@ rehearse_maintenance() {
     fail "cannot rehearse while maintenance state already exists at ${STATE_FILE}"
   fi
 
+  if ! command -v christiania-status >/dev/null 2>&1; then
+    fail "rehearsal requires the christiania-status control-plane command"
+  fi
+
+  if ! christiania-status >/dev/null; then
+    fail "rehearsal requires a READY production baseline"
+  fi
+
   # A rehearsal must not interrupt an in-flight backup, audit, restore drill
   # or other one-shot job merely to test orchestration. Real maintenance may
   # quiesce those jobs intentionally; rehearsal refuses until they are idle.
