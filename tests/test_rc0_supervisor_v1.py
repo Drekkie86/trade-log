@@ -85,7 +85,7 @@ def _prepare_collect_snapshot(
 ):
     monkeypatch.setattr(
         rc0_supervisor,
-        "load_command_deck",
+        "_collect_lightweight_runtime_health",
         lambda **kwargs: _healthy_deck(),
     )
 
@@ -1352,3 +1352,137 @@ def test_healthy_supervisor_sends_deadman_heartbeat(
     assert pings == [
         "https://heartbeat.invalid/ping"
     ]
+
+
+def test_supervisor_does_not_depend_on_dashboard_command_deck():
+    import inspect
+
+    source = inspect.getsource(
+        rc0_supervisor
+    )
+
+    assert (
+        "from src.dashboard.read_model import load_command_deck"
+        not in source
+    )
+    assert (
+        "load_command_deck("
+        not in source
+    )
+
+
+def test_lightweight_runtime_health_uses_bounded_probes(
+    tmp_path,
+    monkeypatch,
+):
+    db = tmp_path / "runtime.db"
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE schema_version(
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO schema_version(
+                version,
+                applied_at
+            )
+            VALUES(
+                ?,
+                '2026-09-24T00:00:00Z'
+            );
+            """,
+            (
+                rc0_supervisor.EXPECTED_SCHEMA_VERSION,
+            ),
+        )
+        conn.execute(
+            """
+            CREATE TABLE research_daemon_lock(
+                singleton_id INTEGER PRIMARY KEY,
+                owner_token TEXT NOT NULL,
+                acquired_at TEXT NOT NULL,
+                heartbeat_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO research_daemon_lock(
+                singleton_id,
+                owner_token,
+                acquired_at,
+                heartbeat_at
+            )
+            VALUES(
+                1,
+                'test',
+                '2026-09-24T08:00:00Z',
+                '2026-09-24T08:00:30Z'
+            );
+            """
+        )
+        conn.execute(
+            "PRAGMA journal_mode=WAL;"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        rc0_supervisor,
+        "resolve_db_path",
+        lambda: db,
+    )
+
+    monkeypatch.setattr(
+        rc0_supervisor,
+        "probe_theta_terminal",
+        lambda: SimpleNamespace(
+            as_dict=lambda: {
+                "state": "READY",
+                "ready": True,
+                "latency_ms": 1.0,
+            }
+        ),
+    )
+
+    deck = (
+        rc0_supervisor
+        ._collect_lightweight_runtime_health(
+            observed=datetime(
+                2026,
+                9,
+                24,
+                8,
+                1,
+                tzinfo=UTC,
+            )
+        )
+    )
+
+    assert deck["ready"] is True
+    assert (
+        deck["database"][
+            "schema_version"
+        ]
+        == rc0_supervisor.EXPECTED_SCHEMA_VERSION
+    )
+    assert (
+        deck["daemon_health"][
+            "state"
+        ]
+        == "HEALTHY"
+    )
+    assert (
+        deck["theta_health"][
+            "ready"
+        ]
+        is True
+    )
