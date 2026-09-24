@@ -1692,7 +1692,11 @@ def prune_research_session(
             )
 
         except BaseException:
-            conn.execute("ROLLBACK;")
+            # SQLITE_INTERRUPT may already roll back the explicit
+            # transaction. Preserve the original failure instead of
+            # masking it with "cannot rollback - no transaction is active".
+            if conn.in_transaction:
+                conn.rollback()
             raise
 
         freelist_after = (
