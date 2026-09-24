@@ -361,3 +361,29 @@ immediately reduce the file size. Physical compaction is deliberately a
 separate follow-up operation after the first production prune receipt has been
 reviewed. This keeps logical evidence deletion and O(database-size) file
 rewriting as two independently auditable gates.
+
+
+## Storage & Historical Research Reliability bundle
+
+The next reliability layer is documented in
+`docs/operations/STORAGE_HISTORICAL_RELIABILITY_BUNDLE.md`.
+
+It hardens Storage V2C without changing the original hot/cold evidence
+principles:
+
+- schema v34 adds the proven missing child-FK indexes required for bounded
+  parent deletion and an immutable transactional prune-commit ledger;
+- maintenance entry proves zero DB/WAL/SHM holders and provides a
+  non-destructive enter/exit rehearsal;
+- Historical Analysis V1 makes archived raw evidence directly queryable and
+  supports a read-only hybrid archive + hot-governance research surface;
+- hot/cold analytical parity is a mandatory prune gate;
+- reference-safe deletes are executed in visible bounded batches while
+  retaining one atomic SQLite transaction;
+- an external prune receipt can be recovered from the immutable database
+  ledger after a post-COMMIT process or filesystem failure.
+
+Deployment of the bundle does not automatically prune a session and performs
+no VACUUM or physical compaction. Destructive V2C execution remains an explicit
+operator-gated action after maintenance rehearsal, analytical parity, remote
+restore verification and prune-plan review.

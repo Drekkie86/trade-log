@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import shutil
 import sqlite3
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -13,6 +16,13 @@ from typing import Callable, Iterable
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
+)
+from src.operations.historical_research import (
+    HISTORICAL_ANALYSIS_VERSION,
+    compare_hot_connection_to_archive,
+)
+from src.operations.sqlite_runtime import (
+    backup_required_free_bytes,
 )
 from src.operations.remote_archive import (
     RemoteArchiveProof,
@@ -28,9 +38,19 @@ from src.operations.research_archive import (
 )
 
 
-PRUNE_FORMAT_VERSION = 1
+PRUNE_FORMAT_VERSION = 2
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
+PRUNE_COMMIT_LEDGER_TABLE = "research_archive_prune_commits_v1"
+DEFAULT_PRUNE_DELETE_BATCH_ROWS = 25_000
+DEFAULT_MAINTENANCE_STATE_PATH = Path(
+    "/run/christiania/maintenance.state"
+)
+
+PRUNE_PARENT_TABLES = (
+    "listing_reference_contracts",
+    "option_quotes",
+)
 
 TARGET_TABLES = (
     "local_surface_residual_v2_observations",
@@ -67,6 +87,26 @@ DELETE_ORDER = (
 
 
 @dataclass(frozen=True)
+class PruneForeignKeyIndexCheck:
+    child_table: str
+    parent_table: str
+    child_columns: tuple[str, ...]
+    supporting_index: str | None
+
+    @property
+    def supported(self) -> bool:
+        return self.supporting_index is not None
+
+    def as_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["child_columns"] = list(
+            self.child_columns
+        )
+        data["supported"] = self.supported
+        return data
+
+
+@dataclass(frozen=True)
 class PruneTablePlan:
     table_name: str
     archived_rows: int
@@ -93,6 +133,17 @@ class PruneSessionPlan:
     remote_gate_state: str
     local_archive_fast_verified: bool
     run_lineage_verified: bool
+    historical_analysis_version: int
+    analytical_parity_verified: bool
+    hot_analysis_sha256: str | None
+    archive_analysis_sha256: str | None
+    analytical_parity_mismatches: tuple[str, ...]
+    analytical_parity_error: str | None
+    foreign_key_indexes_verified: bool
+    foreign_key_index_checks: tuple[
+        PruneForeignKeyIndexCheck,
+        ...,
+    ]
     tables: tuple[PruneTablePlan, ...]
     total_archived_rows: int
     total_deletable_rows: int
@@ -104,6 +155,14 @@ class PruneSessionPlan:
         return {
             **asdict(self),
             "run_ids": list(self.run_ids),
+            "analytical_parity_mismatches": list(
+                self.analytical_parity_mismatches
+            ),
+            "foreign_key_index_checks": [
+                item.as_dict()
+                for item
+                in self.foreign_key_index_checks
+            ],
             "tables": [
                 item.as_dict()
                 for item in self.tables
@@ -134,12 +193,377 @@ class PruneReceipt:
     freelist_bytes_after: int
     database_size_bytes_before: int
     database_size_bytes_after: int
+    logical_database_bytes_before: int
+    filesystem_free_bytes_before: int
+    prune_required_free_bytes: int
+    wal_checkpoint_state: str
     foreign_key_check: str
+    historical_analysis_version: int
+    analytical_parity_verified: bool
+    hot_analysis_sha256: str
+    archive_analysis_sha256: str
 
     def as_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["run_ids"] = list(self.run_ids)
         return data
+
+
+def _systemd_state(
+    unit: str,
+) -> str:
+    completed = subprocess.run(
+        [
+            "systemctl",
+            "is-active",
+            unit,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    return (
+        completed.stdout
+        or completed.stderr
+        or "unknown"
+    ).strip()
+
+
+def _require_managed_maintenance_state(
+    *,
+    state_path: Path = DEFAULT_MAINTENANCE_STATE_PATH,
+    service_state: Callable[[str], str] = _systemd_state,
+) -> None:
+    if not state_path.is_file():
+        raise RuntimeError(
+            "Production archive pruning requires the canonical Christiania "
+            f"maintenance state: {state_path}"
+        )
+
+    for unit in (
+        "christiania-daemon.service",
+        "christiania-app.service",
+        "christiania-oauth2-proxy.service",
+    ):
+        state = service_state(
+            unit
+        )
+        if state == "active":
+            raise RuntimeError(
+                "Production archive pruning requires quiesced runtime; "
+                f"{unit} is active."
+            )
+
+    theta_state = service_state(
+        "christiania-theta.service"
+    )
+
+    if theta_state != "active":
+        raise RuntimeError(
+            "Production archive pruning requires christiania-theta.service "
+            f"to remain active; found {theta_state}."
+        )
+
+
+def _database_holder_pids(
+    database: Path,
+) -> tuple[int, ...]:
+    paths = [
+        path
+        for path in (
+            database,
+            Path(str(database) + "-wal"),
+            Path(str(database) + "-shm"),
+        )
+        if path.exists()
+    ]
+
+    if not paths:
+        raise RuntimeError(
+            "Christiania database path does not exist: "
+            f"{database}"
+        )
+
+    commands = (
+        (
+            "fuser",
+            *(
+                str(path)
+                for path in paths
+            ),
+        ),
+        (
+            "lsof",
+            "-t",
+            "--",
+            *(
+                str(path)
+                for path in paths
+            ),
+        ),
+    )
+
+    probe_errors: list[str] = []
+
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            continue
+
+        stdout = (
+            completed.stdout
+            or ""
+        )
+        stderr = (
+            completed.stderr
+            or ""
+        ).strip()
+
+        if completed.returncode == 0:
+            return tuple(
+                sorted(
+                    {
+                        int(value)
+                        for value in re.findall(
+                            r"\d+",
+                            stdout,
+                        )
+                    }
+                )
+            )
+
+        # Both GNU fuser and lsof conventionally return 1 when no process
+        # matches. Accept that only when the probe emitted no diagnostic.
+        if (
+            completed.returncode == 1
+            and not stderr
+        ):
+            return ()
+
+        detail = (
+            stderr
+            or stdout.strip()
+            or "unknown error"
+        )
+
+        probe_errors.append(
+            f"{command[0]} rc={completed.returncode}: {detail}"
+        )
+
+    if probe_errors:
+        raise RuntimeError(
+            "Cannot prove database quiescence; "
+            "holder probes failed: "
+            + "; ".join(
+                probe_errors
+            )
+        )
+
+    raise RuntimeError(
+        "Cannot prove database quiescence: "
+        "neither fuser nor lsof is installed."
+    )
+
+
+def _require_no_database_holders(
+    database: Path,
+    *,
+    holder_probe: Callable[
+        [Path],
+        tuple[int, ...],
+    ] = _database_holder_pids,
+) -> None:
+    holders = holder_probe(
+        database
+    )
+
+    if holders:
+        raise RuntimeError(
+            "Production archive pruning requires "
+            "zero DB/WAL/SHM holders immediately "
+            "before SQLite open; found PIDs="
+            + ",".join(
+                str(pid)
+                for pid in holders
+            )
+        )
+
+
+def _checkpoint_clean_wal(
+    conn: sqlite3.Connection,
+    database: Path,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> None:
+    journal_mode = str(
+        conn.execute(
+            "PRAGMA journal_mode;"
+        ).fetchone()[0]
+    ).lower()
+
+    if journal_mode != "wal":
+        raise RuntimeError(
+            "Production archive pruning requires "
+            f"SQLite WAL mode; found {journal_mode}."
+        )
+
+    row = conn.execute(
+        "PRAGMA wal_checkpoint(TRUNCATE);"
+    ).fetchone()
+
+    if (
+        row is None
+        or len(row) < 3
+    ):
+        raise RuntimeError(
+            "SQLite WAL checkpoint returned "
+            "an unexpected result."
+        )
+
+    busy = int(row[0])
+    log_frames = int(row[1])
+    checkpointed_frames = int(row[2])
+
+    wal_path = Path(
+        str(database)
+        + "-wal"
+    )
+    wal_bytes = (
+        int(
+            wal_path.stat().st_size
+        )
+        if wal_path.exists()
+        else 0
+    )
+
+    if (
+        busy != 0
+        or wal_bytes != 0
+    ):
+        raise RuntimeError(
+            "Production archive pruning requires "
+            "a clean WAL checkpoint before the "
+            "write transaction: "
+            f"busy={busy}, "
+            f"log_frames={log_frames}, "
+            f"checkpointed_frames={checkpointed_frames}, "
+            f"wal_bytes={wal_bytes}."
+        )
+
+    _emit_progress(
+        progress,
+        "prune: WAL checkpoint PASS "
+        f"busy={busy} "
+        f"log_frames={log_frames} "
+        f"checkpointed_frames={checkpointed_frames} "
+        f"wal_bytes={wal_bytes}",
+    )
+
+
+def _prune_capacity_preflight(
+    conn: sqlite3.Connection,
+    database: Path,
+    *,
+    enforce: bool,
+    disk_usage: Callable[
+        [str | os.PathLike[str]],
+        object,
+    ] = shutil.disk_usage,
+    required_free_bytes: Callable[
+        ...,
+        int,
+    ] = backup_required_free_bytes,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[int, int, int]:
+    page_size = int(
+        conn.execute(
+            "PRAGMA page_size;"
+        ).fetchone()[0]
+    )
+    page_count = int(
+        conn.execute(
+            "PRAGMA page_count;"
+        ).fetchone()[0]
+    )
+
+    logical_database_bytes = max(
+        int(
+            database.stat().st_size
+        ),
+        page_size
+        * page_count,
+    )
+
+    usage = disk_usage(
+        database.parent
+    )
+
+    filesystem_total_bytes = int(
+        usage.total
+    )
+    filesystem_free_bytes = int(
+        usage.free
+    )
+
+    # The transaction is intentionally atomic, so batching does not bound
+    # WAL growth. Reserve one logical-database-sized WAL allowance plus the
+    # same RC0 free-space reserve used by verified backups/supervision.
+    prune_required_free = int(
+        required_free_bytes(
+            source_size_bytes=
+                logical_database_bytes,
+            filesystem_total_bytes=
+                filesystem_total_bytes,
+        )
+    )
+
+    if (
+        enforce
+        and filesystem_free_bytes
+        < prune_required_free
+    ):
+        raise RuntimeError(
+            "Insufficient filesystem headroom "
+            "for atomic archive pruning: "
+            f"free={filesystem_free_bytes} "
+            f"required={prune_required_free} "
+            f"logical_database={logical_database_bytes}. "
+            "The write transaction must fit while "
+            "preserving the configured RC0 reserve."
+        )
+
+    _emit_progress(
+        progress,
+        "prune: capacity "
+        + (
+            "PASS"
+            if (
+                not enforce
+                or filesystem_free_bytes
+                >= prune_required_free
+            )
+            else "FAIL"
+        )
+        + " "
+        f"logical_database_bytes={logical_database_bytes} "
+        f"filesystem_free_bytes={filesystem_free_bytes} "
+        f"required_free_bytes={prune_required_free}",
+    )
+
+    return (
+        logical_database_bytes,
+        filesystem_free_bytes,
+        prune_required_free,
+    )
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -164,6 +588,272 @@ def _normalized_sql_sha256(sql: str) -> str:
     return _sha256_bytes(
         normalized.encode("utf-8")
     )
+
+
+def _canonical_json_bytes(
+    payload: dict[str, object],
+) -> bytes:
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(
+            ",",
+            ":",
+        ),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode(
+        "utf-8"
+    )
+
+
+def _prune_ledger_payload(
+    conn: sqlite3.Connection,
+    session_date: str,
+) -> dict[str, object] | None:
+    try:
+        row = conn.execute(
+            f"""
+            SELECT
+                receipt_json,
+                receipt_sha256
+            FROM {PRUNE_COMMIT_LEDGER_TABLE}
+            WHERE session_date = ?;
+            """,
+            (
+                session_date,
+            ),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if (
+            "no such table"
+            in str(exc).lower()
+        ):
+            return None
+        raise
+
+    if row is None:
+        return None
+
+    receipt_json = str(
+        row[0]
+    )
+    expected_sha = str(
+        row[1]
+    )
+    actual_sha = _sha256_bytes(
+        receipt_json.encode(
+            "utf-8"
+        )
+    )
+
+    if actual_sha != expected_sha:
+        raise RuntimeError(
+            "Prune commit ledger receipt hash "
+            "mismatch for session "
+            f"{session_date}."
+        )
+
+    try:
+        payload = json.loads(
+            receipt_json
+        )
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Prune commit ledger contains "
+            "invalid receipt JSON for session "
+            f"{session_date}."
+        ) from exc
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        raise RuntimeError(
+            "Prune commit ledger receipt "
+            "must be a JSON object."
+        )
+
+    if (
+        str(
+            payload.get(
+                "session_date"
+            )
+        )
+        != session_date
+    ):
+        raise RuntimeError(
+            "Prune commit ledger session "
+            "does not match receipt payload."
+        )
+
+    if (
+        payload.get(
+            "state"
+        )
+        != PRUNE_RECEIPT_STATE
+    ):
+        raise RuntimeError(
+            "Prune commit ledger receipt "
+            "has an unexpected state."
+        )
+
+    canonical = (
+        _canonical_json_bytes(
+            payload
+        )
+    )
+
+    if (
+        _sha256_bytes(
+            canonical
+        )
+        != expected_sha
+    ):
+        raise RuntimeError(
+            "Prune commit ledger receipt "
+            "is not canonically encoded."
+        )
+
+    return payload
+
+
+def _recover_external_prune_receipt(
+    *,
+    database: Path,
+    session_date: str,
+    receipt_path: Path,
+    progress: Callable[[str], None] | None = None,
+) -> bool:
+    conn = sqlite3.connect(
+        database,
+        timeout=30.0,
+    )
+
+    try:
+        payload = (
+            _prune_ledger_payload(
+                conn,
+                session_date,
+            )
+        )
+    finally:
+        conn.close()
+
+    if payload is None:
+        return False
+
+    if receipt_path.exists():
+        try:
+            existing = json.loads(
+                receipt_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise RuntimeError(
+                "External prune receipt exists "
+                "but cannot be verified against "
+                "the committed database ledger."
+            ) from exc
+
+        if (
+            not isinstance(
+                existing,
+                dict,
+            )
+            or _canonical_json_bytes(
+                existing
+            )
+            != _canonical_json_bytes(
+                payload
+            )
+        ):
+            raise RuntimeError(
+                "External prune receipt does "
+                "not match committed database "
+                "ledger evidence."
+            )
+
+        _emit_progress(
+            progress,
+            "prune: committed ledger and "
+            "external receipt agree",
+        )
+        return True
+
+    _write_json_atomic(
+        receipt_path,
+        payload,
+    )
+
+    _emit_progress(
+        progress,
+        "prune: recovered missing external "
+        "receipt from committed database ledger",
+    )
+
+    return True
+
+
+def _insert_prune_commit_ledger(
+    conn: sqlite3.Connection,
+    receipt: PruneReceipt,
+) -> str:
+    payload = receipt.as_dict()
+    canonical = (
+        _canonical_json_bytes(
+            payload
+        )
+    )
+    receipt_json = canonical.decode(
+        "utf-8"
+    )
+    receipt_sha256 = (
+        _sha256_bytes(
+            canonical
+        )
+    )
+
+    conn.execute(
+        f"""
+        INSERT INTO {PRUNE_COMMIT_LEDGER_TABLE}(
+            session_date,
+            committed_at,
+            state,
+            schema_version,
+            archive_manifest_sha256,
+            remote_proof_sha256,
+            historical_analysis_version,
+            hot_analysis_sha256,
+            archive_analysis_sha256,
+            receipt_json,
+            receipt_sha256
+        )
+        VALUES(
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?
+        );
+        """,
+        (
+            receipt.session_date,
+            receipt.committed_at,
+            receipt.state,
+            receipt.schema_version,
+            receipt.archive_manifest_sha256,
+            receipt.remote_proof_sha256,
+            receipt.historical_analysis_version,
+            receipt.hot_analysis_sha256,
+            receipt.archive_analysis_sha256,
+            receipt_json,
+            receipt_sha256,
+        ),
+    )
+
+    return receipt_sha256
 
 
 def _write_json_atomic(
@@ -337,6 +1027,172 @@ def _sqlite_version(
     return int(row[0])
 
 
+def _quote_identifier(
+    value: str,
+) -> str:
+    return '"' + value.replace(
+        '"',
+        '""',
+    ) + '"'
+
+
+def _foreign_key_index_checks(
+    conn: sqlite3.Connection,
+) -> tuple[PruneForeignKeyIndexCheck, ...]:
+    checks: list[
+        PruneForeignKeyIndexCheck
+    ] = []
+
+    child_tables = [
+        str(row[0])
+        for row in conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name;
+            """
+        ).fetchall()
+    ]
+
+    for child_table in child_tables:
+        quoted_child = _quote_identifier(
+            child_table
+        )
+        fk_rows = conn.execute(
+            f"PRAGMA foreign_key_list({quoted_child});"
+        ).fetchall()
+
+        grouped: dict[
+            int,
+            list[tuple],
+        ] = {}
+
+        for row in fk_rows:
+            parent_table = str(
+                row[2]
+            )
+            if (
+                parent_table
+                not in PRUNE_PARENT_TABLES
+            ):
+                continue
+
+            grouped.setdefault(
+                int(row[0]),
+                [],
+            ).append(row)
+
+        if not grouped:
+            continue
+
+        index_rows = conn.execute(
+            f"PRAGMA index_list({quoted_child});"
+        ).fetchall()
+
+        usable_indexes: list[
+            tuple[str, tuple[str, ...]]
+        ] = []
+
+        for index_row in index_rows:
+            index_name = str(
+                index_row[1]
+            )
+
+            # Partial indexes cannot cover every possible FK child row.
+            partial = (
+                int(index_row[4])
+                if len(index_row) > 4
+                else 0
+            )
+            if partial:
+                continue
+
+            quoted_index = (
+                _quote_identifier(
+                    index_name
+                )
+            )
+            column_rows = conn.execute(
+                f"PRAGMA index_info({quoted_index});"
+            ).fetchall()
+
+            columns = tuple(
+                str(row[2])
+                for row in sorted(
+                    column_rows,
+                    key=lambda item: int(
+                        item[0]
+                    ),
+                )
+                if row[2] is not None
+            )
+
+            if columns:
+                usable_indexes.append(
+                    (
+                        index_name,
+                        columns,
+                    )
+                )
+
+        for rows in grouped.values():
+            ordered = sorted(
+                rows,
+                key=lambda item: int(
+                    item[1]
+                ),
+            )
+
+            parent_table = str(
+                ordered[0][2]
+            )
+            child_columns = tuple(
+                str(row[3])
+                for row in ordered
+            )
+
+            support = next(
+                (
+                    index_name
+                    for (
+                        index_name,
+                        columns,
+                    )
+                    in usable_indexes
+                    if columns[
+                        :len(
+                            child_columns
+                        )
+                    ]
+                    == child_columns
+                ),
+                None,
+            )
+
+            checks.append(
+                PruneForeignKeyIndexCheck(
+                    child_table=child_table,
+                    parent_table=parent_table,
+                    child_columns=
+                        child_columns,
+                    supporting_index=support,
+                )
+            )
+
+    return tuple(
+        sorted(
+            checks,
+            key=lambda item: (
+                item.parent_table,
+                item.child_table,
+                item.child_columns,
+            ),
+        )
+    )
+
+
 def _page_freelist_bytes(
     conn: sqlite3.Connection,
 ) -> int:
@@ -393,6 +1249,7 @@ def _execute_with_progress(
     label: str,
     sql: str,
     progress: Callable[[str], None] | None,
+    parameters: tuple[object, ...] = (),
 ) -> int:
     started = time.monotonic()
     next_heartbeat = started + 10.0
@@ -423,7 +1280,10 @@ def _execute_with_progress(
         250_000,
     )
     try:
-        conn.execute(sql)
+        conn.execute(
+            sql,
+            parameters,
+        )
         changed = int(
             conn.execute(
                 "SELECT changes();"
@@ -1018,12 +1878,81 @@ def _build_plan_from_connection(
         conn,
         manifest=manifest,
     )
+    foreign_key_index_checks = (
+        _foreign_key_index_checks(
+            conn
+        )
+    )
+    foreign_key_indexes_ok = all(
+        check.supported
+        for check
+        in foreign_key_index_checks
+    )
+
     (
         candidates,
         deletable,
     ) = _prepare_delete_sets(
         conn,
         progress=progress,
+    )
+
+    _emit_progress(
+        progress,
+        "planner: historical analytical parity started",
+    )
+
+    parity = None
+    parity_error: str | None = None
+
+    try:
+        parity = (
+            compare_hot_connection_to_archive(
+                conn,
+                manifest_path=manifest_path,
+                progress=progress,
+            )
+        )
+    except Exception as exc:
+        parity_error = (
+            f"{type(exc).__name__}:"
+            f"{exc}"
+        )
+
+    _emit_progress(
+        progress,
+        (
+            "planner: historical analytical parity "
+            + (
+                "PASS"
+                if (
+                    parity is not None
+                    and parity.passed
+                )
+                else "FAIL"
+            )
+        ),
+    )
+
+    parity_ok = (
+        parity is not None
+        and parity.passed
+    )
+
+    hot_analysis_sha256 = (
+        parity.hot_canonical_sha256
+        if parity is not None
+        else None
+    )
+    archive_analysis_sha256 = (
+        parity.archive_canonical_sha256
+        if parity is not None
+        else None
+    )
+    parity_mismatches = (
+        parity.mismatched_metrics
+        if parity is not None
+        else ()
     )
 
     table_plans: list[
@@ -1083,6 +2012,33 @@ def _build_plan_from_connection(
         hot_floor is not None
         and manifest.max_run_id < hot_floor
     )
+
+    if not parity_ok:
+        if parity_error is not None:
+            blockers.append(
+                "HISTORICAL_ANALYTICAL_PARITY_ERROR:"
+                + parity_error
+            )
+        else:
+            blockers.append(
+                "HISTORICAL_ANALYTICAL_PARITY_MISMATCH:"
+                + ",".join(
+                    parity_mismatches
+                )
+            )
+
+    if not foreign_key_indexes_ok:
+        for check in foreign_key_index_checks:
+            if check.supported:
+                continue
+            blockers.append(
+                "MISSING_PRUNE_PARENT_FK_INDEX:"
+                f"{check.child_table}:"
+                + ",".join(
+                    check.child_columns
+                )
+                + f"->{check.parent_table}"
+            )
 
     if schema_version != EXPECTED_SCHEMA_VERSION:
         blockers.append(
@@ -1147,6 +2103,22 @@ def _build_plan_from_connection(
         local_archive_fast_verified=
             local_archive_fast_verified,
         run_lineage_verified=lineage_ok,
+        historical_analysis_version=
+            HISTORICAL_ANALYSIS_VERSION,
+        analytical_parity_verified=
+            parity_ok,
+        hot_analysis_sha256=
+            hot_analysis_sha256,
+        archive_analysis_sha256=
+            archive_analysis_sha256,
+        analytical_parity_mismatches=
+            parity_mismatches,
+        analytical_parity_error=
+            parity_error,
+        foreign_key_indexes_verified=
+            foreign_key_indexes_ok,
+        foreign_key_index_checks=
+            foreign_key_index_checks,
         tables=tuple(table_plans),
         total_archived_rows=total_archived,
         total_deletable_rows=
@@ -1166,6 +2138,17 @@ def plan_prune_session(
     verify_remote: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> PruneSessionPlan:
+    if (
+        db_path is None
+        and DEFAULT_MAINTENANCE_STATE_PATH.exists()
+    ):
+        raise RuntimeError(
+            "Production archive-prune planning is refused "
+            "while canonical maintenance is active. "
+            "Exit maintenance before running another "
+            "read-only plan."
+        )
+
     database = resolve_db_path(
         db_path
     )
@@ -1347,10 +2330,173 @@ def _restore_delete_triggers(
     return restored
 
 
+def _delete_temp_id_set_in_batches(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    temp_table: str,
+    progress: Callable[[str], None] | None = None,
+    batch_rows: int = DEFAULT_PRUNE_DELETE_BATCH_ROWS,
+) -> int:
+    if batch_rows < 1:
+        raise ValueError(
+            "batch_rows must be >= 1."
+        )
+
+    quoted_table = _quote_identifier(
+        table_name
+    )
+    quoted_temp = _quote_identifier(
+        temp_table
+    )
+
+    expected = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {quoted_temp};
+            """
+        ).fetchone()[0]
+    )
+
+    total = 0
+    last_id: int | None = None
+    batch_number = 0
+    started = time.monotonic()
+
+    _emit_progress(
+        progress,
+        "prune-delete: "
+        f"{table_name} started "
+        f"rows={expected} "
+        f"batch_rows={batch_rows}",
+    )
+
+    while total < expected:
+        if last_id is None:
+            batch_ids = conn.execute(
+                f"""
+                SELECT id
+                FROM {quoted_temp}
+                ORDER BY id
+                LIMIT ?;
+                """,
+                (batch_rows,),
+            ).fetchall()
+        else:
+            batch_ids = conn.execute(
+                f"""
+                SELECT id
+                FROM {quoted_temp}
+                WHERE id > ?
+                ORDER BY id
+                LIMIT ?;
+                """,
+                (
+                    last_id,
+                    batch_rows,
+                ),
+            ).fetchall()
+
+        if not batch_ids:
+            break
+
+        batch_last_id = int(
+            batch_ids[-1][0]
+        )
+
+        if last_id is None:
+            changed = _execute_with_progress(
+                conn,
+                label=(
+                    "delete "
+                    f"{table_name} "
+                    f"batch {batch_number + 1}"
+                ),
+                sql=f"""
+                    DELETE FROM {quoted_table}
+                    WHERE id IN (
+                        SELECT id
+                        FROM {quoted_temp}
+                        WHERE id <= ?
+                    );
+                """,
+                parameters=(
+                    batch_last_id,
+                ),
+                progress=progress,
+            )
+        else:
+            changed = _execute_with_progress(
+                conn,
+                label=(
+                    "delete "
+                    f"{table_name} "
+                    f"batch {batch_number + 1}"
+                ),
+                sql=f"""
+                    DELETE FROM {quoted_table}
+                    WHERE id IN (
+                        SELECT id
+                        FROM {quoted_temp}
+                        WHERE id > ?
+                          AND id <= ?
+                    );
+                """,
+                parameters=(
+                    last_id,
+                    batch_last_id,
+                ),
+                progress=progress,
+            )
+
+        batch_number += 1
+        total += changed
+        last_id = batch_last_id
+
+        _emit_progress(
+            progress,
+            "prune-delete: "
+            f"{table_name} "
+            f"batch={batch_number} "
+            f"rows={changed} "
+            f"total={total}/{expected} "
+            f"elapsed="
+            f"{time.monotonic() - started:.1f}s",
+        )
+
+        if changed <= 0:
+            raise RuntimeError(
+                "Chunked prune delete made no "
+                f"progress for {table_name}."
+            )
+
+    if total != expected:
+        raise RuntimeError(
+            "Chunked prune delete count "
+            f"mismatch for {table_name}: "
+            f"deleted={total} "
+            f"expected={expected}."
+        )
+
+    _emit_progress(
+        progress,
+        "prune-delete: "
+        f"{table_name} complete "
+        f"rows={total} "
+        f"batches={batch_number} "
+        f"elapsed="
+        f"{time.monotonic() - started:.1f}s",
+    )
+
+    return total
+
+
 def _delete_reference_safe_rows(
     conn: sqlite3.Connection,
     *,
     progress: Callable[[str], None] | None = None,
+    batch_rows: int = DEFAULT_PRUNE_DELETE_BATCH_ROWS,
 ) -> dict[str, int]:
     temp_by_table = {
         "local_surface_residual_v2_observations":
@@ -1367,30 +2513,23 @@ def _delete_reference_safe_rows(
             "_delete_option_quotes",
     }
 
-    deleted: dict[str, int] = {}
-    for table_name in DELETE_ORDER:
-        temp_table = temp_by_table[
-            table_name
-        ]
-        deleted[
-            table_name
-        ] = _execute_with_progress(
-            conn,
-            label=(
-                "delete "
-                + table_name
-            ),
-            sql=f"""
-                DELETE FROM {table_name}
-                WHERE id IN (
-                    SELECT id
-                    FROM {temp_table}
-                );
-            """,
-            progress=progress,
+    return {
+        table_name: (
+            _delete_temp_id_set_in_batches(
+                conn,
+                table_name=table_name,
+                temp_table=(
+                    temp_by_table[
+                        table_name
+                    ]
+                ),
+                progress=progress,
+                batch_rows=batch_rows,
+            )
         )
-
-    return deleted
+        for table_name
+        in DELETE_ORDER
+    }
 
 
 def _foreign_key_violations(
@@ -1424,6 +2563,9 @@ def prune_research_session(
     confirm_session: str,
     progress: Callable[[str], None] | None = None,
 ) -> PruneReceipt:
+    if db_path is None:
+        _require_managed_maintenance_state()
+
     if confirm_session != session_date:
         raise RuntimeError(
             "Destructive prune confirmation does not match "
@@ -1450,10 +2592,26 @@ def prune_research_session(
     receipt_path = prune_receipt_path(
         manifest_path
     )
+
+    if _recover_external_prune_receipt(
+        database=database,
+        session_date=session_date,
+        receipt_path=receipt_path,
+        progress=progress,
+    ):
+        raise FileExistsError(
+            "Session was already durably "
+            "pruned; committed ledger evidence "
+            "exists for "
+            f"{session_date}."
+        )
+
     if receipt_path.exists():
         raise FileExistsError(
-            "A prune receipt already exists for this "
-            f"session: {receipt_path}"
+            "A prune receipt exists without "
+            "matching database-ledger evidence "
+            f"for session {session_date}: "
+            f"{receipt_path}"
         )
 
     # Destructive work is blocked until both independent copies are
@@ -1465,6 +2623,7 @@ def prune_research_session(
     verified_manifest = verify_research_archive(
         manifest_path,
         deep_payload=True,
+        progress=progress,
     )
     _emit_progress(
         progress,
@@ -1498,6 +2657,26 @@ def prune_research_session(
         proof=verified_proof,
     )
 
+    if db_path is None:
+        # Remote verification can take minutes. Revalidate the maintenance
+        # contract immediately before SQLite open, then prove that no
+        # operator/read-only process has re-acquired DB/WAL/SHM handles.
+        _require_managed_maintenance_state()
+        _require_no_database_holders(
+            database
+        )
+
+    manifest_sha256 = (
+        _sha256_file(
+            manifest_path
+        )
+    )
+    proof_sha256 = (
+        _sha256_file(
+            proof_path
+        )
+    )
+
     db_size_before = (
         database.stat().st_size
     )
@@ -1521,6 +2700,28 @@ def prune_research_session(
             )
         )
 
+        production_apply = (
+            db_path is None
+        )
+
+        if production_apply:
+            _checkpoint_clean_wal(
+                conn,
+                database,
+                progress=progress,
+            )
+
+        (
+            logical_database_bytes_before,
+            filesystem_free_bytes_before,
+            prune_required_free,
+        ) = _prune_capacity_preflight(
+            conn,
+            database,
+            enforce=production_apply,
+            progress=progress,
+        )
+
         conn.execute(
             "PRAGMA temp_store = FILE;"
         )
@@ -1534,6 +2735,18 @@ def prune_research_session(
             "prune: write transaction acquired",
         )
         try:
+            if (
+                _prune_ledger_payload(
+                    conn,
+                    session_date,
+                )
+                is not None
+            ):
+                raise FileExistsError(
+                    "Session became durably pruned "
+                    "before this write transaction "
+                    f"acquired the lock: {session_date}."
+                )
             plan = _build_plan_from_connection(
                 conn,
                 database=database,
@@ -1681,14 +2894,121 @@ def prune_research_session(
                         f"for {table_name}."
                     )
 
-            _emit_progress(
-                progress,
-                "prune: all reconciliation checks passed; committing",
+            freelist_after = (
+                _page_freelist_bytes(
+                    conn
+                )
             )
-            conn.execute("COMMIT;")
+
+            receipt = PruneReceipt(
+                format_version=
+                    PRUNE_FORMAT_VERSION,
+                state=
+                    PRUNE_RECEIPT_STATE,
+                committed_at=(
+                    datetime.now(UTC)
+                    .isoformat()
+                    .replace(
+                        "+00:00",
+                        "Z",
+                    )
+                ),
+                session_date=
+                    session_date,
+                run_ids=
+                    manifest.run_ids,
+                archive_manifest_filename=
+                    manifest.manifest_filename,
+                archive_manifest_sha256=
+                    manifest_sha256,
+                remote_proof_filename=
+                    proof_path.name,
+                remote_proof_sha256=
+                    proof_sha256,
+                remote_gate_state=
+                    verified_proof.pruning_gate_state,
+                schema_version=
+                    EXPECTED_SCHEMA_VERSION,
+                trigger_sql_sha256_before=
+                    trigger_before,
+                trigger_sql_sha256_after=
+                    trigger_after,
+                rows_before=
+                    rows_before,
+                rows_deleted=
+                    deleted,
+                rows_preserved=
+                    rows_preserved,
+                freelist_bytes_before=
+                    freelist_before,
+                freelist_bytes_after=
+                    freelist_after,
+                database_size_bytes_before=
+                    db_size_before,
+                database_size_bytes_after=(
+                    database.stat().st_size
+                ),
+                logical_database_bytes_before=(
+                    logical_database_bytes_before
+                ),
+                filesystem_free_bytes_before=(
+                    filesystem_free_bytes_before
+                ),
+                prune_required_free_bytes=(
+                    prune_required_free
+                ),
+                wal_checkpoint_state=(
+                    "PASS"
+                    if production_apply
+                    else "TEST_PATH_NOT_ENFORCED"
+                ),
+                foreign_key_check=
+                    "ok",
+                historical_analysis_version=(
+                    plan.historical_analysis_version
+                ),
+                analytical_parity_verified=(
+                    plan.analytical_parity_verified
+                ),
+                hot_analysis_sha256=(
+                    plan.hot_analysis_sha256
+                    or ""
+                ),
+                archive_analysis_sha256=(
+                    plan.archive_analysis_sha256
+                    or ""
+                ),
+            )
+
+            ledger_sha256 = (
+                _insert_prune_commit_ledger(
+                    conn,
+                    receipt,
+                )
+            )
+
             _emit_progress(
                 progress,
-                "prune: transaction committed",
+                "prune: transactional commit "
+                "ledger staged "
+                f"sha256={ledger_sha256}",
+            )
+
+            _emit_progress(
+                progress,
+                "prune: all reconciliation "
+                "checks and ledger staging "
+                "passed; committing",
+            )
+
+            conn.execute(
+                "COMMIT;"
+            )
+
+            _emit_progress(
+                progress,
+                "prune: transaction committed; "
+                "commit ledger durable",
             )
 
         except BaseException:
@@ -1699,67 +3019,28 @@ def prune_research_session(
                 conn.rollback()
             raise
 
-        freelist_after = (
-            _page_freelist_bytes(
-                conn
-            )
-        )
-
     finally:
         conn.close()
 
-    receipt = PruneReceipt(
-        format_version=
-            PRUNE_FORMAT_VERSION,
-        state=PRUNE_RECEIPT_STATE,
-        committed_at=(
-            datetime.now(UTC)
-            .isoformat()
-            .replace("+00:00", "Z")
-        ),
-        session_date=session_date,
-        run_ids=manifest.run_ids,
-        archive_manifest_filename=
-            manifest.manifest_filename,
-        archive_manifest_sha256=
-            _sha256_file(
-                manifest_path
-            ),
-        remote_proof_filename=
-            proof_path.name,
-        remote_proof_sha256=
-            _sha256_file(
-                proof_path
-            ),
-        remote_gate_state=
-            verified_proof.pruning_gate_state,
-        schema_version=
-            EXPECTED_SCHEMA_VERSION,
-        trigger_sql_sha256_before=
-            trigger_before,
-        trigger_sql_sha256_after=
-            trigger_after,
-        rows_before=rows_before,
-        rows_deleted=deleted,
-        rows_preserved=
-            rows_preserved,
-        freelist_bytes_before=
-            freelist_before,
-        freelist_bytes_after=
-            freelist_after,
-        database_size_bytes_before=
-            db_size_before,
-        database_size_bytes_after=
-            database.stat().st_size,
-        foreign_key_check="ok",
-    )
+    try:
+        _write_json_atomic(
+            receipt_path,
+            receipt.as_dict(),
+        )
+    except Exception:
+        _emit_progress(
+            progress,
+            "prune: DATABASE COMMIT DURABLE; "
+            "external receipt write failed. "
+            "A retry will recover the receipt "
+            "from the committed database ledger.",
+        )
+        raise
 
-    _write_json_atomic(
-        receipt_path,
-        receipt.as_dict(),
-    )
     _emit_progress(
         progress,
-        f"prune: receipt written {receipt_path}",
+        "prune: external receipt written "
+        f"{receipt_path}",
     )
+
     return receipt

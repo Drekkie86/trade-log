@@ -154,3 +154,254 @@ def test_maintenance_state_acquisition_is_atomic():
         "maintenance state was claimed concurrently"
         in script
     )
+
+
+def test_maintenance_rehearsal_uses_canonical_enter_exit_and_recovery():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "rehearse_maintenance()"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_START"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_QUIESCE_PASS"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+        in script
+    )
+
+    rehearsal = script[
+        script.index(
+            "rehearse_maintenance()"
+        ):
+        script.index(
+            "show_status()"
+        )
+    ]
+
+    assert "enter_maintenance" in rehearsal
+    assert "exit_maintenance" in rehearsal
+    assert (
+        "rehearsal_restore_on_failure"
+        in rehearsal
+    )
+    assert (
+        "trap rehearsal_restore_on_failure ERR INT TERM HUP"
+        in rehearsal
+    )
+
+
+def test_maintenance_rehearsal_checks_theta_and_all_quiesced_classes():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    rehearsal = script[
+        script.index(
+            "rehearse_maintenance()"
+        ):
+        script.index(
+            "show_status()"
+        )
+    ]
+
+    assert (
+        'for unit in "${DB_CONSUMER_SERVICES[@]}"; do'
+        in rehearsal
+    )
+    assert (
+        '"${QUIESCE_TIMER_UNITS[@]}" "${QUIESCE_ONESHOT_SERVICES[@]}"'
+        in rehearsal
+    )
+    assert (
+        'unit_is_active "${SECURE_EDGE_SERVICE}"'
+        in rehearsal
+    )
+    assert (
+        "christiania-theta.service"
+        in rehearsal
+    )
+
+
+
+def test_maintenance_entry_proves_zero_database_holders():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "assert_no_database_holders()"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_DB_HOLDERS=0"
+        in script
+    )
+    assert (
+        "fuser"
+        in script
+    )
+    assert (
+        "lsof"
+        in script
+    )
+
+    enter = script[
+        script.index(
+            "enter_maintenance()"
+        ):
+        script.index(
+            "exit_maintenance()"
+        )
+    ]
+
+    assert (
+        "assert_no_database_holders"
+        in enter
+    )
+
+    assert (
+        enter.index(
+            "assert_no_database_holders"
+        )
+        > enter.index(
+            'systemctl stop "${unit}"'
+        )
+    )
+
+    assert (
+        "neither fuser nor lsof "
+        "is installed"
+        in script
+    )
+
+
+def test_maintenance_refuses_to_interrupt_active_oneshots():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "assert_optional_unit_inactive()"
+        in script
+    )
+    assert (
+        "maintenance refuses to interrupt active one-shot unit"
+        in script
+    )
+
+    enter = script[
+        script.index(
+            "enter_maintenance()"
+        ):
+        script.index(
+            "exit_maintenance()"
+        )
+    ]
+
+    assert (
+        'for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+        in enter
+    )
+    assert (
+        'assert_optional_unit_inactive "${unit}"'
+        in enter
+    )
+
+    one_shot_loop = enter[
+        enter.index(
+            'for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+        ):
+        enter.index(
+            "# Stop the edge explicitly"
+        )
+    ]
+
+    assert (
+        'stop_optional_unit "${unit}"'
+        not in one_shot_loop
+    )
+
+
+def test_maintenance_holder_probe_distinguishes_errors_from_no_matches():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "probe_holders_with()"
+        in script
+    )
+    assert (
+        "Holder probe "
+        in script
+    )
+    assert (
+        "probes failed"
+        in script
+    )
+
+    holder_check = script[
+        script.index(
+            "assert_no_database_holders()"
+        ):
+        script.index(
+            "record_state()"
+        )
+    ]
+
+    assert (
+        "probe_holders_with"
+        in holder_check
+    )
+    assert (
+        "cannot prove database quiescence"
+        in holder_check
+    )
+
+
+def test_maintenance_unit_inspection_is_fail_closed():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "unit_load_state()"
+        in script
+    )
+    assert (
+        "cannot inspect systemd LoadState"
+        in script
+    )
+
+    for function_name in (
+        "stop_optional_unit()",
+        "assert_optional_unit_inactive()",
+    ):
+        start = script.index(
+            function_name
+        )
+
+        next_function = script.find(
+            "\n}\n\n",
+            start,
+        )
+
+        function_body = script[
+            start:
+            next_function
+            + 3
+        ]
+
+        assert (
+            "unit_load_state"
+            in function_body
+        )

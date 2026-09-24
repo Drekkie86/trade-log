@@ -4,6 +4,8 @@ set -euo pipefail
 STATE_DIR="/run/christiania"
 STATE_FILE="${STATE_DIR}/maintenance.state"
 SECURE_EDGE_SERVICE="christiania-oauth2-proxy.service"
+DEFAULT_DB_PATH="/var/lib/christiania/data/trade_log.db"
+RUNTIME_ENV_FILE="/etc/christiania/christiania.env"
 
 QUIESCE_TIMER_UNITS=(
   "christiania-audit.timer"
@@ -52,12 +54,26 @@ unit_is_active() {
   systemctl is-active --quiet "$1"
 }
 
+unit_load_state() {
+  local unit="$1"
+  local value
+
+  if ! value="$(
+    systemctl show       --property=LoadState       --value       "${unit}"       2>&1
+  )"; then
+    fail "cannot inspect systemd LoadState for ${unit}: ${value:-unknown error}"
+  fi
+
+  printf '%s\n' "${value}"
+}
+
+
 stop_optional_unit() {
   local unit="$1"
   local load_state
 
   load_state="$(
-    systemctl show       --property=LoadState       --value       "${unit}"       2>/dev/null       || true
+    unit_load_state "${unit}"
   )"
 
   if [[ -z "${load_state}" || "${load_state}" == "not-found" ]]; then
@@ -70,6 +86,124 @@ stop_optional_unit() {
   if unit_is_active "${unit}"; then
     fail "${unit} remained active after maintenance quiescence"
   fi
+}
+
+assert_optional_unit_inactive() {
+  local unit="$1"
+  local load_state
+
+  load_state="$(
+    unit_load_state "${unit}"
+  )"
+
+  if [[ -z "${load_state}" || "${load_state}" == "not-found" ]]; then
+    return 0
+  fi
+
+  if unit_is_active "${unit}"; then
+    fail "maintenance refuses to interrupt active one-shot unit ${unit}"
+  fi
+}
+
+
+resolve_database_path() {
+  local resolved="${DEFAULT_DB_PATH}"
+
+  if [[ -r "${RUNTIME_ENV_FILE}" ]]; then
+    resolved="$(
+      set -a
+      # shellcheck disable=SC1090
+      source "${RUNTIME_ENV_FILE}"
+      printf '%s' "${CHRISTIANIA_DB_PATH:-${DEFAULT_DB_PATH}}"
+    )"
+  fi
+
+  printf '%s\n' "${resolved}"
+}
+
+probe_holders_with() {
+  local tool="$1"
+  shift
+
+  local error_file
+  local output
+  local rc
+  local diagnostic
+
+  error_file="$(mktemp "${STATE_DIR}/holder-probe.XXXXXX")"
+
+  if output="$("${tool}" "$@" 2>"${error_file}")"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  diagnostic="$(
+    cat "${error_file}"
+  )"
+  rm -f "${error_file}"
+
+  if [[ "${rc}" -eq 0 ]]; then
+    printf '%s' "${output}"
+    return 0
+  fi
+
+  if [[ "${rc}" -eq 1 && -z "${diagnostic}" ]]; then
+    return 0
+  fi
+
+  echo "Holder probe ${tool} failed rc=${rc}: ${diagnostic:-${output:-unknown error}}" >&2
+  return 2
+}
+
+
+assert_no_database_holders() {
+  local db_path
+  local holders
+  local candidate
+  local paths=()
+
+  db_path="$(resolve_database_path)"
+
+  for candidate in "${db_path}" "${db_path}-wal" "${db_path}-shm"; do
+    if [[ -e "${candidate}" ]]; then
+      paths+=("${candidate}")
+    fi
+  done
+
+  if [[ "${#paths[@]}" -eq 0 ]]; then
+    fail "Christiania database path does not exist: ${db_path}"
+  fi
+
+  if command -v fuser >/dev/null 2>&1; then
+    if holders="$(probe_holders_with fuser "${paths[@]}")"; then
+      :
+    elif command -v lsof >/dev/null 2>&1; then
+      if ! holders="$(probe_holders_with lsof -t -- "${paths[@]}")"; then
+        fail "cannot prove database quiescence: fuser and lsof probes failed"
+      fi
+    else
+      fail "cannot prove database quiescence: fuser probe failed and lsof is unavailable"
+    fi
+  elif command -v lsof >/dev/null 2>&1; then
+    if ! holders="$(probe_holders_with lsof -t -- "${paths[@]}")"; then
+      fail "cannot prove database quiescence: lsof probe failed"
+    fi
+  else
+    fail "cannot prove database quiescence: neither fuser nor lsof is installed"
+  fi
+
+  holders="$(printf '%s' "${holders}" | xargs)"
+
+  if [[ -n "${holders}" ]]; then
+    echo "Database holders detected for ${db_path}: ${holders}" >&2
+    if command -v ps >/dev/null 2>&1; then
+      ps -fp ${holders} >&2 || true
+    fi
+    fail "database/WAL/SHM holders remain after maintenance quiescence"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_DB_HOLDERS=0"
 }
 
 record_state() {
@@ -185,7 +319,7 @@ enter_maintenance() {
   done
 
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    stop_optional_unit "${unit}"
+    assert_optional_unit_inactive "${unit}"
   done
 
   # Stop the edge explicitly before the app. Stopping the app also propagates
@@ -203,6 +337,8 @@ enter_maintenance() {
       fail "${unit} remained active after quiescence"
     fi
   done
+
+  assert_no_database_holders
 
   if ! unit_is_active christiania-theta.service; then
     fail "christiania-theta.service must remain active during database maintenance"
@@ -234,6 +370,70 @@ exit_maintenance() {
   fi
 }
 
+rehearse_maintenance() {
+  require_root
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "cannot rehearse while maintenance state already exists at ${STATE_FILE}"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_START"
+
+  # enter_maintenance owns its own recovery trap until it returns
+  # successfully. Only then do we install the rehearsal recovery trap.
+  enter_maintenance
+
+  rehearsal_restore_on_failure() {
+    local rc=$?
+    trap - ERR INT TERM HUP
+
+    echo "Maintenance rehearsal failed; restoring recorded runtime." >&2
+
+    if [[ -f "${STATE_FILE}" ]]; then
+      if ! exit_maintenance; then
+        echo "Maintenance rehearsal restore failed; state retained at ${STATE_FILE}." >&2
+        exit 1
+      fi
+    fi
+
+    exit "${rc}"
+  }
+
+  trap rehearsal_restore_on_failure ERR INT TERM HUP
+
+  for unit in "${DB_CONSUMER_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "rehearsal expected ${unit} to be inactive"
+    fi
+  done
+
+  if unit_is_active "${SECURE_EDGE_SERVICE}"; then
+    fail "rehearsal expected ${SECURE_EDGE_SERVICE} to be inactive"
+  fi
+
+  for unit in "${QUIESCE_TIMER_UNITS[@]}" "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "rehearsal expected ${unit} to be inactive"
+    fi
+  done
+
+  if ! unit_is_active christiania-theta.service; then
+    fail "rehearsal requires christiania-theta.service to remain active"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_QUIESCE_PASS"
+
+  exit_maintenance
+
+  trap - ERR INT TERM HUP
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "rehearsal completed but maintenance state was not cleared"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+}
+
 show_status() {
   require_root
 
@@ -260,8 +460,11 @@ case "${1:-}" in
   status)
     show_status
     ;;
+  rehearse)
+    rehearse_maintenance
+    ;;
   *)
-    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status}" >&2
+    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status|rehearse}" >&2
     exit 2
     ;;
 esac

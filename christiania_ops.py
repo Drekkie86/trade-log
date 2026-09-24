@@ -12,6 +12,11 @@ from src.operations.archive_pruning import (
     plan_prune_session,
     prune_research_session,
 )
+from src.operations.historical_research import (
+    analyze_archived_session,
+    analyze_hot_session,
+    compare_hot_archive_session,
+)
 from src.operations.backup_recovery import (
     inventory_backups,
     resolve_latest_valid_backup,
@@ -130,6 +135,38 @@ def main() -> int:
     archive_read = sub.add_parser("archive-read-run")
     archive_read.add_argument("--run-id", type=int, required=True)
     archive_read.add_argument("--json", action="store_true")
+
+    archive_analyze = sub.add_parser(
+        "archive-analyze-session"
+    )
+    archive_analyze.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_analyze.add_argument(
+        "--source",
+        choices=(
+            "archive",
+            "hot",
+        ),
+        default="archive",
+    )
+    archive_analyze.add_argument(
+        "--json",
+        action="store_true",
+    )
+
+    archive_compare = sub.add_parser(
+        "archive-compare-session"
+    )
+    archive_compare.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_compare.add_argument(
+        "--json",
+        action="store_true",
+    )
 
     archive_verify = sub.add_parser("archive-verify")
     archive_verify.add_argument("--manifest", required=True)
@@ -420,6 +457,128 @@ def main() -> int:
                 )
         return 0
 
+    if args.command == "archive-analyze-session":
+        def historical_progress(message: str) -> None:
+            print(
+                f"[historical] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = (
+            analyze_archived_session(
+                args.session_date,
+                progress=historical_progress,
+            )
+            if args.source
+            == "archive"
+            else analyze_hot_session(
+                args.session_date,
+                progress=historical_progress,
+            )
+        )
+
+        if args.json:
+            _print_json(
+                result.as_dict()
+            )
+        else:
+            print(
+                "Historical Analysis V1"
+            )
+            print(
+                f"Session: {result.session_date}"
+            )
+            print(
+                f"Source: {result.source}"
+            )
+            print(
+                "Source schema: "
+                f"v{result.source_schema_version}"
+            )
+            print(
+                "Canonical SHA-256: "
+                f"{result.canonical_sha256}"
+            )
+
+            for metric in result.metrics:
+                print(
+                    f"{metric.name}: "
+                    f"rows={len(metric.rows)} "
+                    f"sha256={metric.sha256}"
+                )
+
+        return 0
+
+    if args.command == "archive-compare-session":
+        def parity_progress(message: str) -> None:
+            print(
+                f"[historical-parity] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = (
+            compare_hot_archive_session(
+                args.session_date,
+                progress=parity_progress,
+            )
+        )
+
+        if args.json:
+            _print_json(
+                result.as_dict()
+            )
+        else:
+            print(
+                "Historical hot/cold parity "
+                + (
+                    "PASSED"
+                    if result.passed
+                    else "FAILED"
+                )
+            )
+            print(
+                f"Session: {result.session_date}"
+            )
+            print(
+                "Hot schema: "
+                f"v{result.hot_schema_version}"
+            )
+            print(
+                "Archive source schema: "
+                f"v{result.archive_source_schema_version}"
+            )
+            print(
+                "Hot SHA-256: "
+                f"{result.hot_canonical_sha256}"
+            )
+            print(
+                "Archive SHA-256: "
+                f"{result.archive_canonical_sha256}"
+            )
+
+            for (
+                metric_name,
+                matched,
+            ) in (
+                result.metric_matches.items()
+            ):
+                print(
+                    f"{metric_name}: "
+                    + (
+                        "MATCH"
+                        if matched
+                        else "MISMATCH"
+                    )
+                )
+
+        return (
+            0
+            if result.passed
+            else 2
+        )
+
     if args.command == "archive-verify":
         manifest = verify_research_archive(
             args.manifest,
@@ -539,6 +698,30 @@ def main() -> int:
             print(
                 f"Remote gate: {plan.remote_gate_state}"
             )
+            print(
+                "FK parent-delete indexes: "
+                + (
+                    "PASS"
+                    if plan.foreign_key_indexes_verified
+                    else "FAIL"
+                )
+            )
+            print(
+                "Historical analytical parity: "
+                + (
+                    "PASS"
+                    if plan.analytical_parity_verified
+                    else "FAIL"
+                )
+            )
+            print(
+                "Hot analysis SHA-256: "
+                f"{plan.hot_analysis_sha256 or 'UNAVAILABLE'}"
+            )
+            print(
+                "Archive analysis SHA-256: "
+                f"{plan.archive_analysis_sha256 or 'UNAVAILABLE'}"
+            )
             for item in plan.tables:
                 print(
                     f"{item.table_name}: "
@@ -573,6 +756,22 @@ def main() -> int:
             print(f"Session: {receipt.session_date}")
             print(
                 f"Remote gate: {receipt.remote_gate_state}"
+            )
+            print(
+                "Historical analytical parity: "
+                + (
+                    "PASS"
+                    if receipt.analytical_parity_verified
+                    else "FAIL"
+                )
+            )
+            print(
+                "Hot analysis SHA-256: "
+                f"{receipt.hot_analysis_sha256}"
+            )
+            print(
+                "Archive analysis SHA-256: "
+                f"{receipt.archive_analysis_sha256}"
             )
             for table_name, count in receipt.rows_deleted.items():
                 print(

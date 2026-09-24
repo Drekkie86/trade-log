@@ -516,7 +516,7 @@ def test_prune_apply_revalidates_archive_restores_triggers_and_fk(
     )
 
     assert any(
-        "delete option_quotes complete"
+        "prune-delete: option_quotes complete"
         in message
         for message in progress
     )
@@ -761,5 +761,481 @@ def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
 
             assert row is not None
             assert row[0] == table_name
+    finally:
+        conn.close()
+
+
+def test_prune_plan_blocks_when_parent_fk_support_index_is_missing(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        conn.execute(
+            """
+            DROP INDEX
+            idx_hypothesis_scanner_evaluations_reference_contract;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert (
+        plan.analytical_parity_verified
+        is True
+    )
+    assert (
+        plan.foreign_key_indexes_verified
+        is False
+    )
+    assert (
+        plan.apply_eligible
+        is False
+    )
+
+    assert any(
+        blocker.startswith(
+            "MISSING_PRUNE_PARENT_FK_INDEX:"
+            "hypothesis_scanner_evaluations:"
+            "reference_contract_id"
+        )
+        for blocker
+        in plan.blockers
+    )
+
+
+def test_prune_plan_blocks_when_hot_analysis_drifted_from_archive(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    run_id = int(
+        manifest.run_ids[0]
+    )
+
+    create_market_snapshot(
+        {
+            "captured_at":
+                "2026-09-01T14:01:00Z",
+            "underlying":
+                "TEST",
+            "provider":
+                "MASSIVE",
+            "provider_snapshot_id":
+                "post-archive-drift",
+            "research_run_id":
+                run_id,
+            "us_session_date":
+                manifest.session_date,
+            "us_session_state":
+                "INTRADAY",
+            "underlying_price":
+                100.0,
+            "underlying_source":
+                "FETCHED",
+            "underlying_at":
+                "2026-09-01T14:01:00Z",
+            "fx_to_eur":
+                None,
+            "fx_source":
+                "UNKNOWN",
+            "fx_at":
+                None,
+            "notes":
+                "synthetic hot/archive drift",
+        },
+        [
+            _quote(
+                "TEST-C-110",
+                110.0,
+            ),
+        ],
+        db_path=db_path,
+    )
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert (
+        plan.foreign_key_indexes_verified
+        is True
+    )
+    assert (
+        plan.analytical_parity_verified
+        is False
+    )
+    assert (
+        "quote_universe_quality"
+        in plan.analytical_parity_mismatches
+    )
+    assert (
+        plan.apply_eligible
+        is False
+    )
+
+    assert any(
+        blocker.startswith(
+            "HISTORICAL_ANALYTICAL_PARITY_MISMATCH:"
+        )
+        for blocker
+        in plan.blockers
+    )
+
+
+
+def test_prune_commit_is_recoverable_when_external_receipt_write_fails(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        manifest_path,
+        proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    proof = load_remote_archive_proof(
+        proof_path
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning.verify_remote_archive_proof",
+        lambda path, **kwargs: proof,
+    )
+
+    import src.operations.archive_pruning as pruning
+
+    original_writer = (
+        pruning._write_json_atomic
+    )
+
+    receipt_path = (
+        archive_dir
+        / manifest_path.name.replace(
+            ".manifest.json",
+            ".prune-receipt.json",
+        )
+    )
+
+    def fail_receipt_write(
+        path,
+        payload,
+    ):
+        if Path(path) == receipt_path:
+            raise OSError(
+                "synthetic external receipt failure"
+            )
+
+        return original_writer(
+            path,
+            payload,
+        )
+
+    monkeypatch.setattr(
+        pruning,
+        "_write_json_atomic",
+        fail_receipt_write,
+    )
+
+    progress: list[str] = []
+
+    with pytest.raises(
+        OSError,
+        match=(
+            "synthetic external receipt failure"
+        ),
+    ):
+        prune_research_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+            confirm_session=(
+                manifest.session_date
+            ),
+            progress=progress.append,
+        )
+
+    assert receipt_path.exists() is False
+
+    assert any(
+        "DATABASE COMMIT DURABLE"
+        in message
+        for message in progress
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        ledger = conn.execute(
+            """
+            SELECT
+                receipt_json,
+                receipt_sha256
+            FROM research_archive_prune_commits_v1
+            WHERE session_date = ?;
+            """,
+            (
+                manifest.session_date,
+            ),
+        ).fetchone()
+
+        assert ledger is not None
+
+        ledger_payload = json.loads(
+            str(
+                ledger[0]
+            )
+        )
+
+        canonical = json.dumps(
+            ledger_payload,
+            sort_keys=True,
+            separators=(
+                ",",
+                ":",
+            ),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode(
+            "utf-8"
+        )
+
+        assert (
+            hashlib.sha256(
+                canonical
+            ).hexdigest()
+            == str(
+                ledger[1]
+            )
+        )
+
+        remaining = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+
+        assert remaining == 1
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(
+        pruning,
+        "_write_json_atomic",
+        original_writer,
+    )
+
+    recovery_progress: list[str] = []
+
+    with pytest.raises(
+        FileExistsError,
+        match="already durably pruned",
+    ):
+        prune_research_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+            confirm_session=(
+                manifest.session_date
+            ),
+            progress=(
+                recovery_progress.append
+            ),
+        )
+
+    assert receipt_path.is_file()
+
+    recovered = json.loads(
+        receipt_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert recovered == ledger_payload
+
+    assert any(
+        "recovered missing external receipt"
+        in message
+        for message
+        in recovery_progress
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        ledger_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM research_archive_prune_commits_v1
+                WHERE session_date = ?;
+                """,
+                (
+                    manifest.session_date,
+                ),
+            ).fetchone()[0]
+        )
+
+        remaining_after_retry = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+
+        assert ledger_count == 1
+        assert remaining_after_retry == 1
+    finally:
+        conn.close()
+
+
+def test_prune_rechecks_commit_ledger_after_write_lock(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    proof = load_remote_archive_proof(
+        proof_path
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning.verify_remote_archive_proof",
+        lambda path, **kwargs: proof,
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning._recover_external_prune_receipt",
+        lambda **kwargs: False,
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning._prune_ledger_payload",
+        lambda conn, session_date: {
+            "session_date":
+                session_date,
+            "state":
+                "REFERENCE_AWARE_HOT_PRUNE_COMMITTED",
+        },
+    )
+
+    with pytest.raises(
+        FileExistsError,
+        match="became durably pruned",
+    ):
+        prune_research_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+            confirm_session=(
+                manifest.session_date
+            ),
+        )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        remaining = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+
+        assert remaining == 2
     finally:
         conn.close()

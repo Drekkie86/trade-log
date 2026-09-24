@@ -237,3 +237,147 @@ def test_keyboard_interrupt_during_migration_restores_v27(
     finally:
         conn.close()
     assert probe is None
+
+
+def test_release_migration_refuses_rollback_copy_without_capacity(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+    pointer = (
+        tmp_path
+        / "rollback-pointer.txt"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    monkeypatch.setattr(
+        release_db,
+        "assert_backup_capacity",
+        lambda **kwargs: (
+            (_ for _ in ()).throw(
+                RuntimeError(
+                    "synthetic insufficient capacity"
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic insufficient capacity",
+    ):
+        prepare_release_database(
+            migrations_dir=MIGRATIONS,
+            rollback_pointer=pointer,
+        )
+
+    assert pointer.exists() is False
+
+    health = inspect_database(
+        db
+    )
+
+    assert health.schema_version == 27
+    assert health.quick_check == "ok"
+    assert (
+        health.foreign_key_violation_count
+        == 0
+    )
+
+
+def test_release_rollback_capacity_is_proven_before_copy(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    events: list[str] = []
+
+    def capacity(**kwargs):
+        assert (
+            kwargs["source"]
+            == db
+        )
+        assert (
+            kwargs["target_dir"]
+            == backups
+        )
+        events.append(
+            "capacity"
+        )
+
+    original_connect = sqlite3.connect
+
+    def tracked_connect(
+        database,
+        *args,
+        **kwargs,
+    ):
+        if (
+            str(database)
+            .endswith(
+                ".tmp.db"
+            )
+        ):
+            assert events == [
+                "capacity"
+            ]
+            events.append(
+                "copy"
+            )
+
+        return original_connect(
+            database,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        release_db,
+        "assert_backup_capacity",
+        capacity,
+    )
+    monkeypatch.setattr(
+        release_db.sqlite3,
+        "connect",
+        tracked_connect,
+    )
+
+    result = prepare_release_database(
+        migrations_dir=MIGRATIONS,
+    )
+
+    assert result.migrated is True
+    assert events[:2] == [
+        "capacity",
+        "copy",
+    ]
