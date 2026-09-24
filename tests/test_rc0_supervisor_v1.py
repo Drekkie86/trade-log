@@ -1490,3 +1490,171 @@ def test_lightweight_runtime_health_uses_bounded_probes(
         ]
         is True
     )
+
+
+def test_enabled_public_edge_failure_is_operationally_blocking(
+    monkeypatch,
+):
+    _prepare_collect_snapshot(
+        monkeypatch
+    )
+
+    def service_state(
+        unit: str,
+    ) -> str:
+        if (
+            unit
+            == rc0_supervisor.SECURE_EDGE_SERVICE
+        ):
+            return "inactive"
+
+        return "active"
+
+    snapshot = (
+        rc0_supervisor.collect_snapshot(
+            now=datetime(
+                2026,
+                9,
+                6,
+                12,
+                tzinfo=UTC,
+            ),
+            service_state=service_state,
+            timer_state=_expected_timer_state,
+            service_properties=_healthy_properties,
+            disk_usage=lambda path: (
+                SimpleNamespace(
+                    total=100 * 1024**3,
+                    free=50 * 1024**3,
+                )
+            ),
+        )
+    )
+
+    check = next(
+        check
+        for check in snapshot.checks
+        if check.name
+        == "public-edge-services"
+    )
+
+    assert check.state == "FAIL"
+    assert snapshot.state == "UNHEALTHY"
+
+
+def test_disabled_public_edge_is_informational(
+    monkeypatch,
+):
+    _prepare_collect_snapshot(
+        monkeypatch
+    )
+
+    def enabled_state(
+        unit: str,
+    ) -> str:
+        if (
+            unit
+            == rc0_supervisor.SECURE_EDGE_SERVICE
+        ):
+            return "disabled"
+
+        return _expected_timer_state(
+            unit
+        )
+
+    snapshot = (
+        rc0_supervisor.collect_snapshot(
+            now=datetime(
+                2026,
+                9,
+                6,
+                12,
+                tzinfo=UTC,
+            ),
+            service_state=lambda unit: (
+                "inactive"
+                if unit
+                == rc0_supervisor.SECURE_EDGE_SERVICE
+                else "active"
+            ),
+            timer_state=enabled_state,
+            service_properties=_healthy_properties,
+            disk_usage=lambda path: (
+                SimpleNamespace(
+                    total=100 * 1024**3,
+                    free=50 * 1024**3,
+                )
+            ),
+        )
+    )
+
+    check = next(
+        check
+        for check in snapshot.checks
+        if check.name
+        == "public-edge-services"
+    )
+
+    assert check.state == "INFO"
+    assert check.blocking is False
+    assert snapshot.state == "HEALTHY"
+
+
+def test_active_public_edge_is_monitored_even_if_disabled(
+    monkeypatch,
+):
+    _prepare_collect_snapshot(
+        monkeypatch
+    )
+
+    def enabled_state(
+        unit: str,
+    ) -> str:
+        if (
+            unit
+            == rc0_supervisor.SECURE_EDGE_SERVICE
+        ):
+            return "disabled"
+
+        return _expected_timer_state(
+            unit
+        )
+
+    def service_state(
+        unit: str,
+    ) -> str:
+        if unit == "caddy.service":
+            return "inactive"
+
+        return "active"
+
+    snapshot = (
+        rc0_supervisor.collect_snapshot(
+            now=datetime(
+                2026,
+                9,
+                6,
+                12,
+                tzinfo=UTC,
+            ),
+            service_state=service_state,
+            timer_state=enabled_state,
+            service_properties=_healthy_properties,
+            disk_usage=lambda path: (
+                SimpleNamespace(
+                    total=100 * 1024**3,
+                    free=50 * 1024**3,
+                )
+            ),
+        )
+    )
+
+    check = next(
+        check
+        for check in snapshot.checks
+        if check.name
+        == "public-edge-services"
+    )
+
+    assert check.state == "FAIL"
+    assert snapshot.state == "UNHEALTHY"
