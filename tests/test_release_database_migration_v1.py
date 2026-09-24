@@ -552,6 +552,11 @@ def test_release_database_preflight_surfaces_migration_capacity(
         "backup_required_free_bytes",
         lambda **kwargs: 500,
     )
+    monkeypatch.setattr(
+        release_db,
+        "_migration_storage_headroom_bytes",
+        lambda *args, **kwargs: 200,
+    )
 
     result = (
         preflight_release_database()
@@ -573,8 +578,16 @@ def test_release_database_preflight_surfaces_migration_capacity(
         == 900
     )
     assert (
-        result.required_free_bytes
+        result.backup_and_reserve_bytes
         == 500
+    )
+    assert (
+        result.migration_storage_headroom_bytes
+        == 200
+    )
+    assert (
+        result.required_free_bytes
+        == 700
     )
     assert (
         result.capacity_state
@@ -625,6 +638,11 @@ def test_release_database_preflight_fails_capacity_without_mutating_database(
         "backup_required_free_bytes",
         lambda **kwargs: 500,
     )
+    monkeypatch.setattr(
+        release_db,
+        "_migration_storage_headroom_bytes",
+        lambda *args, **kwargs: 200,
+    )
 
     result = (
         preflight_release_database()
@@ -640,8 +658,16 @@ def test_release_database_preflight_fails_capacity_without_mutating_database(
         == 400
     )
     assert (
-        result.required_free_bytes
+        result.backup_and_reserve_bytes
         == 500
+    )
+    assert (
+        result.migration_storage_headroom_bytes
+        == 200
+    )
+    assert (
+        result.required_free_bytes
+        == 700
     )
 
     assert (
@@ -656,3 +682,136 @@ def test_release_database_preflight_fails_capacity_without_mutating_database(
             "christiania_release_rollback_*"
         )
     ) == []
+
+
+
+def test_v34_migration_headroom_uses_reviewed_same_table_index_proxies(
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+
+    conn = sqlite3.connect(
+        db
+    )
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                name,
+                SUM(pgsize)
+            FROM dbstat
+            WHERE name IN (
+                'idx_shadow_candidates_run',
+                'uq_hypothesis_scanner_evaluation_quote',
+                'idx_surface_v2_quote'
+            )
+            GROUP BY name;
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    sizes = {
+        str(name): int(
+            value
+        )
+        for name, value
+        in rows
+    }
+
+    assert set(
+        sizes
+    ) == {
+        "idx_shadow_candidates_run",
+        "uq_hypothesis_scanner_evaluation_quote",
+        "idx_surface_v2_quote",
+    }
+
+    final_index_upper_bound = (
+        sizes[
+            "idx_shadow_candidates_run"
+        ]
+        * 3
+        + sizes[
+            "uq_hypothesis_scanner_evaluation_quote"
+        ]
+        * 2
+        + sizes[
+            "idx_surface_v2_quote"
+        ]
+    )
+
+    observed = (
+        release_db._migration_storage_headroom_bytes(
+            db,
+            schema_before=27,
+            schema_target=34,
+        )
+    )
+
+    assert (
+        observed
+        == final_index_upper_bound
+        * 2
+    )
+
+
+def test_v34_migration_headroom_fails_closed_without_dbstat_proxy(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+
+    original = (
+        release_db._sqlite_object_bytes
+    )
+
+    def missing_proxy(
+        database,
+        names,
+    ):
+        values = original(
+            database,
+            names,
+        )
+        values.pop(
+            "idx_surface_v2_quote"
+        )
+        missing = [
+            name
+            for name
+            in names
+            if values.get(
+                name,
+                0,
+            )
+            <= 0
+        ]
+        if missing:
+            raise RuntimeError(
+                "synthetic missing proxy: "
+                + ",".join(
+                    missing
+                )
+            )
+        return values
+
+    monkeypatch.setattr(
+        release_db,
+        "_sqlite_object_bytes",
+        missing_proxy,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic missing proxy",
+    ):
+        release_db._migration_storage_headroom_bytes(
+            db,
+            schema_before=27,
+            schema_target=34,
+        )
