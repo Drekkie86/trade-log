@@ -517,17 +517,51 @@ def _prepare_delete_sets(
             f"DELETE FROM {name};"
         )
 
+    candidates: dict[str, int] = {}
+
+    candidates[
+        "listing_reference_contracts"
+    ] = _execute_with_progress(
+        conn,
+        label="scope listing_reference_contracts",
+        sql="""
+            INSERT INTO _scope_listing_refs(id)
+            SELECT lrc.id
+            FROM listing_reference_contracts AS lrc
+            JOIN _prune_runs AS pr
+              ON pr.id = lrc.research_run_id;
+        """,
+        progress=progress,
+    )
+
+    candidates[
+        "option_quotes"
+    ] = _execute_with_progress(
+        conn,
+        label="scope option_quotes",
+        sql="""
+            INSERT INTO _scope_option_quotes(id)
+            SELECT oq.id
+            FROM market_snapshots AS ms
+            JOIN _prune_runs AS pr
+              ON pr.id = ms.research_run_id
+            JOIN option_quotes AS oq
+              ON oq.snapshot_id = ms.id;
+        """,
+        progress=progress,
+    )
+
     scope_sql = (
         (
             "local_surface_residual_v2_observations",
             """
             INSERT INTO _scope_surface_obs(id)
             SELECT o.id
-            FROM local_surface_residual_v2_observations AS o
-            JOIN local_surface_residual_v2_runs AS r
-              ON r.id = o.model_run_id
+            FROM local_surface_residual_v2_runs AS r
             JOIN _prune_runs AS pr
-              ON pr.id = r.research_run_id;
+              ON pr.id = r.research_run_id
+            JOIN local_surface_residual_v2_observations AS o
+              ON o.model_run_id = r.id;
             """,
         ),
         (
@@ -535,11 +569,11 @@ def _prepare_delete_sets(
             """
             INSERT INTO _scope_scanner_evals(id)
             SELECT e.id
-            FROM hypothesis_scanner_evaluations AS e
-            JOIN hypothesis_scanner_runs AS r
-              ON r.id = e.scanner_run_id
+            FROM hypothesis_scanner_runs AS r
             JOIN _prune_runs AS pr
-              ON pr.id = r.research_run_id;
+              ON pr.id = r.research_run_id
+            JOIN hypothesis_scanner_evaluations AS e
+              ON e.scanner_run_id = r.id;
             """,
         ),
         (
@@ -547,13 +581,9 @@ def _prepare_delete_sets(
             """
             INSERT INTO _scope_provider_models(id)
             SELECT pmo.id
-            FROM provider_model_observations AS pmo
-            JOIN option_quotes AS oq
-              ON oq.id = pmo.option_quote_id
-            JOIN market_snapshots AS ms
-              ON ms.id = oq.snapshot_id
-            JOIN _prune_runs AS pr
-              ON pr.id = ms.research_run_id;
+            FROM _scope_option_quotes AS s
+            JOIN provider_model_observations AS pmo
+              ON pmo.option_quote_id = s.id;
             """,
         ),
         (
@@ -561,38 +591,13 @@ def _prepare_delete_sets(
             """
             INSERT INTO _scope_provider_availability(id)
             SELECT poa.id
-            FROM provider_observation_availability AS poa
-            JOIN listing_reference_contracts AS lrc
-              ON lrc.id = poa.reference_contract_id
-            JOIN _prune_runs AS pr
-              ON pr.id = lrc.research_run_id;
-            """,
-        ),
-        (
-            "listing_reference_contracts",
-            """
-            INSERT INTO _scope_listing_refs(id)
-            SELECT lrc.id
-            FROM listing_reference_contracts AS lrc
-            JOIN _prune_runs AS pr
-              ON pr.id = lrc.research_run_id;
-            """,
-        ),
-        (
-            "option_quotes",
-            """
-            INSERT INTO _scope_option_quotes(id)
-            SELECT oq.id
-            FROM option_quotes AS oq
-            JOIN market_snapshots AS ms
-              ON ms.id = oq.snapshot_id
-            JOIN _prune_runs AS pr
-              ON pr.id = ms.research_run_id;
+            FROM _scope_listing_refs AS s
+            JOIN provider_observation_availability AS poa
+              ON poa.reference_contract_id = s.id;
             """,
         ),
     )
 
-    candidates: dict[str, int] = {}
     for (
         table_name,
         sql,
