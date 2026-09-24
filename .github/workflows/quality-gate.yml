@@ -91,6 +91,7 @@ jobs:
         shell: bash
         run: |
           bash -n deploy/receive_release.sh
+          test -x deploy/christiania-maintenance
           bash -n deploy/christiania-maintenance
 
       - name: Run release safety regressions
