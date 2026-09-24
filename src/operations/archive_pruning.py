@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -19,6 +20,9 @@ from src.database.repository import (
 from src.operations.historical_research import (
     HISTORICAL_ANALYSIS_VERSION,
     compare_hot_connection_to_archive,
+)
+from src.operations.sqlite_runtime import (
+    backup_required_free_bytes,
 )
 from src.operations.remote_archive import (
     RemoteArchiveProof,
@@ -189,6 +193,10 @@ class PruneReceipt:
     freelist_bytes_after: int
     database_size_bytes_before: int
     database_size_bytes_after: int
+    logical_database_bytes_before: int
+    filesystem_free_bytes_before: int
+    prune_required_free_bytes: int
+    wal_checkpoint_state: str
     foreign_key_check: str
     historical_analysis_version: int
     analytical_parity_verified: bool
@@ -365,6 +373,174 @@ def _require_no_database_holders(
                 for pid in holders
             )
         )
+
+
+def _checkpoint_clean_wal(
+    conn: sqlite3.Connection,
+    database: Path,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> None:
+    journal_mode = str(
+        conn.execute(
+            "PRAGMA journal_mode;"
+        ).fetchone()[0]
+    ).lower()
+
+    if journal_mode != "wal":
+        raise RuntimeError(
+            "Production archive pruning requires "
+            f"SQLite WAL mode; found {journal_mode}."
+        )
+
+    row = conn.execute(
+        "PRAGMA wal_checkpoint(TRUNCATE);"
+    ).fetchone()
+
+    if (
+        row is None
+        or len(row) < 3
+    ):
+        raise RuntimeError(
+            "SQLite WAL checkpoint returned "
+            "an unexpected result."
+        )
+
+    busy = int(row[0])
+    log_frames = int(row[1])
+    checkpointed_frames = int(row[2])
+
+    wal_path = Path(
+        str(database)
+        + "-wal"
+    )
+    wal_bytes = (
+        int(
+            wal_path.stat().st_size
+        )
+        if wal_path.exists()
+        else 0
+    )
+
+    if (
+        busy != 0
+        or wal_bytes != 0
+    ):
+        raise RuntimeError(
+            "Production archive pruning requires "
+            "a clean WAL checkpoint before the "
+            "write transaction: "
+            f"busy={busy}, "
+            f"log_frames={log_frames}, "
+            f"checkpointed_frames={checkpointed_frames}, "
+            f"wal_bytes={wal_bytes}."
+        )
+
+    _emit_progress(
+        progress,
+        "prune: WAL checkpoint PASS "
+        f"busy={busy} "
+        f"log_frames={log_frames} "
+        f"checkpointed_frames={checkpointed_frames} "
+        f"wal_bytes={wal_bytes}",
+    )
+
+
+def _prune_capacity_preflight(
+    conn: sqlite3.Connection,
+    database: Path,
+    *,
+    enforce: bool,
+    disk_usage: Callable[
+        [str | os.PathLike[str]],
+        object,
+    ] = shutil.disk_usage,
+    required_free_bytes: Callable[
+        ...,
+        int,
+    ] = backup_required_free_bytes,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[int, int, int]:
+    page_size = int(
+        conn.execute(
+            "PRAGMA page_size;"
+        ).fetchone()[0]
+    )
+    page_count = int(
+        conn.execute(
+            "PRAGMA page_count;"
+        ).fetchone()[0]
+    )
+
+    logical_database_bytes = max(
+        int(
+            database.stat().st_size
+        ),
+        page_size
+        * page_count,
+    )
+
+    usage = disk_usage(
+        database.parent
+    )
+
+    filesystem_total_bytes = int(
+        usage.total
+    )
+    filesystem_free_bytes = int(
+        usage.free
+    )
+
+    # The transaction is intentionally atomic, so batching does not bound
+    # WAL growth. Reserve one logical-database-sized WAL allowance plus the
+    # same RC0 free-space reserve used by verified backups/supervision.
+    prune_required_free = int(
+        required_free_bytes(
+            source_size_bytes=
+                logical_database_bytes,
+            filesystem_total_bytes=
+                filesystem_total_bytes,
+        )
+    )
+
+    if (
+        enforce
+        and filesystem_free_bytes
+        < prune_required_free
+    ):
+        raise RuntimeError(
+            "Insufficient filesystem headroom "
+            "for atomic archive pruning: "
+            f"free={filesystem_free_bytes} "
+            f"required={prune_required_free} "
+            f"logical_database={logical_database_bytes}. "
+            "The write transaction must fit while "
+            "preserving the configured RC0 reserve."
+        )
+
+    _emit_progress(
+        progress,
+        "prune: capacity "
+        + (
+            "PASS"
+            if (
+                not enforce
+                or filesystem_free_bytes
+                >= prune_required_free
+            )
+            else "FAIL"
+        )
+        + " "
+        f"logical_database_bytes={logical_database_bytes} "
+        f"filesystem_free_bytes={filesystem_free_bytes} "
+        f"required_free_bytes={prune_required_free}",
+    )
+
+    return (
+        logical_database_bytes,
+        filesystem_free_bytes,
+        prune_required_free,
+    )
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -2501,6 +2677,28 @@ def prune_research_session(
             )
         )
 
+        production_apply = (
+            db_path is None
+        )
+
+        if production_apply:
+            _checkpoint_clean_wal(
+                conn,
+                database,
+                progress=progress,
+            )
+
+        (
+            logical_database_bytes_before,
+            filesystem_free_bytes_before,
+            prune_required_free,
+        ) = _prune_capacity_preflight(
+            conn,
+            database,
+            enforce=production_apply,
+            progress=progress,
+        )
+
         conn.execute(
             "PRAGMA temp_store = FILE;"
         )
@@ -2514,6 +2712,18 @@ def prune_research_session(
             "prune: write transaction acquired",
         )
         try:
+            if (
+                _prune_ledger_payload(
+                    conn,
+                    session_date,
+                )
+                is not None
+            ):
+                raise FileExistsError(
+                    "Session became durably pruned "
+                    "before this write transaction "
+                    f"acquired the lock: {session_date}."
+                )
             plan = _build_plan_from_connection(
                 conn,
                 database=database,
@@ -2714,6 +2924,20 @@ def prune_research_session(
                     db_size_before,
                 database_size_bytes_after=(
                     database.stat().st_size
+                ),
+                logical_database_bytes_before=(
+                    logical_database_bytes_before
+                ),
+                filesystem_free_bytes_before=(
+                    filesystem_free_bytes_before
+                ),
+                prune_required_free_bytes=(
+                    prune_required_free
+                ),
+                wal_checkpoint_state=(
+                    "PASS"
+                    if production_apply
+                    else "TEST_PATH_NOT_ENFORCED"
                 ),
                 foreign_key_check=
                     "ok",
