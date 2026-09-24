@@ -14,6 +14,10 @@ from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
 )
+from src.operations.historical_research import (
+    HISTORICAL_ANALYSIS_VERSION,
+    compare_hot_connection_to_archive,
+)
 from src.operations.remote_archive import (
     RemoteArchiveProof,
     load_remote_archive_proof,
@@ -28,7 +32,7 @@ from src.operations.research_archive import (
 )
 
 
-PRUNE_FORMAT_VERSION = 1
+PRUNE_FORMAT_VERSION = 2
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
 DEFAULT_PRUNE_DELETE_BATCH_ROWS = 25_000
@@ -119,6 +123,12 @@ class PruneSessionPlan:
     remote_gate_state: str
     local_archive_fast_verified: bool
     run_lineage_verified: bool
+    historical_analysis_version: int
+    analytical_parity_verified: bool
+    hot_analysis_sha256: str | None
+    archive_analysis_sha256: str | None
+    analytical_parity_mismatches: tuple[str, ...]
+    analytical_parity_error: str | None
     foreign_key_indexes_verified: bool
     foreign_key_index_checks: tuple[
         PruneForeignKeyIndexCheck,
@@ -135,6 +145,9 @@ class PruneSessionPlan:
         return {
             **asdict(self),
             "run_ids": list(self.run_ids),
+            "analytical_parity_mismatches": list(
+                self.analytical_parity_mismatches
+            ),
             "foreign_key_index_checks": [
                 item.as_dict()
                 for item
@@ -171,6 +184,10 @@ class PruneReceipt:
     database_size_bytes_before: int
     database_size_bytes_after: int
     foreign_key_check: str
+    historical_analysis_version: int
+    analytical_parity_verified: bool
+    hot_analysis_sha256: str
+    archive_analysis_sha256: str
 
     def as_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -1243,6 +1260,63 @@ def _build_plan_from_connection(
         progress=progress,
     )
 
+    _emit_progress(
+        progress,
+        "planner: historical analytical parity started",
+    )
+
+    parity = None
+    parity_error: str | None = None
+
+    try:
+        parity = (
+            compare_hot_connection_to_archive(
+                conn,
+                manifest_path=manifest_path,
+            )
+        )
+    except Exception as exc:
+        parity_error = (
+            f"{type(exc).__name__}:"
+            f"{exc}"
+        )
+
+    _emit_progress(
+        progress,
+        (
+            "planner: historical analytical parity "
+            + (
+                "PASS"
+                if (
+                    parity is not None
+                    and parity.passed
+                )
+                else "FAIL"
+            )
+        ),
+    )
+
+    parity_ok = (
+        parity is not None
+        and parity.passed
+    )
+
+    hot_analysis_sha256 = (
+        parity.hot_canonical_sha256
+        if parity is not None
+        else None
+    )
+    archive_analysis_sha256 = (
+        parity.archive_canonical_sha256
+        if parity is not None
+        else None
+    )
+    parity_mismatches = (
+        parity.mismatched_metrics
+        if parity is not None
+        else ()
+    )
+
     table_plans: list[
         PruneTablePlan
     ] = []
@@ -1300,6 +1374,20 @@ def _build_plan_from_connection(
         hot_floor is not None
         and manifest.max_run_id < hot_floor
     )
+
+    if not parity_ok:
+        if parity_error is not None:
+            blockers.append(
+                "HISTORICAL_ANALYTICAL_PARITY_ERROR:"
+                + parity_error
+            )
+        else:
+            blockers.append(
+                "HISTORICAL_ANALYTICAL_PARITY_MISMATCH:"
+                + ",".join(
+                    parity_mismatches
+                )
+            )
 
     if not foreign_key_indexes_ok:
         for check in foreign_key_index_checks:
@@ -1377,6 +1465,18 @@ def _build_plan_from_connection(
         local_archive_fast_verified=
             local_archive_fast_verified,
         run_lineage_verified=lineage_ok,
+        historical_analysis_version=
+            HISTORICAL_ANALYSIS_VERSION,
+        analytical_parity_verified=
+            parity_ok,
+        hot_analysis_sha256=
+            hot_analysis_sha256,
+        archive_analysis_sha256=
+            archive_analysis_sha256,
+        analytical_parity_mismatches=
+            parity_mismatches,
+        analytical_parity_error=
+            parity_error,
         foreign_key_indexes_verified=
             foreign_key_indexes_ok,
         foreign_key_index_checks=
@@ -2135,6 +2235,20 @@ def prune_research_session(
         database_size_bytes_after=
             database.stat().st_size,
         foreign_key_check="ok",
+        historical_analysis_version=(
+            plan.historical_analysis_version
+        ),
+        analytical_parity_verified=(
+            plan.analytical_parity_verified
+        ),
+        hot_analysis_sha256=(
+            plan.hot_analysis_sha256
+            or ""
+        ),
+        archive_analysis_sha256=(
+            plan.archive_analysis_sha256
+            or ""
+        ),
     )
 
     _write_json_atomic(
