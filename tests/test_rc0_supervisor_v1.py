@@ -1379,6 +1379,13 @@ def test_lightweight_runtime_health_uses_bounded_probes(
 
     conn = sqlite3.connect(db)
     try:
+        journal_mode = str(
+            conn.execute(
+                "PRAGMA journal_mode=WAL;"
+            ).fetchone()[0]
+        ).lower()
+        assert journal_mode == "wal"
+
         conn.execute(
             """
             CREATE TABLE schema_version(
@@ -1427,9 +1434,6 @@ def test_lightweight_runtime_health_uses_bounded_probes(
                 '2026-09-24T08:00:30Z'
             );
             """
-        )
-        conn.execute(
-            "PRAGMA journal_mode=WAL;"
         )
         conn.commit()
     finally:
