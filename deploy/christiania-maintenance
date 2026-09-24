@@ -184,8 +184,13 @@ enter_maintenance() {
     stop_optional_unit "${unit}"
   done
 
+  # Do not kill in-flight backup/audit/health/recovery jobs. Once their
+  # timers are stopped, any active one-shot is existing work that maintenance
+  # must not interrupt. Fail and restore the timers instead.
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    stop_optional_unit "${unit}"
+    if unit_is_active "${unit}"; then
+      fail "refusing maintenance while one-shot unit is active: ${unit}"
+    fi
   done
 
   # Stop the edge explicitly before the app. Stopping the app also propagates
