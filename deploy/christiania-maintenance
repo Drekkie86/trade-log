@@ -301,6 +301,12 @@ exit_maintenance() {
     fail "no active maintenance state exists at ${STATE_FILE}"
   fi
 
+  for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_busy "${unit}"; then
+      fail "runtime restore refused while one-shot maintenance service is busy: ${unit}; maintenance state retained"
+    fi
+  done
+
   if ! restore_recorded; then
     fail "runtime restore incomplete; maintenance state retained at ${STATE_FILE}"
   fi
