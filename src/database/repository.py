@@ -10,7 +10,7 @@ object.
 from src.database import repository_impl as _impl
 
 
-EXPECTED_SCHEMA_VERSION = 33
+EXPECTED_SCHEMA_VERSION = 34
 _impl.EXPECTED_SCHEMA_VERSION = EXPECTED_SCHEMA_VERSION
 
 # Re-export the complete implementation surface, including private helpers used
@@ -23,7 +23,7 @@ for _name in dir(_impl):
 
 # The loop also exports the implementation's synchronized value, but state it
 # again here so the facade remains the authoritative schema contract.
-EXPECTED_SCHEMA_VERSION = 33
+EXPECTED_SCHEMA_VERSION = 34
 
 __all__ = [
     name
