@@ -220,7 +220,7 @@ def test_maintenance_rehearsal_restores_on_failure():
     ]
 
     enter_position = rehearsal.index(
-        "enter_maintenance"
+        "\n  enter_maintenance\n"
     )
     trap_position = rehearsal.index(
         "trap rehearsal_restore ERR INT TERM HUP"
@@ -236,6 +236,10 @@ def test_maintenance_rehearsal_restores_on_failure():
     )
     assert (
         "exit_maintenance"
+        in rehearsal
+    )
+    assert (
+        "rehearsal requires a READY production baseline"
         in rehearsal
     )
     assert (
