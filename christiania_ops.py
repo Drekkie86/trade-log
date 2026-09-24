@@ -743,6 +743,24 @@ def main() -> int:
             print(
                 f"Remote gate: {plan.remote_gate_state}"
             )
+            print(
+                "Hot/cold parity: "
+                f"{plan.parity_state} "
+                f"verified={plan.parity_verified}"
+            )
+            print(
+                "Prune FK indexes: "
+                f"{plan.prune_fk_index_state}"
+            )
+            if plan.missing_fk_indexes:
+                for missing in (
+                    plan.missing_fk_indexes
+                ):
+                    print(
+                        "MISSING FK INDEX: "
+                        + missing,
+                        file=sys.stderr,
+                    )
             for item in plan.tables:
                 print(
                     f"{item.table_name}: "
@@ -777,6 +795,18 @@ def main() -> int:
             print(f"Session: {receipt.session_date}")
             print(
                 f"Remote gate: {receipt.remote_gate_state}"
+            )
+            print(
+                "Hot/cold parity: "
+                f"{receipt.parity_state}"
+            )
+            print(
+                "Prune FK indexes: "
+                f"{receipt.prune_fk_index_state}"
+            )
+            print(
+                "Delete batch size: "
+                f"{receipt.delete_batch_size}"
             )
             for table_name, count in receipt.rows_deleted.items():
                 print(
