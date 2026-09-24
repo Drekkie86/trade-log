@@ -153,17 +153,23 @@ enter_maintenance() {
 
   echo "Stopping scheduled Christiania work..."
   for unit in "${QUIESCE_TIMER_UNITS[@]}"; do
-    systemctl stop "${unit}" || true
+    systemctl stop "${unit}"
   done
 
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    systemctl stop "${unit}" || true
+    systemctl stop "${unit}"
+  done
+
+  for unit in "${QUIESCE_TIMER_UNITS[@]}" "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "${unit} remained active after maintenance quiescence"
+    fi
   done
 
   # Stop the edge explicitly before the app. Stopping the app also propagates
   # to the proxy through Requires=, but explicit ordering keeps the maintenance
   # contract deterministic and makes restoration intent visible.
-  systemctl stop "${SECURE_EDGE_SERVICE}" || true
+  systemctl stop "${SECURE_EDGE_SERVICE}"
 
   echo "Stopping database consumers..."
   for unit in "${DB_CONSUMER_SERVICES[@]}"; do
