@@ -15,6 +15,8 @@ from src.operations.archive_pruning import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SCHEMA = ROOT / "trade_log_schema.sql"
+MIGRATIONS = ROOT / "migrations"
 MIGRATION = (
     ROOT
     / "migrations"
@@ -112,6 +114,54 @@ def _build_v33_minimal(
         """
     )
     conn.commit()
+    return conn
+
+
+def _build_v33_full_history(
+    path: Path,
+) -> sqlite3.Connection:
+    conn = sqlite3.connect(
+        path
+    )
+    conn.execute(
+        "PRAGMA foreign_keys = ON;"
+    )
+    conn.executescript(
+        SCHEMA.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    current = get_schema_version(
+        conn
+    )
+    assert current == 6
+
+    for migration in sorted(
+        MIGRATIONS.glob("*.sql")
+    ):
+        version = int(
+            migration.name.split(
+                "_",
+                1,
+            )[0]
+        )
+
+        if (
+            version <= current
+            or version > 33
+        ):
+            continue
+
+        apply_migration_file(
+            conn,
+            migration,
+            expected_from=current,
+            target_version=version,
+        )
+        current = version
+
+    assert current == 33
     return conn
 
 
@@ -376,5 +426,84 @@ def test_migration_034_prune_commit_ledger_is_immutable(
                     '2026-09-01';
                 """
             )
+    finally:
+        conn.close()
+
+
+def test_full_migration_history_has_exact_four_v33_prune_parent_index_gaps(
+    tmp_path: Path,
+) -> None:
+    db = (
+        tmp_path
+        / "migration034_full_history.db"
+    )
+
+    conn = _build_v33_full_history(
+        db
+    )
+
+    try:
+        before = (
+            _foreign_key_index_checks(
+                conn
+            )
+        )
+
+        missing_before = {
+            (
+                check.child_table,
+                check.child_columns,
+                check.parent_table,
+            )
+            for check in before
+            if not check.supported
+        }
+
+        assert missing_before == {
+            (
+                "shadow_candidates",
+                ("reference_contract_id",),
+                "listing_reference_contracts",
+            ),
+            (
+                "hypothesis_scanner_evaluations",
+                ("reference_contract_id",),
+                "listing_reference_contracts",
+            ),
+            (
+                "hypothesis_scanner_evaluations",
+                ("option_quote_id",),
+                "option_quotes",
+            ),
+            (
+                "local_surface_residual_v2_observations",
+                ("reference_contract_id",),
+                "listing_reference_contracts",
+            ),
+        }
+
+        assert len(before) > len(
+            missing_before
+        )
+
+        apply_migration_file(
+            conn,
+            MIGRATION,
+            expected_from=33,
+            target_version=34,
+        )
+
+        after = (
+            _foreign_key_index_checks(
+                conn
+            )
+        )
+
+        assert len(after) == len(before)
+        assert all(
+            check.supported
+            for check in after
+        )
+
     finally:
         conn.close()
