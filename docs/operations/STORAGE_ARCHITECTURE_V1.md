@@ -481,8 +481,8 @@ rollback-copy requirement on that filesystem and reserve-plus-workspace on the
 database filesystem independently.
 
 The optional
-`CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES` setting may raise or
-explicitly set the migration-workspace allowance. Capacity failure occurs
+`CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES` setting may raise the
+migration-workspace allowance but cannot reduce the built-in floor. Capacity failure occurs
 before a rollback file or migration write is created.
 
 ### Physical compaction remains separate
