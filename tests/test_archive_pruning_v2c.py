@@ -1158,3 +1158,84 @@ def test_prune_commit_is_recoverable_when_external_receipt_write_fails(
         assert remaining_after_retry == 1
     finally:
         conn.close()
+
+
+def test_prune_rechecks_commit_ledger_after_write_lock(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    proof = load_remote_archive_proof(
+        proof_path
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning.verify_remote_archive_proof",
+        lambda path, **kwargs: proof,
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning._recover_external_prune_receipt",
+        lambda **kwargs: False,
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning._prune_ledger_payload",
+        lambda conn, session_date: {
+            "session_date":
+                session_date,
+            "state":
+                "REFERENCE_AWARE_HOT_PRUNE_COMMITTED",
+        },
+    )
+
+    with pytest.raises(
+        FileExistsError,
+        match="became durably pruned",
+    ):
+        prune_research_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+            confirm_session=(
+                manifest.session_date
+            ),
+        )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        remaining = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+
+        assert remaining == 2
+    finally:
+        conn.close()
