@@ -499,7 +499,7 @@ def test_prune_apply_revalidates_archive_restores_triggers_and_fk(
 
     monkeypatch.setattr(
         "src.operations.archive_pruning.verify_remote_archive_proof",
-        lambda path: proof,
+        lambda path, **kwargs: proof,
     )
 
     progress = []
