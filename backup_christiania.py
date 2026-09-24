@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
 
+from src.config import load_runtime_env_file
 from src.operations.backup_policy import (
     evaluate_backup_due,
 )
@@ -11,6 +13,12 @@ from src.operations.sqlite_runtime import (
     create_verified_backup,
     resolve_backup_dir,
 )
+
+
+DEFAULT_RUNTIME_ENV_FILE = Path(
+    "/etc/christiania/christiania.env"
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -51,6 +59,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if DEFAULT_RUNTIME_ENV_FILE.is_file():
+        load_runtime_env_file(
+            DEFAULT_RUNTIME_ENV_FILE,
+            overwrite=False,
+        )
 
     if args.cleanup_stale_temp:
         directory = resolve_backup_dir(
