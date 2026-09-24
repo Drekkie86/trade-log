@@ -375,6 +375,23 @@ kills that work.
   metadata is committed into the receiver's pre-created private pointer
   workspace.
 
+The capacity requirement also includes migration-growth headroom for v34 rather
+than assuming the rollback copy is the only large write. Christiania derives a
+conservative upper bound from existing same-table indexes via SQLite `dbstat`:
+
+- three new shadow-candidate INTEGER indexes are bounded by
+  `3 × idx_shadow_candidates_run`;
+- two new scanner INTEGER indexes are each bounded by the wider existing
+  two-column `uq_hypothesis_scanner_evaluation_quote`;
+- the new Surface V2 reference index is bounded by the existing same-table
+  `idx_surface_v2_quote`;
+- a second copy of that complete final-index upper bound is reserved for
+  SQLite index-build sorting/workspace.
+
+The estimator deliberately does not credit freelist pages. If `dbstat` or a
+reviewed proxy object is unavailable, the v34 migration preflight fails closed
+instead of guessing.
+
 A failure while the SQLite backup API is writing the temporary rollback copy
 removes that partial temporary file. A rollback artifact is promoted only after
 SQLite verification, file fsync, atomic rename and directory fsync.
