@@ -538,3 +538,48 @@ def test_hot_archive_analytics_detect_same_count_value_drift(
         after.hot_analytical_sha256
         != after.archive_analytical_sha256
     )
+
+
+
+def test_hot_archive_parity_rejects_manifest_session_mismatch(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = create_research_archive(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+        keep_hot_runs=50,
+    )
+
+    manifest_path = (
+        archive_dir
+        / manifest.manifest_filename
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="session mismatch",
+    ):
+        compare_hot_archive_session(
+            "2026-09-02",
+            db_path=db_path,
+            archive_dir=archive_dir,
+            manifest_path=
+                manifest_path,
+            manifest=manifest,
+        )
