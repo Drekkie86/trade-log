@@ -12,6 +12,13 @@ from src.operations.archive_pruning import (
     plan_prune_session,
     prune_research_session,
 )
+from src.operations.historical_research import (
+    compare_hot_archive_session,
+    profile_archived_session,
+)
+from src.operations.prune_fk_index_audit import (
+    audit_prune_database_fk_indexes,
+)
 from src.operations.backup_recovery import (
     inventory_backups,
     resolve_latest_valid_backup,
@@ -130,6 +137,38 @@ def main() -> int:
     archive_read = sub.add_parser("archive-read-run")
     archive_read.add_argument("--run-id", type=int, required=True)
     archive_read.add_argument("--json", action="store_true")
+
+    archive_profile = sub.add_parser(
+        "archive-profile-session"
+    )
+    archive_profile.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_profile.add_argument(
+        "--json",
+        action="store_true",
+    )
+
+    archive_parity = sub.add_parser(
+        "archive-parity-check"
+    )
+    archive_parity.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_parity.add_argument(
+        "--json",
+        action="store_true",
+    )
+
+    prune_index_audit = sub.add_parser(
+        "archive-prune-index-audit"
+    )
+    prune_index_audit.add_argument(
+        "--json",
+        action="store_true",
+    )
 
     archive_verify = sub.add_parser("archive-verify")
     archive_verify.add_argument("--manifest", required=True)
@@ -424,6 +463,137 @@ def main() -> int:
                 )
         return 0
 
+    if args.command == "archive-profile-session":
+        profile = profile_archived_session(
+            args.session_date,
+        )
+
+        if args.json:
+            _print_json(
+                profile.as_dict()
+            )
+        else:
+            print(
+                "Archived historical analytical profile"
+            )
+            print(
+                f"Session: {profile.session_date}"
+            )
+            print(
+                "Archive schema: "
+                f"v{profile.source_schema_version}"
+            )
+            print(
+                "Analytical SHA-256: "
+                f"{profile.analytical_sha256}"
+            )
+            for (
+                table_name,
+                identity,
+            ) in profile.table_identity.items():
+                print(
+                    f"{table_name}: "
+                    f"rows={identity['row_count']} "
+                    f"min_id={identity['min_id']} "
+                    f"max_id={identity['max_id']}"
+                )
+
+        return 0
+
+    if args.command == "archive-parity-check":
+        parity = compare_hot_archive_session(
+            args.session_date,
+        )
+
+        if args.json:
+            _print_json(
+                parity.as_dict()
+            )
+        else:
+            print(
+                "Hot/archive historical analytics parity"
+            )
+            print(
+                f"Session: {parity.session_date}"
+            )
+            print(
+                f"State: {parity.state}"
+            )
+            print(
+                "Hot analytical SHA-256: "
+                f"{parity.hot_analytical_sha256}"
+            )
+            print(
+                "Cold analytical SHA-256: "
+                f"{parity.archive_analytical_sha256}"
+            )
+            for section in (
+                parity.differing_sections
+            ):
+                print(
+                    f"DIFF: {section}",
+                    file=sys.stderr,
+                )
+
+        return (
+            0
+            if parity.passed
+            else 2
+        )
+
+    if args.command == "archive-prune-index-audit":
+        audit = (
+            audit_prune_database_fk_indexes()
+        )
+
+        if args.json:
+            _print_json(
+                audit.as_dict()
+            )
+        else:
+            print(
+                "V2C prune-parent FK index audit"
+            )
+            print(
+                f"State: {audit.state}"
+            )
+            print(
+                f"Checks: {len(audit.checks)}"
+            )
+
+            for check in audit.checks:
+                print(
+                    (
+                        "PASS"
+                        if check.passed
+                        else "FAIL"
+                    )
+                    + " "
+                    + check.key
+                    + " index="
+                    + str(
+                        check.supporting_index
+                        or "NONE"
+                    )
+                )
+
+            for table_name in (
+                audit.missing_parent_tables
+            ):
+                print(
+                    (
+                        "FAIL missing parent "
+                        f"table: {table_name}"
+                    ),
+                    file=sys.stderr,
+                )
+
+        return (
+            0
+            if audit.passed
+            else 2
+        )
+
     if args.command == "archive-verify":
         manifest = verify_research_archive(
             args.manifest,
@@ -542,6 +712,22 @@ def main() -> int:
             )
             print(
                 f"Remote gate: {plan.remote_gate_state}"
+            )
+            print(
+                "FK index audit: "
+                f"{plan.foreign_key_index_state}"
+            )
+            print(
+                "Analytical parity: "
+                f"{plan.analytical_parity_state}"
+            )
+            print(
+                "Hot analytical SHA-256: "
+                f"{plan.hot_analytical_sha256}"
+            )
+            print(
+                "Cold analytical SHA-256: "
+                f"{plan.archive_analytical_sha256}"
             )
             for item in plan.tables:
                 print(
