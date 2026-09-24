@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 import sqlite3
 
+import src.operations.archive_pruning as pruning
+
 from src.operations.archive_pruning import (
     _checkpoint_clean_wal,
     _prune_capacity_preflight,
@@ -408,3 +410,97 @@ def test_prune_capacity_preflight_records_exact_evidence(
         )
     finally:
         conn.close()
+
+
+def test_database_holder_probe_does_not_treat_probe_error_as_zero_holders(
+    tmp_path: Path,
+    monkeypatch,
+):
+    database = (
+        tmp_path
+        / "trade_log.db"
+    )
+    database.touch()
+
+    calls: list[str] = []
+
+    def run(
+        command,
+        **kwargs,
+    ):
+        del kwargs
+        calls.append(
+            str(
+                command[0]
+            )
+        )
+
+        if (
+            command[0]
+            == "fuser"
+        ):
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="permission denied",
+            )
+
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        pruning.subprocess,
+        "run",
+        run,
+    )
+
+    assert (
+        pruning._database_holder_pids(
+            database
+        )
+        == ()
+    )
+
+    assert calls == [
+        "fuser",
+        "lsof",
+    ]
+
+
+def test_database_holder_probe_fails_if_all_available_probes_error(
+    tmp_path: Path,
+    monkeypatch,
+):
+    database = (
+        tmp_path
+        / "trade_log.db"
+    )
+    database.touch()
+
+    monkeypatch.setattr(
+        pruning.subprocess,
+        "run",
+        lambda command, **kwargs: (
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "permission denied "
+                    + str(
+                        command[0]
+                    )
+                ),
+            )
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="holder probes failed",
+    ):
+        pruning._database_holder_pids(
+            database
+        )
