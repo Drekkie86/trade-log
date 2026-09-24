@@ -268,6 +268,39 @@ stop_unit_for_release() {
   esac
 }
 
+unit_is_busy_for_release() {
+  local unit="$1"
+  local active_state=""
+
+  active_state="$(
+    systemctl show \
+      --property=ActiveState \
+      --value \
+      "${unit}" \
+      2>/dev/null \
+      || true
+  )"
+
+  case "${active_state}" in
+    active|activating|reloading|deactivating)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+assert_no_busy_oneshots() {
+  local service
+
+  for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_busy_for_release "${service}"; then
+      fail "release refuses to interrupt busy one-shot service: ${service}"
+    fi
+  done
+}
+
 wait_for_http_2xx() {
   local label="$1"
   local url="$2"
@@ -480,9 +513,6 @@ rollback() {
     for timer in "${QUIESCE_TIMER_UNITS[@]}"; do
       systemctl stop "${timer}" >/dev/null 2>&1 || true
     done
-    for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-      systemctl stop "${service}" >/dev/null 2>&1 || true
-    done
     for service in "${CORE_SERVICES[@]}"; do
       systemctl stop "${service}" >/dev/null 2>&1 || true
     done
@@ -671,16 +701,19 @@ if systemctl is-active --quiet "${SECURE_EDGE_SERVICE}" \
 fi
 
 phase_start "Quiescing scheduled jobs and database consumers"
-SERVICES_QUIESCED=1
 for timer in "${QUIESCE_TIMER_UNITS[@]}"; do
   if systemctl is-active --quiet "${timer}"; then
     ACTIVE_QUIESCE_TIMERS+=("${timer}")
   fi
   stop_unit_for_release "${timer}"
 done
-for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-  stop_unit_for_release "${service}"
-done
+
+# Never turn a deployment into an implicit cancellation of a backup, restore
+# drill, audit or other bounded one-shot. Timers are stopped first so scheduled
+# work cannot newly start while this boundary is established.
+assert_no_busy_oneshots
+
+SERVICES_QUIESCED=1
 for service in "${QUIESCE_SERVICES[@]}"; do
   stop_unit_for_release "${service}"
 done
@@ -688,6 +721,9 @@ done
 if [[ "$(systemctl is-active christiania-theta.service 2>/dev/null || true)" != "active" ]]; then
   fail "christiania-theta.service is not active after background-job quiescence"
 fi
+
+# Close the small boundary race before any database migration begins.
+assert_no_busy_oneshots
 phase_done
 
 phase_start "Preparing release database"
