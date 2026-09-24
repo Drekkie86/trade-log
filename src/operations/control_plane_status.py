@@ -438,6 +438,12 @@ def _deployment_supervisor_state(
         if name == "research-progress":
             continue
 
+        # Public-edge availability is operationally blocking, but a deployment
+        # explicitly restarts and verifies the OAuth/Caddy path and may repair
+        # this condition. Do not deadlock release recovery on the broken edge.
+        if name == "public-edge-services":
+            continue
+
         # Crossing the early memory warning is also operational. Do not ignore
         # harder memory-policy failures: only the explicit current-memory
         # warning emitted below MemoryHigh/MemoryMax is deploy-nonblocking.
