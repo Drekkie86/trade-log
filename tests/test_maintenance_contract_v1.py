@@ -163,7 +163,7 @@ def test_maintenance_refuses_to_interrupt_active_one_shot_work():
     )
 
     assert (
-        "one-shot maintenance service is already active; "
+        "one-shot maintenance service is already busy; "
         "refusing to interrupt it"
         in script
     )
@@ -189,7 +189,7 @@ def test_maintenance_refuses_to_interrupt_active_one_shot_work():
     ]
 
     assert (
-        'unit_is_active "${unit}"'
+        'unit_is_busy "${unit}"'
         in block
     )
     assert (
@@ -296,7 +296,7 @@ def test_maintenance_checks_one_shots_twice_around_quiescence():
     )
 
     assert (
-        "one-shot maintenance service became active "
+        "one-shot maintenance service became busy "
         "while entering maintenance"
         in block
     )
@@ -326,3 +326,29 @@ def test_rehearsal_state_snapshot_includes_substate_and_enablement():
         "systemctl is-enabled"
         in block
     )
+
+
+
+def test_maintenance_busy_state_includes_activating_services():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    start = script.index(
+        "unit_is_busy()"
+    )
+    end = script.index(
+        "unit_state()",
+        start,
+    )
+    block = script[
+        start:end
+    ]
+
+    for state in (
+        "active",
+        "activating",
+        "reloading",
+        "deactivating",
+    ):
+        assert state in block
