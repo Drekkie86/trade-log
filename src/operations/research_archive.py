@@ -1297,6 +1297,103 @@ def create_research_archive(
         raise
 
 
+def verify_materialized_archive_contract(
+    conn: sqlite3.Connection,
+    manifest: ResearchArchiveManifest,
+) -> None:
+    metadata_rows = conn.execute(
+        """
+        SELECT key, value
+        FROM archive_metadata;
+        """
+    ).fetchall()
+
+    metadata = {
+        str(key): str(value)
+        for key, value
+        in metadata_rows
+    }
+
+    required_metadata = {
+        "format_version":
+            str(manifest.format_version),
+        "coverage":
+            manifest.coverage,
+        "session_date":
+            manifest.session_date,
+        "source_schema_version":
+            str(
+                manifest.source_schema_version
+            ),
+        "created_at":
+            manifest.created_at,
+    }
+
+    for key, expected in required_metadata.items():
+        actual = metadata.get(
+            key
+        )
+        if actual != expected:
+            raise RuntimeError(
+                "Research archive internal metadata "
+                f"mismatch for {key}: "
+                f"{actual!r} != {expected!r}."
+            )
+
+    try:
+        internal_run_ids = tuple(
+            int(run_id)
+            for run_id
+            in json.loads(
+                metadata[
+                    "run_ids_json"
+                ]
+            )
+        )
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise RuntimeError(
+            "Research archive internal run_ids_json "
+            "is missing or invalid."
+        ) from exc
+
+    if (
+        internal_run_ids
+        != manifest.run_ids
+    ):
+        raise RuntimeError(
+            "Research archive internal run IDs do "
+            "not match the manifest."
+        )
+
+    internal_counts = {
+        str(table_name):
+            int(row_count)
+        for (
+            table_name,
+            row_count,
+        ) in conn.execute(
+            """
+            SELECT table_name, row_count
+            FROM archive_row_counts;
+            """
+        ).fetchall()
+    }
+
+    if (
+        internal_counts
+        != manifest.table_counts
+    ):
+        raise RuntimeError(
+            "Research archive internal row-count "
+            "metadata does not match the manifest."
+        )
+
+
 def verify_research_archive(
     manifest_path: str | Path,
     *,
@@ -1396,6 +1493,11 @@ def verify_research_archive(
                     "Restored research archive "
                     f"integrity_check failed: {integrity}"
                 )
+
+            verify_materialized_archive_contract(
+                conn,
+                manifest,
+            )
 
             for (
                 table_name,
