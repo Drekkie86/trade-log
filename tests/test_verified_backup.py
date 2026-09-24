@@ -3,6 +3,7 @@ import time
 
 from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import (
+    backup_logical_source_bytes,
     create_verified_backup,
 )
 
@@ -258,3 +259,66 @@ def test_backup_temp_is_removed_on_baseexception(
             ".christiania_backup_*.tmp.db"
         )
     )
+
+
+def test_backup_capacity_counts_committed_wal_growth(
+    tmp_path,
+):
+    source = tmp_path / "source.db"
+
+    conn = sqlite3.connect(source)
+    try:
+        conn.execute(
+            "PRAGMA journal_mode=WAL;"
+        )
+        conn.execute(
+            "PRAGMA wal_autocheckpoint=0;"
+        )
+        conn.execute(
+            """
+            CREATE TABLE schema_version(
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO schema_version(
+                version,
+                applied_at
+            )
+            VALUES(?, '2026-09-24T00:00:00Z');
+            """,
+            (EXPECTED_SCHEMA_VERSION,),
+        )
+        conn.execute(
+            """
+            CREATE TABLE evidence(
+                id INTEGER PRIMARY KEY,
+                payload BLOB NOT NULL
+            );
+            """
+        )
+        conn.commit()
+
+        main_before = source.stat().st_size
+
+        conn.executemany(
+            "INSERT INTO evidence(payload) VALUES(?)",
+            [
+                (b"x" * 4096,)
+                for _ in range(2048)
+            ],
+        )
+        conn.commit()
+
+        main_after = source.stat().st_size
+        logical = backup_logical_source_bytes(
+            source
+        )
+
+        assert main_after == main_before
+        assert logical > main_after
+    finally:
+        conn.close()
