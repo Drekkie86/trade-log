@@ -1567,16 +1567,27 @@ def collect_snapshot(
         )
     )
 
-    if (
-        secure_edge_enabled_state
+    secure_edge_service_state = (
+        service_state(
+            SECURE_EDGE_SERVICE
+        )
+    )
+
+    secure_edge_expected = (
+        secure_edge_service_state
+        == "active"
+        or secure_edge_enabled_state
         in PUBLIC_EDGE_ENABLED_STATES
-    ):
+    )
+
+    if secure_edge_expected:
         edge_states = {
-            unit: service_state(
-                unit
-            )
-            for unit
-            in PUBLIC_EDGE_SERVICES
+            SECURE_EDGE_SERVICE:
+                secure_edge_service_state,
+            "caddy.service":
+                service_state(
+                    "caddy.service"
+                ),
         }
 
         edge_ok = all(
