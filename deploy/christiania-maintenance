@@ -54,12 +54,26 @@ unit_is_active() {
   systemctl is-active --quiet "$1"
 }
 
+unit_load_state() {
+  local unit="$1"
+  local value
+
+  if ! value="$(
+    systemctl show       --property=LoadState       --value       "${unit}"       2>&1
+  )"; then
+    fail "cannot inspect systemd LoadState for ${unit}: ${value:-unknown error}"
+  fi
+
+  printf '%s\n' "${value}"
+}
+
+
 stop_optional_unit() {
   local unit="$1"
   local load_state
 
   load_state="$(
-    systemctl show       --property=LoadState       --value       "${unit}"       2>/dev/null       || true
+    unit_load_state "${unit}"
   )"
 
   if [[ -z "${load_state}" || "${load_state}" == "not-found" ]]; then
@@ -79,7 +93,7 @@ assert_optional_unit_inactive() {
   local load_state
 
   load_state="$(
-    systemctl show       --property=LoadState       --value       "${unit}"       2>/dev/null       || true
+    unit_load_state "${unit}"
   )"
 
   if [[ -z "${load_state}" || "${load_state}" == "not-found" ]]; then
