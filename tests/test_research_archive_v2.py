@@ -935,3 +935,72 @@ def test_v33_archive_remains_readable_and_parity_valid_after_v34_index_migration
         == 34
     )
     assert receipt.content_parity is True
+
+
+
+def test_archive_materialization_capacity_reserves_full_sort_workspace(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = (
+        create_research_archive(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+            keep_hot_runs=50,
+        )
+    )
+
+    observed = {}
+
+    def required_free(
+        *,
+        source_size_bytes,
+        filesystem_total_bytes,
+    ):
+        observed[
+            "source_size_bytes"
+        ] = source_size_bytes
+        observed[
+            "filesystem_total_bytes"
+        ] = filesystem_total_bytes
+        return 0
+
+    monkeypatch.setattr(
+        archive_analytics,
+        "backup_required_free_bytes",
+        required_free,
+    )
+
+    with open_verified_archive_session(
+        "2026-09-01",
+        archive_dir=archive_dir,
+    ) as archive:
+        assert (
+            archive.manifest
+            == manifest
+        )
+
+    assert (
+        observed[
+            "source_size_bytes"
+        ]
+        == (
+            manifest.uncompressed_size_bytes
+            * 2
+        )
+    )
