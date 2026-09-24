@@ -160,13 +160,13 @@ def test_receiver_uses_deployment_safety_and_requires_live_edge_before_success()
     current_gate = receiver.index(
         'phase_start "Validating current production deployment safety"'
     )
-    target_status = receiver.index(
-        '"${RELEASE_DIR}/christiania_status.py"',
+    current_status = receiver.index(
+        '"${PREVIOUS_TARGET}/christiania_status.py"',
         current_gate,
     )
     deployment_safe = receiver.index(
         "--deployment-safe",
-        target_status,
+        current_status,
     )
     db_prepare = receiver.index(
         'phase_start "Preparing release database"',
@@ -181,7 +181,7 @@ def test_receiver_uses_deployment_safety_and_requires_live_edge_before_success()
         edge_phase,
     )
 
-    assert current_gate < target_status < deployment_safe < db_prepare < edge_phase < success
+    assert current_gate < current_status < deployment_safe < db_prepare < edge_phase < success
     assert "http://127.0.0.1:8501/_stcore/health" in receiver
     assert "http://127.0.0.1:4180/ping" in receiver
     assert "caddy validate --config /etc/caddy/Caddyfile" in receiver
