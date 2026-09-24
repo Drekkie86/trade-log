@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import sqlite3
 import tempfile
 from contextlib import contextmanager
@@ -76,6 +77,53 @@ class ArchiveParityResult:
             for item in self.tables
         )
 
+    @property
+    def proof_sha256(self) -> str:
+        payload = {
+            "format": (
+                "CHRISTIANIA_HOT_ARCHIVE_PARITY_V1"
+            ),
+            "session_date":
+                self.session_date,
+            "run_ids": list(
+                self.run_ids
+            ),
+            "archive_filename":
+                self.archive_filename,
+            "archive_source_schema_version":
+                self.archive_source_schema_version,
+            "hot_schema_version":
+                self.hot_schema_version,
+            "tables": [
+                {
+                    "table_name":
+                        item.table_name,
+                    "hot":
+                        item.hot.as_dict(),
+                    "archive":
+                        item.archive.as_dict(),
+                    "matches":
+                        item.matches,
+                }
+                for item in self.tables
+            ],
+        }
+
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(
+                ",",
+                ":",
+            ),
+        ).encode(
+            "utf-8"
+        )
+
+        return hashlib.sha256(
+            encoded
+        ).hexdigest()
+
     def as_dict(self) -> dict[str, object]:
         return {
             "session_date": self.session_date,
@@ -89,6 +137,8 @@ class ArchiveParityResult:
             "hot_schema_version":
                 self.hot_schema_version,
             "passed": self.passed,
+            "proof_sha256":
+                self.proof_sha256,
             "tables": [
                 item.as_dict()
                 for item in self.tables
