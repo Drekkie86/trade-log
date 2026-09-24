@@ -55,7 +55,7 @@ EXPECTED_RELATIONS = {
         "option_quotes",
     ),
     (
-        "saxo_contract_failures",
+        "saxo_resolution_failures",
         ("option_quote_id",),
         "option_quotes",
     ),
