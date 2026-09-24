@@ -31,6 +31,12 @@ from src.operations.research_archive import (
 PRUNE_FORMAT_VERSION = 1
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
+DEFAULT_PRUNE_DELETE_BATCH_ROWS = 25_000
+
+PRUNE_PARENT_TABLES = (
+    "listing_reference_contracts",
+    "option_quotes",
+)
 
 TARGET_TABLES = (
     "local_surface_residual_v2_observations",
@@ -67,6 +73,26 @@ DELETE_ORDER = (
 
 
 @dataclass(frozen=True)
+class PruneForeignKeyIndexCheck:
+    child_table: str
+    parent_table: str
+    child_columns: tuple[str, ...]
+    supporting_index: str | None
+
+    @property
+    def supported(self) -> bool:
+        return self.supporting_index is not None
+
+    def as_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["child_columns"] = list(
+            self.child_columns
+        )
+        data["supported"] = self.supported
+        return data
+
+
+@dataclass(frozen=True)
 class PruneTablePlan:
     table_name: str
     archived_rows: int
@@ -93,6 +119,11 @@ class PruneSessionPlan:
     remote_gate_state: str
     local_archive_fast_verified: bool
     run_lineage_verified: bool
+    foreign_key_indexes_verified: bool
+    foreign_key_index_checks: tuple[
+        PruneForeignKeyIndexCheck,
+        ...,
+    ]
     tables: tuple[PruneTablePlan, ...]
     total_archived_rows: int
     total_deletable_rows: int
@@ -104,6 +135,11 @@ class PruneSessionPlan:
         return {
             **asdict(self),
             "run_ids": list(self.run_ids),
+            "foreign_key_index_checks": [
+                item.as_dict()
+                for item
+                in self.foreign_key_index_checks
+            ],
             "tables": [
                 item.as_dict()
                 for item in self.tables
@@ -335,6 +371,172 @@ def _sqlite_version(
             "Christiania database has no schema_version."
         )
     return int(row[0])
+
+
+def _quote_identifier(
+    value: str,
+) -> str:
+    return '"' + value.replace(
+        '"',
+        '""',
+    ) + '"'
+
+
+def _foreign_key_index_checks(
+    conn: sqlite3.Connection,
+) -> tuple[PruneForeignKeyIndexCheck, ...]:
+    checks: list[
+        PruneForeignKeyIndexCheck
+    ] = []
+
+    child_tables = [
+        str(row[0])
+        for row in conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name;
+            """
+        ).fetchall()
+    ]
+
+    for child_table in child_tables:
+        quoted_child = _quote_identifier(
+            child_table
+        )
+        fk_rows = conn.execute(
+            f"PRAGMA foreign_key_list({quoted_child});"
+        ).fetchall()
+
+        grouped: dict[
+            int,
+            list[tuple],
+        ] = {}
+
+        for row in fk_rows:
+            parent_table = str(
+                row[2]
+            )
+            if (
+                parent_table
+                not in PRUNE_PARENT_TABLES
+            ):
+                continue
+
+            grouped.setdefault(
+                int(row[0]),
+                [],
+            ).append(row)
+
+        if not grouped:
+            continue
+
+        index_rows = conn.execute(
+            f"PRAGMA index_list({quoted_child});"
+        ).fetchall()
+
+        usable_indexes: list[
+            tuple[str, tuple[str, ...]]
+        ] = []
+
+        for index_row in index_rows:
+            index_name = str(
+                index_row[1]
+            )
+
+            # Partial indexes cannot cover every possible FK child row.
+            partial = (
+                int(index_row[4])
+                if len(index_row) > 4
+                else 0
+            )
+            if partial:
+                continue
+
+            quoted_index = (
+                _quote_identifier(
+                    index_name
+                )
+            )
+            column_rows = conn.execute(
+                f"PRAGMA index_info({quoted_index});"
+            ).fetchall()
+
+            columns = tuple(
+                str(row[2])
+                for row in sorted(
+                    column_rows,
+                    key=lambda item: int(
+                        item[0]
+                    ),
+                )
+                if row[2] is not None
+            )
+
+            if columns:
+                usable_indexes.append(
+                    (
+                        index_name,
+                        columns,
+                    )
+                )
+
+        for rows in grouped.values():
+            ordered = sorted(
+                rows,
+                key=lambda item: int(
+                    item[1]
+                ),
+            )
+
+            parent_table = str(
+                ordered[0][2]
+            )
+            child_columns = tuple(
+                str(row[3])
+                for row in ordered
+            )
+
+            support = next(
+                (
+                    index_name
+                    for (
+                        index_name,
+                        columns,
+                    )
+                    in usable_indexes
+                    if columns[
+                        :len(
+                            child_columns
+                        )
+                    ]
+                    == child_columns
+                ),
+                None,
+            )
+
+            checks.append(
+                PruneForeignKeyIndexCheck(
+                    child_table=child_table,
+                    parent_table=parent_table,
+                    child_columns=
+                        child_columns,
+                    supporting_index=support,
+                )
+            )
+
+    return tuple(
+        sorted(
+            checks,
+            key=lambda item: (
+                item.parent_table,
+                item.child_table,
+                item.child_columns,
+            ),
+        )
+    )
 
 
 def _page_freelist_bytes(
@@ -1018,6 +1220,17 @@ def _build_plan_from_connection(
         conn,
         manifest=manifest,
     )
+    foreign_key_index_checks = (
+        _foreign_key_index_checks(
+            conn
+        )
+    )
+    foreign_key_indexes_ok = all(
+        check.supported
+        for check
+        in foreign_key_index_checks
+    )
+
     (
         candidates,
         deletable,
@@ -1084,6 +1297,19 @@ def _build_plan_from_connection(
         and manifest.max_run_id < hot_floor
     )
 
+    if not foreign_key_indexes_ok:
+        for check in foreign_key_index_checks:
+            if check.supported:
+                continue
+            blockers.append(
+                "MISSING_PRUNE_PARENT_FK_INDEX:"
+                f"{check.child_table}:"
+                + ",".join(
+                    check.child_columns
+                )
+                + f"->{check.parent_table}"
+            )
+
     if schema_version != EXPECTED_SCHEMA_VERSION:
         blockers.append(
             "SCHEMA_MISMATCH:"
@@ -1147,6 +1373,10 @@ def _build_plan_from_connection(
         local_archive_fast_verified=
             local_archive_fast_verified,
         run_lineage_verified=lineage_ok,
+        foreign_key_indexes_verified=
+            foreign_key_indexes_ok,
+        foreign_key_index_checks=
+            foreign_key_index_checks,
         tables=tuple(table_plans),
         total_archived_rows=total_archived,
         total_deletable_rows=
@@ -1351,7 +1581,13 @@ def _delete_reference_safe_rows(
     conn: sqlite3.Connection,
     *,
     progress: Callable[[str], None] | None = None,
+    batch_rows: int = DEFAULT_PRUNE_DELETE_BATCH_ROWS,
 ) -> dict[str, int]:
+    if batch_rows < 1:
+        raise ValueError(
+            "batch_rows must be >= 1."
+        )
+
     temp_by_table = {
         "local_surface_residual_v2_observations":
             "_delete_surface_obs",
@@ -1368,27 +1604,145 @@ def _delete_reference_safe_rows(
     }
 
     deleted: dict[str, int] = {}
+
     for table_name in DELETE_ORDER:
         temp_table = temp_by_table[
             table_name
         ]
-        deleted[
-            table_name
-        ] = _execute_with_progress(
-            conn,
-            label=(
-                "delete "
-                + table_name
-            ),
-            sql=f"""
-                DELETE FROM {table_name}
-                WHERE id IN (
+
+        expected = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {temp_table};
+                """
+            ).fetchone()[0]
+        )
+
+        total = 0
+        last_id: int | None = None
+        batch_number = 0
+        started = time.monotonic()
+
+        _emit_progress(
+            progress,
+            "prune-delete: "
+            f"{table_name} started "
+            f"rows={expected} "
+            f"batch_rows={batch_rows}",
+        )
+
+        while total < expected:
+            if last_id is None:
+                batch_ids = conn.execute(
+                    f"""
                     SELECT id
                     FROM {temp_table}
-                );
-            """,
-            progress=progress,
+                    ORDER BY id
+                    LIMIT ?;
+                    """,
+                    (batch_rows,),
+                ).fetchall()
+            else:
+                batch_ids = conn.execute(
+                    f"""
+                    SELECT id
+                    FROM {temp_table}
+                    WHERE id > ?
+                    ORDER BY id
+                    LIMIT ?;
+                    """,
+                    (
+                        last_id,
+                        batch_rows,
+                    ),
+                ).fetchall()
+
+            if not batch_ids:
+                break
+
+            batch_last_id = int(
+                batch_ids[-1][0]
+            )
+
+            if last_id is None:
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM {table_name}
+                    WHERE id IN (
+                        SELECT id
+                        FROM {temp_table}
+                        WHERE id <= ?
+                    );
+                    """,
+                    (batch_last_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM {table_name}
+                    WHERE id IN (
+                        SELECT id
+                        FROM {temp_table}
+                        WHERE id > ?
+                          AND id <= ?
+                    );
+                    """,
+                    (
+                        last_id,
+                        batch_last_id,
+                    ),
+                )
+
+            changed = int(
+                conn.execute(
+                    "SELECT changes();"
+                ).fetchone()[0]
+            )
+            del cursor
+
+            batch_number += 1
+            total += changed
+            last_id = batch_last_id
+
+            _emit_progress(
+                progress,
+                "prune-delete: "
+                f"{table_name} "
+                f"batch={batch_number} "
+                f"rows={changed} "
+                f"total={total}/{expected} "
+                f"elapsed="
+                f"{time.monotonic() - started:.1f}s",
+            )
+
+            if changed <= 0:
+                raise RuntimeError(
+                    "Chunked prune delete made no "
+                    f"progress for {table_name}."
+                )
+
+        if total != expected:
+            raise RuntimeError(
+                "Chunked prune delete count "
+                f"mismatch for {table_name}: "
+                f"deleted={total} "
+                f"expected={expected}."
+            )
+
+        _emit_progress(
+            progress,
+            "prune-delete: "
+            f"{table_name} complete "
+            f"rows={total} "
+            f"batches={batch_number} "
+            f"elapsed="
+            f"{time.monotonic() - started:.1f}s",
         )
+
+        deleted[
+            table_name
+        ] = total
 
     return deleted
 
