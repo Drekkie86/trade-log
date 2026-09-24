@@ -531,7 +531,7 @@ def test_hot_archive_analytics_detect_same_count_value_drift(
     )
     assert after.passed is False
     assert (
-        "scalar_metrics"
+        "analytical_fingerprints"
         in after.differing_sections
     )
     assert (
