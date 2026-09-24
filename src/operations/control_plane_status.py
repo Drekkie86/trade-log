@@ -38,6 +38,20 @@ CORE_SERVICES = (
     "christiania-app.service",
 )
 
+PUBLIC_EDGE_SERVICE = (
+    "christiania-oauth2-proxy.service"
+)
+
+PUBLIC_EDGE_SERVICES = (
+    PUBLIC_EDGE_SERVICE,
+    "caddy.service",
+)
+
+PUBLIC_EDGE_ENABLED_STATES = {
+    "enabled",
+    "enabled-runtime",
+}
+
 
 @dataclass(frozen=True)
 class ControlPlaneStatus:
@@ -45,6 +59,9 @@ class ControlPlaneStatus:
     release_identity_state: str
     core_services: dict[str, str]
     core_services_state: str
+    public_edge_expected: bool
+    public_edge_services: dict[str, str]
+    public_edge_state: str
     supervisor_state: str
     deployment_supervisor_state: str
     supervisor_observed_at: str | None
@@ -64,6 +81,11 @@ class ControlPlaneStatus:
                 == "PASS",
                 self.core_services_state
                 == "PASS",
+                self.public_edge_state
+                in {
+                    "PASS",
+                    "NOT_CONFIGURED",
+                },
                 self.supervisor_state
                 == "HEALTHY",
                 self.supervisor_freshness_state
@@ -180,6 +202,33 @@ def _systemctl_state(
         [
             "systemctl",
             "is-active",
+            unit,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    value = (
+        completed.stdout
+        or completed.stderr
+        or "unknown"
+    ).strip()
+
+    return (
+        value
+        or "unknown"
+    )
+
+
+def _systemctl_enabled(
+    unit: str,
+) -> str:
+    completed = subprocess.run(
+        [
+            "systemctl",
+            "is-enabled",
             unit,
         ],
         text=True,
@@ -414,6 +463,10 @@ def collect_control_plane_status(
         [str],
         str,
     ] = _systemctl_state,
+    service_enabled: Callable[
+        [str],
+        str,
+    ] = _systemctl_enabled,
     now: datetime | None = None,
     supervisor_max_age_seconds: float = (
         DEFAULT_SUPERVISOR_MAX_AGE_SECONDS
@@ -461,6 +514,43 @@ def collect_control_plane_status(
             in core_services.values()
         )
         else "FAIL"
+    )
+
+    public_edge_enabled_state = (
+        service_enabled(
+            PUBLIC_EDGE_SERVICE
+        )
+    )
+
+    public_edge_expected = (
+        public_edge_enabled_state
+        in PUBLIC_EDGE_ENABLED_STATES
+    )
+
+    public_edge_services = (
+        {
+            unit: service_state(
+                unit
+            )
+            for unit
+            in PUBLIC_EDGE_SERVICES
+        }
+        if public_edge_expected
+        else {}
+    )
+
+    public_edge_state = (
+        (
+            "PASS"
+            if all(
+                state == "active"
+                for state
+                in public_edge_services.values()
+            )
+            else "FAIL"
+        )
+        if public_edge_expected
+        else "NOT_CONFIGURED"
     )
 
     supervisor = _read_json(
@@ -551,6 +641,15 @@ def collect_control_plane_status(
         ),
         core_services_state=(
             core_state
+        ),
+        public_edge_expected=(
+            public_edge_expected
+        ),
+        public_edge_services=(
+            public_edge_services
+        ),
+        public_edge_state=(
+            public_edge_state
         ),
         supervisor_state=(
             supervisor_state
