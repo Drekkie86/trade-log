@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+from src.config import get_runtime_setting
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
@@ -34,6 +35,8 @@ from src.operations.research_archive import (
 PRUNE_FORMAT_VERSION = 1
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
+DEFAULT_PRUNE_DELETE_BATCH_ROWS = 25_000
+MAX_PRUNE_DELETE_BATCH_ROWS = 100_000
 
 TARGET_TABLES = (
     "local_surface_residual_v2_observations",
@@ -138,6 +141,8 @@ class PruneReceipt:
     rows_before: dict[str, int]
     rows_deleted: dict[str, int]
     rows_preserved: dict[str, int]
+    delete_batch_rows: int
+    delete_batches: dict[str, int]
     freelist_bytes_before: int
     freelist_bytes_after: int
     database_size_bytes_before: int
@@ -343,6 +348,43 @@ def _sqlite_version(
             "Christiania database has no schema_version."
         )
     return int(row[0])
+
+
+def prune_delete_batch_rows(
+    configured: int | None = None,
+) -> int:
+    raw: object = (
+        configured
+        if configured is not None
+        else get_runtime_setting(
+            "CHRISTIANIA_PRUNE_DELETE_BATCH_ROWS"
+        )
+    )
+
+    if raw in (
+        None,
+        "",
+    ):
+        value = (
+            DEFAULT_PRUNE_DELETE_BATCH_ROWS
+        )
+    else:
+        value = int(
+            raw
+        )
+
+    if (
+        value < 1
+        or value
+        > MAX_PRUNE_DELETE_BATCH_ROWS
+    ):
+        raise ValueError(
+            "Prune delete batch rows must be "
+            "between 1 and "
+            f"{MAX_PRUNE_DELETE_BATCH_ROWS}."
+        )
+
+    return value
 
 
 def _page_freelist_bytes(
@@ -1404,7 +1446,11 @@ def _delete_reference_safe_rows(
     conn: sqlite3.Connection,
     *,
     progress: Callable[[str], None] | None = None,
-) -> dict[str, int]:
+    batch_rows: int | None = None,
+) -> tuple[
+    dict[str, int],
+    dict[str, int],
+]:
     temp_by_table = {
         "local_surface_residual_v2_observations":
             "_delete_surface_obs",
@@ -1420,31 +1466,184 @@ def _delete_reference_safe_rows(
             "_delete_option_quotes",
     }
 
-    deleted: dict[str, int] = {}
+    batch_size = (
+        prune_delete_batch_rows(
+            batch_rows
+        )
+    )
+
+    deleted: dict[
+        str,
+        int,
+    ] = {}
+
+    batches: dict[
+        str,
+        int,
+    ] = {}
+
     for table_name in DELETE_ORDER:
         temp_table = temp_by_table[
             table_name
         ]
-        deleted[
-            table_name
-        ] = _execute_with_progress(
-            conn,
-            label=(
-                "delete "
-                + table_name
+
+        expected = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {temp_table};
+                """
+            ).fetchone()[0]
+        )
+
+        total_deleted = 0
+        batch_count = 0
+        last_id: int | None = None
+
+        _emit_progress(
+            progress,
+            (
+                "prune: delete "
+                f"{table_name} started "
+                f"rows={expected} "
+                f"batch_rows={batch_size}"
             ),
-            sql=f"""
+        )
+
+        while total_deleted < expected:
+            if last_id is None:
+                boundary_rows = (
+                    conn.execute(
+                        f"""
+                        SELECT id
+                        FROM {temp_table}
+                        ORDER BY id
+                        LIMIT ?;
+                        """,
+                        (
+                            batch_size,
+                        ),
+                    ).fetchall()
+                )
+            else:
+                boundary_rows = (
+                    conn.execute(
+                        f"""
+                        SELECT id
+                        FROM {temp_table}
+                        WHERE id > ?
+                        ORDER BY id
+                        LIMIT ?;
+                        """,
+                        (
+                            last_id,
+                            batch_size,
+                        ),
+                    ).fetchall()
+                )
+
+            if not boundary_rows:
+                raise RuntimeError(
+                    "Prune delete-set traversal "
+                    "ended before expected row count "
+                    f"for {table_name}: "
+                    f"deleted={total_deleted} "
+                    f"expected={expected}."
+                )
+
+            low_id = int(
+                boundary_rows[0][0]
+            )
+            high_id = int(
+                boundary_rows[-1][0]
+            )
+            expected_batch = len(
+                boundary_rows
+            )
+
+            started = (
+                time.monotonic()
+            )
+
+            conn.execute(
+                f"""
                 DELETE FROM {table_name}
                 WHERE id IN (
                     SELECT id
                     FROM {temp_table}
+                    WHERE id >= ?
+                      AND id <= ?
                 );
-            """,
-            progress=progress,
+                """,
+                (
+                    low_id,
+                    high_id,
+                ),
+            )
+
+            changed = int(
+                conn.execute(
+                    "SELECT changes();"
+                ).fetchone()[0]
+            )
+
+            if (
+                changed
+                != expected_batch
+            ):
+                raise RuntimeError(
+                    "Prune batch row-count mismatch "
+                    f"for {table_name}: "
+                    f"changed={changed} "
+                    f"expected={expected_batch} "
+                    f"range={low_id}-{high_id}."
+                )
+
+            total_deleted += (
+                changed
+            )
+            batch_count += 1
+            last_id = high_id
+
+            elapsed = (
+                time.monotonic()
+                - started
+            )
+
+            _emit_progress(
+                progress,
+                (
+                    "prune: delete "
+                    f"{table_name} batch="
+                    f"{batch_count} "
+                    f"rows={changed} "
+                    f"total={total_deleted}/"
+                    f"{expected} "
+                    f"elapsed={elapsed:.1f}s"
+                ),
+            )
+
+        deleted[
+            table_name
+        ] = total_deleted
+        batches[
+            table_name
+        ] = batch_count
+
+        _emit_progress(
+            progress,
+            (
+                "prune: delete "
+                f"{table_name} complete "
+                f"rows={total_deleted} "
+                f"batches={batch_count}"
+            ),
         )
 
-    return deleted
-
+    return (
+        deleted,
+        batches,
+    )
 
 def _foreign_key_violations(
     conn: sqlite3.Connection,
@@ -1476,6 +1675,7 @@ def prune_research_session(
     archive_dir: str | Path | None = None,
     confirm_session: str,
     progress: Callable[[str], None] | None = None,
+    delete_batch_rows: int | None = None,
 ) -> PruneReceipt:
     if confirm_session != session_date:
         raise RuntimeError(
@@ -1636,10 +1836,15 @@ def prune_research_session(
                 conn,
                 trigger_sql,
             )
-            deleted = (
+            (
+                deleted,
+                delete_batches,
+            ) = (
                 _delete_reference_safe_rows(
                     conn,
                     progress=progress,
+                    batch_rows=
+                        delete_batch_rows,
                 )
             )
 
@@ -1796,6 +2001,12 @@ def prune_research_session(
         rows_deleted=deleted,
         rows_preserved=
             rows_preserved,
+        delete_batch_rows=
+            prune_delete_batch_rows(
+                delete_batch_rows
+            ),
+        delete_batches=
+            delete_batches,
         freelist_bytes_before=
             freelist_before,
         freelist_bytes_after=
