@@ -124,3 +124,25 @@ def test_backup_entrypoint_skips_when_policy_says_nothing_new(
         payload["decision"]["reason"]
         == "NO_NEW_COMPLETED_RESEARCH"
     )
+
+
+def test_backup_service_cleans_only_stale_temp_backup_files():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    unit = (
+        root
+        / "deploy/systemd/christiania-backup.service"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert "ExecStopPost=" in unit
+    assert ".christiania_backup_*.tmp.db" in unit
+    assert ".christiania_backup_*.tmp.db-journal" in unit
+    assert ".christiania_backup_*.tmp.db-wal" in unit
+    assert ".christiania_backup_*.tmp.db-shm" in unit
+    assert "christiania_backup_*.db" not in unit.replace(
+        ".christiania_backup_*.tmp.db",
+        "",
+    )
