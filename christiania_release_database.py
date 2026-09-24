@@ -40,6 +40,8 @@ class ReleaseDatabasePreflight:
     logical_source_bytes: int | None
     filesystem_total_bytes: int | None
     filesystem_free_bytes: int | None
+    backup_and_reserve_bytes: int | None
+    migration_storage_headroom_bytes: int | None
     required_free_bytes: int | None
     capacity_state: str
 
@@ -179,6 +181,279 @@ def _prune_release_rollback_backups(
     return pruned
 
 
+_V34_INDEX_SIZE_PROXIES = (
+    (
+        "idx_shadow_candidates_run",
+        3,
+    ),
+    (
+        "uq_hypothesis_scanner_evaluation_quote",
+        2,
+    ),
+    (
+        "idx_surface_v2_quote",
+        1,
+    ),
+)
+
+
+def _sqlite_object_bytes(
+    database: Path,
+    names: tuple[str, ...],
+) -> dict[str, int]:
+    if not names:
+        return {}
+
+    uri = (
+        database.resolve().as_uri()
+        + "?mode=ro"
+    )
+
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=30.0,
+    )
+
+    try:
+        placeholders = ",".join(
+            "?"
+            for _ in names
+        )
+
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    name,
+                    SUM(pgsize) AS bytes
+                FROM dbstat
+                WHERE name IN (
+                    {placeholders}
+                )
+                GROUP BY name;
+                """,
+                names,
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                "Release migration storage "
+                "preflight requires SQLite "
+                "dbstat object attribution: "
+                f"{type(exc).__name__}:{exc}"
+            ) from exc
+    finally:
+        conn.close()
+
+    sizes = {
+        str(
+            row[0]
+        ): int(
+            row[1]
+            or 0
+        )
+        for row
+        in rows
+    }
+
+    missing = [
+        name
+        for name
+        in names
+        if sizes.get(
+            name,
+            0,
+        ) <= 0
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "Release migration storage "
+            "preflight is missing reviewed "
+            "index-size proxy objects: "
+            + ", ".join(
+                missing
+            )
+        )
+
+    return sizes
+
+
+def _migration_storage_headroom_bytes(
+    database: Path,
+    *,
+    schema_before: int,
+    schema_target: int,
+) -> int:
+    if not (
+        schema_before
+        < 34
+        <= schema_target
+    ):
+        return 0
+
+    proxies = {
+        name: multiplier
+        for (
+            name,
+            multiplier,
+        )
+        in _V34_INDEX_SIZE_PROXIES
+    }
+
+    sizes = _sqlite_object_bytes(
+        database,
+        tuple(
+            proxies
+        ),
+    )
+
+    # Final-index upper bound:
+    #   * shadow run-id index is a same-table single INTEGER proxy;
+    #   * scanner unique quote index is a conservative wider two-column proxy
+    #     for each new single-INTEGER scanner index;
+    #   * Surface V2 quote index is a same-table single INTEGER proxy.
+    final_index_upper_bound = sum(
+        sizes[
+            name
+        ]
+        * multiplier
+        for (
+            name,
+            multiplier,
+        )
+        in proxies.items()
+    )
+
+    # Preserve another full upper-bound copy for SQLite's index-build sorting
+    # workspace. This is deliberately conservative and does not credit
+    # freelist pages that may reduce actual main-file growth.
+    return (
+        final_index_upper_bound
+        * 2
+    )
+
+
+def _release_capacity_snapshot(
+    database: Path,
+    backup_dir: Path,
+    *,
+    schema_before: int,
+    schema_target: int,
+) -> tuple[
+    int,
+    int,
+    int,
+    int,
+    int,
+]:
+    backup_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    usage = shutil.disk_usage(
+        backup_dir
+    )
+
+    logical_source = (
+        backup_logical_source_bytes(
+            database
+        )
+    )
+
+    backup_and_reserve = (
+        backup_required_free_bytes(
+            source_size_bytes=(
+                logical_source
+            ),
+            filesystem_total_bytes=int(
+                usage.total
+            ),
+        )
+    )
+
+    migration_headroom = (
+        _migration_storage_headroom_bytes(
+            database,
+            schema_before=(
+                schema_before
+            ),
+            schema_target=(
+                schema_target
+            ),
+        )
+    )
+
+    required = (
+        backup_and_reserve
+        + migration_headroom
+    )
+
+    return (
+        logical_source,
+        int(
+            usage.total
+        ),
+        int(
+            usage.free
+        ),
+        backup_and_reserve,
+        required,
+    )
+
+
+def _assert_release_migration_capacity(
+    database: Path,
+    backup_dir: Path,
+    *,
+    schema_before: int,
+    schema_target: int,
+) -> tuple[int, int]:
+    (
+        logical_source,
+        filesystem_total,
+        filesystem_free,
+        backup_and_reserve,
+        required,
+    ) = _release_capacity_snapshot(
+        database,
+        backup_dir,
+        schema_before=schema_before,
+        schema_target=schema_target,
+    )
+
+    migration_headroom = (
+        required
+        - backup_and_reserve
+    )
+
+    if (
+        filesystem_free
+        < required
+    ):
+        raise RuntimeError(
+            "Insufficient release migration "
+            "filesystem headroom: "
+            f"free={filesystem_free} "
+            f"required={required} "
+            f"logical_source={logical_source} "
+            f"backup_and_reserve="
+            f"{backup_and_reserve} "
+            f"migration_headroom="
+            f"{migration_headroom} "
+            f"filesystem_total="
+            f"{filesystem_total}. "
+            "No rollback snapshot or migration "
+            "was started."
+        )
+
+    return (
+        backup_and_reserve,
+        migration_headroom,
+    )
+
+
 def preflight_release_database() -> ReleaseDatabasePreflight:
     database = resolve_db_path()
     backup_dir = resolve_backup_dir()
@@ -242,41 +517,36 @@ def preflight_release_database() -> ReleaseDatabasePreflight:
             logical_source_bytes=None,
             filesystem_total_bytes=None,
             filesystem_free_bytes=None,
+            backup_and_reserve_bytes=None,
+            migration_storage_headroom_bytes=None,
             required_free_bytes=None,
             capacity_state="NOT_REQUIRED",
         )
 
-    backup_dir.mkdir(
-        parents=True,
-        exist_ok=True,
+    (
+        logical_source,
+        filesystem_total,
+        filesystem_free,
+        backup_and_reserve,
+        required,
+    ) = _release_capacity_snapshot(
+        database,
+        backup_dir,
+        schema_before=schema_before,
+        schema_target=(
+            EXPECTED_SCHEMA_VERSION
+        ),
     )
 
-    usage = shutil.disk_usage(
-        backup_dir
-    )
-
-    logical_source = (
-        backup_logical_source_bytes(
-            database
-        )
-    )
-
-    required = (
-        backup_required_free_bytes(
-            source_size_bytes=(
-                logical_source
-            ),
-            filesystem_total_bytes=int(
-                usage.total
-            ),
-        )
+    migration_headroom = (
+        required
+        - backup_and_reserve
     )
 
     state = (
         "PASS"
-        if int(
-            usage.free
-        ) >= required
+        if filesystem_free
+        >= required
         else "FAIL"
     )
 
@@ -295,11 +565,17 @@ def preflight_release_database() -> ReleaseDatabasePreflight:
         logical_source_bytes=(
             logical_source
         ),
-        filesystem_total_bytes=int(
-            usage.total
+        filesystem_total_bytes=(
+            filesystem_total
         ),
-        filesystem_free_bytes=int(
-            usage.free
+        filesystem_free_bytes=(
+            filesystem_free
+        ),
+        backup_and_reserve_bytes=(
+            backup_and_reserve
+        ),
+        migration_storage_headroom_bytes=(
+            migration_headroom
         ),
         required_free_bytes=(
             required
@@ -357,6 +633,17 @@ def _create_rollback_backup(
     assert_backup_capacity(
         source=database,
         target_dir=backup_dir,
+    )
+
+    _assert_release_migration_capacity(
+        database,
+        backup_dir,
+        schema_before=(
+            schema_version
+        ),
+        schema_target=(
+            EXPECTED_SCHEMA_VERSION
+        ),
     )
 
     stamp = datetime.now(
@@ -667,6 +954,14 @@ def main() -> int:
                 print(
                     "Filesystem free bytes: "
                     f"{result.filesystem_free_bytes}"
+                )
+                print(
+                    "Backup + reserve bytes: "
+                    f"{result.backup_and_reserve_bytes}"
+                )
+                print(
+                    "Migration storage headroom bytes: "
+                    f"{result.migration_storage_headroom_bytes}"
                 )
                 print(
                     "Required free bytes: "
