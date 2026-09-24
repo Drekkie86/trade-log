@@ -360,7 +360,12 @@ Deploy through the immutable release receiver. Schema v34 is a real migration;
 the release migration/rollback machinery remains authoritative.
 
 Before the release rollback snapshot is created, the migration path now applies
-the same WAL-aware capacity contract as normal verified backups:
+the same WAL-aware capacity contract as normal verified backups. The receiver
+also follows the maintenance one-shot rule: after stopping scheduling timers it
+refuses deployment if a backup, restore drill, audit or other one-shot is
+`active`, `activating`, `reloading` or `deactivating`; rollback never
+kills that work.
+
 
 - logical source size is the greater of main-file bytes and
   `page_count * page_size`;
