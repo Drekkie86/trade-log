@@ -246,6 +246,15 @@ rehearse_maintenance() {
     fail "cannot rehearse while maintenance state already exists at ${STATE_FILE}"
   fi
 
+  # A rehearsal must not interrupt an in-flight backup, audit, restore drill
+  # or other one-shot job merely to test orchestration. Real maintenance may
+  # quiesce those jobs intentionally; rehearsal refuses until they are idle.
+  for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "rehearsal refused while one-shot service is active: ${unit}"
+    fi
+  done
+
   rehearsal_restore() {
     local rc=$?
     trap - ERR INT TERM HUP
@@ -260,10 +269,13 @@ rehearse_maintenance() {
     exit "${rc}"
   }
 
-  trap rehearsal_restore ERR INT TERM HUP
-
   echo "=== CHRISTIANIA MAINTENANCE REHEARSAL ==="
+
+  # enter_maintenance owns its own failure trap. Install the rehearsal trap
+  # only after a successful entry because enter_maintenance deliberately
+  # clears its local trap before returning.
   enter_maintenance
+  trap rehearsal_restore ERR INT TERM HUP
 
   [[ -f "${STATE_FILE}" ]] || fail "maintenance state missing after enter"
 
@@ -286,6 +298,10 @@ rehearse_maintenance() {
   exit_maintenance
 
   [[ ! -e "${STATE_FILE}" ]] || fail "maintenance state remained after exit"
+
+  if systemctl show       --property=LoadState       --value       christiania-supervisor.service       2>/dev/null       | grep -Fqx loaded; then
+    systemctl start christiania-supervisor.service || true
+  fi
 
   trap - ERR INT TERM HUP
 
