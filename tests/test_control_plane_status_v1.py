@@ -13,6 +13,8 @@ import pytest
 from src.operations.control_plane_status import (
     CORE_SERVICES,
     DEFAULT_SUPERVISOR_MAX_AGE_SECONDS,
+    PUBLIC_EDGE_SERVICE,
+    PUBLIC_EDGE_SERVICES,
     collect_control_plane_status,
 )
 from src.operations.systemd_resources import (
@@ -144,6 +146,7 @@ def _collect(
     audit_dir: Path,
     systemd_root: Path,
     service_state=_active,
+    service_enabled=lambda unit: "disabled",
 ):
     return (
         collect_control_plane_status(
@@ -152,6 +155,9 @@ def _collect(
             systemd_root=systemd_root,
             service_state=(
                 service_state
+            ),
+            service_enabled=(
+                service_enabled
             ),
             now=NOW,
         )
@@ -197,6 +203,16 @@ def test_control_plane_status_ready_from_existing_evidence(
     assert (
         status.core_services_state
         == "PASS"
+    )
+
+    assert (
+        status.public_edge_expected
+        is False
+    )
+
+    assert (
+        status.public_edge_state
+        == "NOT_CONFIGURED"
     )
 
     assert (
@@ -709,3 +725,123 @@ def test_control_plane_status_rejects_negative_freshness_budget(
             now=NOW,
             supervisor_max_age_seconds=-1,
         )
+
+def test_control_plane_status_requires_enabled_public_edge_to_be_active(
+    tmp_path: Path,
+):
+    (
+        app_dir,
+        audit_dir,
+        systemd_root,
+    ) = _prepare(
+        tmp_path
+    )
+
+    _write_supervisor(
+        audit_dir
+    )
+
+    def service_state(
+        unit: str,
+    ) -> str:
+        if (
+            unit
+            == PUBLIC_EDGE_SERVICE
+        ):
+            return "inactive"
+
+        assert (
+            unit
+            in (
+                *CORE_SERVICES,
+                *PUBLIC_EDGE_SERVICES,
+            )
+        )
+        return "active"
+
+    status = _collect(
+        app_dir=app_dir,
+        audit_dir=audit_dir,
+        systemd_root=systemd_root,
+        service_state=service_state,
+        service_enabled=lambda unit: (
+            "enabled"
+            if unit
+            == PUBLIC_EDGE_SERVICE
+            else "disabled"
+        ),
+    )
+
+    assert (
+        status.public_edge_expected
+        is True
+    )
+    assert (
+        status.public_edge_state
+        == "FAIL"
+    )
+    assert (
+        status.ready
+        is False
+    )
+
+    # A broken public edge is operationally NOT READY, but it
+    # must not prevent a deployment that may repair the edge.
+    assert (
+        status.deployment_safe
+        is True
+    )
+
+
+def test_control_plane_status_accepts_enabled_healthy_public_edge(
+    tmp_path: Path,
+):
+    (
+        app_dir,
+        audit_dir,
+        systemd_root,
+    ) = _prepare(
+        tmp_path
+    )
+
+    _write_supervisor(
+        audit_dir
+    )
+
+    def service_state(
+        unit: str,
+    ) -> str:
+        assert (
+            unit
+            in (
+                *CORE_SERVICES,
+                *PUBLIC_EDGE_SERVICES,
+            )
+        )
+        return "active"
+
+    status = _collect(
+        app_dir=app_dir,
+        audit_dir=audit_dir,
+        systemd_root=systemd_root,
+        service_state=service_state,
+        service_enabled=lambda unit: (
+            "enabled"
+            if unit
+            == PUBLIC_EDGE_SERVICE
+            else "disabled"
+        ),
+    )
+
+    assert (
+        status.public_edge_expected
+        is True
+    )
+    assert (
+        status.public_edge_state
+        == "PASS"
+    )
+    assert (
+        status.ready
+        is True
+    )
