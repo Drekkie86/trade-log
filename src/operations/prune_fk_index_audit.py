@@ -3,7 +3,12 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Iterable
+
+from src.database.repository import (
+    resolve_db_path,
+)
 
 
 PRUNE_PARENT_TABLES = (
@@ -412,3 +417,37 @@ def audit_prune_parent_fk_indexes(
             checks
         ),
     )
+
+
+
+def audit_prune_database_fk_indexes(
+    *,
+    db_path: str | Path | None = None,
+) -> ForeignKeyIndexAudit:
+    database = resolve_db_path(
+        db_path
+    )
+
+    uri = (
+        database.resolve().as_uri()
+        + "?mode=ro"
+    )
+
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=30.0,
+    )
+
+    try:
+        conn.execute(
+            "PRAGMA query_only = ON;"
+        )
+
+        return (
+            audit_prune_parent_fk_indexes(
+                conn
+            )
+        )
+    finally:
+        conn.close()
