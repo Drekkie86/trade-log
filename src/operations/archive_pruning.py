@@ -140,6 +140,7 @@ class PruneSessionPlan:
     local_archive_fast_verified: bool
     run_lineage_verified: bool
     archive_parity_verified: bool
+    archive_parity_proof_sha256: str | None
     foreign_key_indexes_verified: bool
     foreign_key_index_checks: tuple[
         PruneForeignKeyIndexCheck,
@@ -181,6 +182,8 @@ class PruneReceipt:
     remote_proof_filename: str
     remote_proof_sha256: str
     remote_gate_state: str
+    archive_parity_proof_sha256: str
+    archive_source_schema_version: int
     schema_version: int
     trigger_sql_sha256_before: dict[str, str]
     trigger_sql_sha256_after: dict[str, str]
@@ -1286,6 +1289,7 @@ def _build_plan_from_connection(
     proof: RemoteArchiveProof,
     local_archive_fast_verified: bool,
     archive_parity_verified: bool,
+    archive_parity_proof_sha256: str | None,
     progress: Callable[[str], None] | None = None,
 ) -> PruneSessionPlan:
     schema_version = _sqlite_version(
@@ -1454,6 +1458,9 @@ def _build_plan_from_connection(
         archive_parity_verified=(
             archive_parity_verified
         ),
+        archive_parity_proof_sha256=(
+            archive_parity_proof_sha256
+        ),
         foreign_key_indexes_verified=(
             not missing_foreign_key_indexes
         ),
@@ -1579,6 +1586,9 @@ def plan_prune_session(
                 local_verified,
             archive_parity_verified=(
                 parity.passed
+            ),
+            archive_parity_proof_sha256=(
+                parity.proof_sha256
             ),
             progress=progress,
         )
@@ -2134,6 +2144,9 @@ def prune_research_session(
                 proof=verified_proof,
                 local_archive_fast_verified=True,
                 archive_parity_verified=True,
+                archive_parity_proof_sha256=(
+                    parity.proof_sha256
+                ),
                 progress=progress,
             )
             if not plan.apply_eligible:
@@ -2325,6 +2338,12 @@ def prune_research_session(
             ),
         remote_gate_state=
             verified_proof.pruning_gate_state,
+        archive_parity_proof_sha256=(
+            parity.proof_sha256
+        ),
+        archive_source_schema_version=(
+            parity.archive_source_schema_version
+        ),
         schema_version=
             EXPECTED_SCHEMA_VERSION,
         trigger_sql_sha256_before=
