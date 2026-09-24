@@ -329,3 +329,40 @@ def test_maintenance_refuses_to_interrupt_active_oneshots():
         'stop_optional_unit "${unit}"'
         not in one_shot_loop
     )
+
+
+def test_maintenance_holder_probe_distinguishes_errors_from_no_matches():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "probe_holders_with()"
+        in script
+    )
+    assert (
+        "Holder probe "
+        in script
+    )
+    assert (
+        "probes failed"
+        in script
+    )
+
+    holder_check = script[
+        script.index(
+            "assert_no_database_holders()"
+        ):
+        script.index(
+            "record_state()"
+        )
+    ]
+
+    assert (
+        "probe_holders_with"
+        in holder_check
+    )
+    assert (
+        "cannot prove database quiescence"
+        in holder_check
+    )
