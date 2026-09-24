@@ -14,6 +14,14 @@ from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
 )
+from src.operations.archive_analytics import (
+    ARCHIVE_PARITY_STATE,
+    parity_receipt_path,
+    validate_archive_parity_receipt,
+)
+from src.operations.prune_schema import (
+    audit_prune_foreign_key_indexes_connection,
+)
 from src.operations.remote_archive import (
     RemoteArchiveProof,
     load_remote_archive_proof,
@@ -31,6 +39,9 @@ from src.operations.research_archive import (
 PRUNE_FORMAT_VERSION = 1
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
+DEFAULT_PRUNE_DELETE_BATCH_SIZE = 50_000
+MIN_PRUNE_DELETE_BATCH_SIZE = 1_000
+MAX_PRUNE_DELETE_BATCH_SIZE = 250_000
 
 TARGET_TABLES = (
     "local_surface_residual_v2_observations",
@@ -92,6 +103,11 @@ class PruneSessionPlan:
     remote_proof_filename: str
     remote_gate_state: str
     local_archive_fast_verified: bool
+    parity_receipt_filename: str
+    parity_state: str
+    parity_verified: bool
+    prune_fk_index_state: str
+    missing_fk_indexes: tuple[str, ...]
     run_lineage_verified: bool
     tables: tuple[PruneTablePlan, ...]
     total_archived_rows: int
@@ -109,6 +125,9 @@ class PruneSessionPlan:
                 for item in self.tables
             ],
             "blockers": list(self.blockers),
+            "missing_fk_indexes": list(
+                self.missing_fk_indexes
+            ),
         }
 
 
@@ -124,6 +143,11 @@ class PruneReceipt:
     remote_proof_filename: str
     remote_proof_sha256: str
     remote_gate_state: str
+    parity_receipt_filename: str
+    parity_receipt_sha256: str
+    parity_state: str
+    prune_fk_index_state: str
+    delete_batch_size: int
     schema_version: int
     trigger_sql_sha256_before: dict[str, str]
     trigger_sql_sha256_after: dict[str, str]
@@ -337,6 +361,39 @@ def _sqlite_version(
     return int(row[0])
 
 
+def _prune_delete_batch_size() -> int:
+    raw = os.environ.get(
+        "CHRISTIANIA_PRUNE_DELETE_BATCH_SIZE"
+    )
+
+    if raw in (
+        None,
+        "",
+    ):
+        return (
+            DEFAULT_PRUNE_DELETE_BATCH_SIZE
+        )
+
+    value = int(
+        raw
+    )
+
+    if (
+        value
+        < MIN_PRUNE_DELETE_BATCH_SIZE
+        or value
+        > MAX_PRUNE_DELETE_BATCH_SIZE
+    ):
+        raise ValueError(
+            "CHRISTIANIA_PRUNE_DELETE_BATCH_SIZE "
+            f"must be between "
+            f"{MIN_PRUNE_DELETE_BATCH_SIZE} "
+            f"and {MAX_PRUNE_DELETE_BATCH_SIZE}."
+        )
+
+    return value
+
+
 def _page_freelist_bytes(
     conn: sqlite3.Connection,
 ) -> int:
@@ -393,6 +450,7 @@ def _execute_with_progress(
     label: str,
     sql: str,
     progress: Callable[[str], None] | None,
+    params: tuple[object, ...] = (),
 ) -> int:
     started = time.monotonic()
     next_heartbeat = started + 10.0
@@ -423,7 +481,10 @@ def _execute_with_progress(
         250_000,
     )
     try:
-        conn.execute(sql)
+        conn.execute(
+            sql,
+            params,
+        )
         changed = int(
             conn.execute(
                 "SELECT changes();"
@@ -1005,6 +1066,9 @@ def _build_plan_from_connection(
     proof_path: Path,
     proof: RemoteArchiveProof,
     local_archive_fast_verified: bool,
+    parity_receipt_filename: str,
+    parity_state: str,
+    parity_verified: bool,
     progress: Callable[[str], None] | None = None,
 ) -> PruneSessionPlan:
     schema_version = _sqlite_version(
@@ -1030,6 +1094,36 @@ def _build_plan_from_connection(
         PruneTablePlan
     ] = []
     blockers: list[str] = []
+
+    fk_index_audit = (
+        audit_prune_foreign_key_indexes_connection(
+            conn
+        )
+    )
+
+    missing_fk_indexes = tuple(
+        (
+            f"{item.child_table}"
+            f"({','.join(item.child_columns)})"
+            f"->{item.parent_table}"
+        )
+        for item
+        in fk_index_audit.missing
+    )
+
+    if not fk_index_audit.passed:
+        blockers.extend(
+            "PRUNE_FK_INDEX_MISSING:"
+            + item
+            for item
+            in missing_fk_indexes
+        )
+
+    if not parity_verified:
+        blockers.append(
+            "HOT_COLD_PARITY_NOT_VERIFIED:"
+            + parity_state
+        )
 
     for table_name in TARGET_TABLES:
         archived_rows = candidates[
@@ -1146,6 +1240,19 @@ def _build_plan_from_connection(
             proof.pruning_gate_state,
         local_archive_fast_verified=
             local_archive_fast_verified,
+        parity_receipt_filename=(
+            parity_receipt_filename
+        ),
+        parity_state=parity_state,
+        parity_verified=parity_verified,
+        prune_fk_index_state=(
+            "PASS"
+            if fk_index_audit.passed
+            else "FAIL"
+        ),
+        missing_fk_indexes=(
+            missing_fk_indexes
+        ),
         run_lineage_verified=lineage_ok,
         tables=tuple(table_plans),
         total_archived_rows=total_archived,
@@ -1222,6 +1329,32 @@ def plan_prune_session(
             "planner: remote immutable proof revalidation complete",
         )
 
+    parity_path = (
+        parity_receipt_path(
+            manifest_path
+        )
+    )
+
+    parity_verified = False
+    parity_state = "MISSING"
+
+    try:
+        parity = (
+            validate_archive_parity_receipt(
+                session_date,
+                db_path=database,
+                archive_dir=directory,
+            )
+        )
+        parity_verified = True
+        parity_state = parity.state
+    except Exception as exc:
+        parity_state = (
+            type(exc).__name__
+            + ":"
+            + str(exc)
+        )
+
     uri = (
         database.resolve().as_uri()
         + "?mode=ro"
@@ -1244,6 +1377,13 @@ def plan_prune_session(
             proof=proof,
             local_archive_fast_verified=
                 local_verified,
+            parity_receipt_filename=(
+                parity_path.name
+            ),
+            parity_state=parity_state,
+            parity_verified=(
+                parity_verified
+            ),
             progress=progress,
         )
     finally:
@@ -1347,10 +1487,168 @@ def _restore_delete_triggers(
     return restored
 
 
+def _delete_table_in_batches(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    temp_table: str,
+    batch_size: int,
+    progress: Callable[[str], None] | None,
+) -> int:
+    total = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {temp_table};
+            """
+        ).fetchone()[0]
+    )
+
+    if total == 0:
+        _emit_progress(
+            progress,
+            "delete "
+            f"{table_name} complete "
+            "rows=0 batches=0",
+        )
+        return 0
+
+    deleted = 0
+    last_id: int | None = None
+    batch_number = 0
+    started = time.monotonic()
+
+    while deleted < total:
+        if last_id is None:
+            rows = conn.execute(
+                f"""
+                SELECT id
+                FROM {temp_table}
+                ORDER BY id
+                LIMIT ?;
+                """,
+                (
+                    batch_size,
+                ),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""
+                SELECT id
+                FROM {temp_table}
+                WHERE id > ?
+                ORDER BY id
+                LIMIT ?;
+                """,
+                (
+                    last_id,
+                    batch_size,
+                ),
+            ).fetchall()
+
+        if not rows:
+            raise RuntimeError(
+                "Prune batch cursor ended "
+                f"early for {table_name}: "
+                f"deleted={deleted} "
+                f"expected={total}."
+            )
+
+        upper_id = int(
+            rows[-1][0]
+        )
+        expected_batch = len(
+            rows
+        )
+        batch_number += 1
+
+        if last_id is None:
+            sql = f"""
+                DELETE FROM {table_name}
+                WHERE id IN (
+                    SELECT id
+                    FROM {temp_table}
+                    WHERE id <= ?
+                );
+            """
+            params: tuple[
+                object,
+                ...,
+            ] = (
+                upper_id,
+            )
+        else:
+            sql = f"""
+                DELETE FROM {table_name}
+                WHERE id IN (
+                    SELECT id
+                    FROM {temp_table}
+                    WHERE id > ?
+                      AND id <= ?
+                );
+            """
+            params = (
+                last_id,
+                upper_id,
+            )
+
+        changed = (
+            _execute_with_progress(
+                conn,
+                label=(
+                    "delete "
+                    + table_name
+                    + " batch "
+                    + str(
+                        batch_number
+                    )
+                ),
+                sql=sql,
+                params=params,
+                progress=progress,
+            )
+        )
+
+        if changed != expected_batch:
+            raise RuntimeError(
+                "Prune batch row-count "
+                f"mismatch for {table_name}: "
+                f"batch={batch_number} "
+                f"deleted={changed} "
+                f"expected={expected_batch}."
+            )
+
+        deleted += changed
+        last_id = upper_id
+
+        _emit_progress(
+            progress,
+            "delete "
+            f"{table_name} progress "
+            f"rows={deleted}/{total} "
+            f"batch={batch_number} "
+            f"elapsed="
+            f"{time.monotonic() - started:.1f}s",
+        )
+
+    _emit_progress(
+        progress,
+        "delete "
+        f"{table_name} complete "
+        f"rows={deleted} "
+        f"batches={batch_number} "
+        f"elapsed="
+        f"{time.monotonic() - started:.1f}s",
+    )
+
+    return deleted
+
+
 def _delete_reference_safe_rows(
     conn: sqlite3.Connection,
     *,
     progress: Callable[[str], None] | None = None,
+    batch_size: int | None = None,
 ) -> dict[str, int]:
     temp_by_table = {
         "local_surface_residual_v2_observations":
@@ -1367,26 +1665,41 @@ def _delete_reference_safe_rows(
             "_delete_option_quotes",
     }
 
+    effective_batch_size = (
+        _prune_delete_batch_size()
+        if batch_size is None
+        else int(
+            batch_size
+        )
+    )
+
+    if (
+        effective_batch_size
+        < MIN_PRUNE_DELETE_BATCH_SIZE
+        or effective_batch_size
+        > MAX_PRUNE_DELETE_BATCH_SIZE
+    ):
+        raise ValueError(
+            "Prune delete batch size is "
+            "outside the reviewed bounds."
+        )
+
     deleted: dict[str, int] = {}
+
     for table_name in DELETE_ORDER:
-        temp_table = temp_by_table[
-            table_name
-        ]
         deleted[
             table_name
-        ] = _execute_with_progress(
+        ] = _delete_table_in_batches(
             conn,
-            label=(
-                "delete "
-                + table_name
+            table_name=table_name,
+            temp_table=(
+                temp_by_table[
+                    table_name
+                ]
             ),
-            sql=f"""
-                DELETE FROM {table_name}
-                WHERE id IN (
-                    SELECT id
-                    FROM {temp_table}
-                );
-            """,
+            batch_size=(
+                effective_batch_size
+            ),
             progress=progress,
         )
 
@@ -1456,6 +1769,20 @@ def prune_research_session(
             f"session: {receipt_path}"
         )
 
+    parity = (
+        validate_archive_parity_receipt(
+            session_date,
+            db_path=database,
+            archive_dir=directory,
+        )
+    )
+
+    parity_path = (
+        parity_receipt_path(
+            manifest_path
+        )
+    )
+
     # Destructive work is blocked until both independent copies are
     # revalidated immediately before the database transaction.
     _emit_progress(
@@ -1502,6 +1829,10 @@ def prune_research_session(
         database.stat().st_size
     )
 
+    delete_batch_size = (
+        _prune_delete_batch_size()
+    )
+
     conn = sqlite3.connect(
         database,
         timeout=60.0,
@@ -1542,6 +1873,13 @@ def prune_research_session(
                 proof_path=proof_path,
                 proof=verified_proof,
                 local_archive_fast_verified=True,
+                parity_receipt_filename=(
+                    parity_path.name
+                ),
+                parity_state=(
+                    parity.state
+                ),
+                parity_verified=True,
                 progress=progress,
             )
             if not plan.apply_eligible:
@@ -1587,6 +1925,9 @@ def prune_research_session(
                 _delete_reference_safe_rows(
                     conn,
                     progress=progress,
+                    batch_size=(
+                        delete_batch_size
+                    ),
                 )
             )
 
@@ -1733,6 +2074,23 @@ def prune_research_session(
             ),
         remote_gate_state=
             verified_proof.pruning_gate_state,
+        parity_receipt_filename=(
+            parity_path.name
+        ),
+        parity_receipt_sha256=(
+            _sha256_file(
+                parity_path
+            )
+        ),
+        parity_state=(
+            parity.state
+        ),
+        prune_fk_index_state=(
+            "PASS"
+        ),
+        delete_batch_size=(
+            delete_batch_size
+        ),
         schema_version=
             EXPECTED_SCHEMA_VERSION,
         trigger_sql_sha256_before=
