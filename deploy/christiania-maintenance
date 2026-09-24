@@ -57,7 +57,12 @@ stop_optional_unit() {
   local load_state
 
   load_state="$(
-    systemctl show       --property=LoadState       --value       "${unit}"       2>/dev/null       || true
+    systemctl show \
+      --property=LoadState \
+      --value \
+      "${unit}" \
+      2>/dev/null \
+      || true
   )"
 
   if [[ -z "${load_state}" || "${load_state}" == "not-found" ]]; then
@@ -234,6 +239,66 @@ exit_maintenance() {
   fi
 }
 
+rehearse_maintenance() {
+  require_root
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "cannot rehearse while maintenance state already exists at ${STATE_FILE}"
+  fi
+
+  rehearsal_restore() {
+    local rc=$?
+    trap - ERR INT TERM HUP
+
+    if [[ -f "${STATE_FILE}" ]]; then
+      echo "Rehearsal interrupted; restoring recorded runtime." >&2
+      if ! exit_maintenance; then
+        echo "Rehearsal emergency restore failed; inspect ${STATE_FILE}." >&2
+      fi
+    fi
+
+    exit "${rc}"
+  }
+
+  trap rehearsal_restore ERR INT TERM HUP
+
+  echo "=== CHRISTIANIA MAINTENANCE REHEARSAL ==="
+  enter_maintenance
+
+  [[ -f "${STATE_FILE}" ]] || fail "maintenance state missing after enter"
+
+  for unit in "${DB_CONSUMER_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "rehearsal expected ${unit} to be inactive"
+    fi
+  done
+
+  if unit_is_active "${SECURE_EDGE_SERVICE}"; then
+    fail "rehearsal expected ${SECURE_EDGE_SERVICE} to be inactive"
+  fi
+
+  if ! unit_is_active christiania-theta.service; then
+    fail "rehearsal expected christiania-theta.service to remain active"
+  fi
+
+  echo "MAINTENANCE_QUIESCENCE_PASS"
+
+  exit_maintenance
+
+  [[ ! -e "${STATE_FILE}" ]] || fail "maintenance state remained after exit"
+
+  trap - ERR INT TERM HUP
+
+  echo "MAINTENANCE_RESTORE_PASS"
+
+  if command -v christiania-status >/dev/null 2>&1; then
+    christiania-status
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+}
+
+
 show_status() {
   require_root
 
@@ -245,8 +310,15 @@ show_status() {
   fi
 
   echo
-  for unit in     christiania-theta.service     christiania-daemon.service     christiania-app.service     "${SECURE_EDGE_SERVICE}"     caddy.service; do
-    printf '%-38s %s\n'       "${unit}"       "$(systemctl is-active "${unit}" 2>/dev/null || true)"
+  for unit in \
+    christiania-theta.service \
+    christiania-daemon.service \
+    christiania-app.service \
+    "${SECURE_EDGE_SERVICE}" \
+    caddy.service; do
+    printf '%-38s %s\n' \
+      "${unit}" \
+      "$(systemctl is-active "${unit}" 2>/dev/null || true)"
   done
 }
 
@@ -257,11 +329,14 @@ case "${1:-}" in
   exit)
     exit_maintenance
     ;;
+  rehearse)
+    rehearse_maintenance
+    ;;
   status)
     show_status
     ;;
   *)
-    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status}" >&2
+    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|rehearse|status}" >&2
     exit 2
     ;;
 esac
