@@ -234,6 +234,82 @@ exit_maintenance() {
   fi
 }
 
+rehearse_maintenance() {
+  require_root
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "cannot rehearse while a maintenance state already exists at ${STATE_FILE}"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_START"
+
+  enter_maintenance
+
+  restore_rehearsal_on_failure() {
+    local rc=$?
+    trap - ERR INT TERM HUP
+
+    echo "Maintenance rehearsal failed; restoring runtime." >&2
+
+    if [[ -f "${STATE_FILE}" ]]; then
+      if ! exit_maintenance; then
+        echo "Maintenance rehearsal restore also failed; state retained at ${STATE_FILE}." >&2
+      fi
+    fi
+
+    exit "${rc}"
+  }
+
+  trap restore_rehearsal_on_failure ERR INT TERM HUP
+
+  if [[ ! -f "${STATE_FILE}" ]]; then
+    fail "maintenance state disappeared during rehearsal"
+  fi
+
+  for unit in "${DB_CONSUMER_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "${unit} remained active during rehearsal"
+    fi
+  done
+
+  if state_contains SERVICE "${SECURE_EDGE_SERVICE}"      && unit_is_active "${SECURE_EDGE_SERVICE}"; then
+    fail "${SECURE_EDGE_SERVICE} remained active during rehearsal"
+  fi
+
+  while IFS='=' read -r kind unit; do
+    if [[ "${kind}" != "TIMER" || -z "${unit}" ]]; then
+      continue
+    fi
+
+    if unit_is_active "${unit}"; then
+      fail "${unit} remained active during rehearsal"
+    fi
+  done < "${STATE_FILE}"
+
+  if ! unit_is_active christiania-theta.service; then
+    fail "christiania-theta.service stopped during rehearsal"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_QUIESCENCE_PASS"
+
+  exit_maintenance
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "maintenance state remained after successful rehearsal exit"
+  fi
+
+  systemctl start christiania-supervisor.service
+
+  if command -v christiania-status >/dev/null 2>&1; then
+    christiania-status --deployment-safe
+  fi
+
+  trap - ERR INT TERM HUP
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+}
+
+
 show_status() {
   require_root
 
@@ -260,8 +336,11 @@ case "${1:-}" in
   status)
     show_status
     ;;
+  rehearse)
+    rehearse_maintenance
+    ;;
   *)
-    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status}" >&2
+    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status|rehearse}" >&2
     exit 2
     ;;
 esac
