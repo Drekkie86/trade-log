@@ -433,3 +433,52 @@ def test_release_receiver_pre_activation_gate_uses_current_release_policy():
         < target_policy_check
         < post_activation_status
     )
+
+
+
+def test_release_receiver_capacity_preflight_happens_before_quiescence():
+    receiver = (
+        ROOT
+        / "deploy/receive_release.sh"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    database_metadata = receiver.index(
+        'phase_start "Validating current database schema/WAL metadata"'
+    )
+    capacity_preflight = receiver.index(
+        'phase_start "Preflighting target database migration capacity"'
+    )
+    preflight_command = receiver.index(
+        "preflight \\",
+        capacity_preflight,
+    )
+    quiesce = receiver.index(
+        'phase_start "Quiescing scheduled jobs and database consumers"'
+    )
+    actual_prepare = receiver.index(
+        'phase_start "Preparing release database"'
+    )
+
+    assert (
+        database_metadata
+        < capacity_preflight
+        < preflight_command
+        < quiesce
+        < actual_prepare
+    )
+
+    # The early preflight is advisory in timing, not a replacement for the
+    # capacity check repeated by the actual rollback-copy creation.
+    release_db = (
+        ROOT
+        / "christiania_release_database.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "assert_backup_capacity("
+        in release_db
+    )
