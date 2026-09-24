@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from src.database.repository import (
     create_market_snapshot,
+)
+from src.operations.historical_evidence import (
+    open_verified_archive_session,
+    read_historical_session_profile,
+    verify_hot_archive_parity,
 )
 from src.operations.research_archive import (
     create_research_archive,
@@ -306,3 +314,274 @@ def test_archive_plan_is_idempotent_after_verified_archive(
     assert old.eligible is False
     assert old.already_archived is True
     assert old.reason == "ALREADY_ARCHIVED"
+
+
+
+def _create_old_session_archive(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    old_run = _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = create_research_archive(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+        keep_hot_runs=50,
+    )
+
+    return (
+        old_run,
+        archive_dir,
+        manifest,
+    )
+
+
+def test_verified_archive_session_is_read_only(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    (
+        _,
+        archive_dir,
+        manifest,
+    ) = _create_old_session_archive(
+        db_path,
+        tmp_path,
+        monkeypatch,
+    )
+
+    with open_verified_archive_session(
+        manifest.session_date,
+        archive_dir=archive_dir,
+    ) as (
+        opened_manifest,
+        conn,
+    ):
+        assert (
+            opened_manifest.archive_filename
+            == manifest.archive_filename
+        )
+
+        assert (
+            conn.execute(
+                "PRAGMA query_only;"
+            ).fetchone()[0]
+            == 1
+        )
+
+        with pytest.raises(
+            sqlite3.OperationalError
+        ):
+            conn.execute(
+                "CREATE TABLE forbidden_write("
+                "id INTEGER"
+                ");"
+            )
+
+
+def test_historical_profile_reads_cold_evidence(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    (
+        old_run,
+        archive_dir,
+        manifest,
+    ) = _create_old_session_archive(
+        db_path,
+        tmp_path,
+        monkeypatch,
+    )
+
+    profile = (
+        read_historical_session_profile(
+            manifest.session_date,
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert profile.run_ids == (
+        old_run,
+    )
+    assert (
+        profile.table_counts[
+            "option_quotes"
+        ]
+        == 1
+    )
+    assert (
+        profile.quote_metrics[
+            "quote_count"
+        ]
+        == 1
+    )
+    assert (
+        profile.quote_metrics[
+            "underlying_count"
+        ]
+        == 1
+    )
+    assert (
+        profile.archive_source_schema_version
+        == 34
+    )
+
+
+def test_hot_archive_parity_is_value_exact(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    (
+        _,
+        archive_dir,
+        manifest,
+    ) = _create_old_session_archive(
+        db_path,
+        tmp_path,
+        monkeypatch,
+    )
+
+    progress: list[str] = []
+
+    parity = verify_hot_archive_parity(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+        progress=progress.append,
+    )
+
+    assert parity.passed is True
+    assert all(
+        item.matches
+        for item in parity.tables
+    )
+    assert any(
+        "option_quotes PASS"
+        in message
+        for message in progress
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        conn.execute(
+            "DROP TRIGGER "
+            "trg_option_quotes_no_update;"
+        )
+        conn.execute(
+            """
+            UPDATE option_quotes
+            SET bid = bid + 0.01
+            WHERE id = (
+                SELECT MIN(id)
+                FROM option_quotes
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    changed = verify_hot_archive_parity(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert changed.passed is False
+
+    option_quotes = next(
+        item
+        for item in changed.tables
+        if item.table_name
+        == "option_quotes"
+    )
+
+    assert option_quotes.hot.row_count == (
+        option_quotes.archive.row_count
+    )
+    assert (
+        option_quotes.hot.sha256
+        != option_quotes.archive.sha256
+    )
+
+
+def test_v33_archive_remains_readable_under_v34_runtime(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    (
+        _,
+        archive_dir,
+        manifest,
+    ) = _create_old_session_archive(
+        db_path,
+        tmp_path,
+        monkeypatch,
+    )
+
+    manifest_path = (
+        archive_dir
+        / manifest.manifest_filename
+    )
+
+    payload = json.loads(
+        manifest_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    payload[
+        "source_schema_version"
+    ] = 33
+
+    manifest_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    profile = (
+        read_historical_session_profile(
+            manifest.session_date,
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert (
+        profile.archive_source_schema_version
+        == 33
+    )
+
+    parity = verify_hot_archive_parity(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert parity.passed is True
+    assert (
+        parity.archive_source_schema_version
+        == 33
+    )
