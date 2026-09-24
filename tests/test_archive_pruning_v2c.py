@@ -1128,3 +1128,30 @@ def test_prune_plan_blocks_hot_archive_analytical_drift(
         for blocker
         in plan.blockers
     )
+
+
+
+def test_invalid_delete_batch_size_fails_before_archive_io(
+    tmp_path,
+):
+    missing_db = (
+        tmp_path
+        / "does-not-exist.db"
+    )
+    missing_archives = (
+        tmp_path
+        / "does-not-exist"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="between 1 and",
+    ):
+        prune_research_session(
+            "2026-09-01",
+            db_path=missing_db,
+            archive_dir=missing_archives,
+            confirm_session=
+                "2026-09-01",
+            delete_batch_rows=0,
+        )
