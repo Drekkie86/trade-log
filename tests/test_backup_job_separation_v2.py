@@ -192,3 +192,74 @@ def test_cleanup_mode_removes_only_incomplete_backup_temp_files(
         path.exists()
         for path in stale
     )
+
+
+def test_backup_cli_loads_runtime_env_before_policy(
+    tmp_path,
+    monkeypatch,
+):
+    env_file = tmp_path / "christiania.env"
+    env_file.write_text(
+        "CHRISTIANIA_DB_PATH=/tmp/runtime-db.db\n",
+        encoding="utf-8",
+    )
+
+    events = []
+
+    monkeypatch.setattr(
+        backup_christiania,
+        "DEFAULT_RUNTIME_ENV_FILE",
+        env_file,
+    )
+
+    def fake_load(path, *, overwrite=False):
+        events.append(
+            (
+                "load",
+                str(path),
+                overwrite,
+            )
+        )
+        return {
+            "CHRISTIANIA_DB_PATH":
+                "/tmp/runtime-db.db"
+        }
+
+    decision = SimpleNamespace(
+        due=False,
+        reason="NO_NEW_COMPLETED_RESEARCH",
+        latest_backup_path="/tmp/existing.db",
+        latest_completed_research_at=None,
+        as_dict=lambda: {
+            "due": False,
+            "reason": "NO_NEW_COMPLETED_RESEARCH",
+        },
+    )
+
+    def fake_decision(**kwargs):
+        events.append(
+            ("decision",)
+        )
+        return decision
+
+    monkeypatch.setattr(
+        backup_christiania,
+        "load_runtime_env_file",
+        fake_load,
+    )
+    monkeypatch.setattr(
+        backup_christiania,
+        "evaluate_backup_due",
+        fake_decision,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["backup_christiania.py", "--json"],
+    )
+
+    backup_christiania.main()
+
+    assert events[0][0] == "load"
+    assert events[0][2] is False
+    assert events[1] == ("decision",)
