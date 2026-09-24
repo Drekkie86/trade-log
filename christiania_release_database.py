@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -13,14 +14,24 @@ from threading import Event, Thread
 from time import monotonic
 from typing import Iterator
 
-from src.config import load_runtime_env_file
+from src.config import (
+    get_runtime_setting,
+    load_runtime_env_file,
+)
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
-from src.operations.sqlite_runtime import inspect_database, resolve_backup_dir
+from src.operations.sqlite_runtime import (
+    backup_logical_source_bytes,
+    backup_required_free_bytes,
+    inspect_database,
+    resolve_backup_dir,
+)
 
 
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 DEFAULT_RELEASE_ROLLBACK_RETENTION = 3
+DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES = 2 * 1024**3
+DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_FRACTION = 0.10
 
 
 @dataclass(frozen=True)
@@ -142,6 +153,183 @@ def _prune_release_rollback_backups(
         stale.unlink()
         pruned += 1
     return pruned
+
+
+def _release_migration_extra_headroom_bytes(
+    logical_source_bytes: int,
+) -> int:
+    configured = get_runtime_setting(
+        "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES"
+    )
+
+    if configured not in (
+        None,
+        "",
+    ):
+        value = int(
+            configured
+        )
+        if value < 0:
+            raise ValueError(
+                "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES "
+                "cannot be negative."
+            )
+        return value
+
+    return max(
+        DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES,
+        int(
+            logical_source_bytes
+            * DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_FRACTION
+        ),
+    )
+
+
+def _assert_release_migration_capacity(
+    database: Path,
+    backup_dir: Path,
+) -> dict[str, int | bool]:
+    backup_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    logical_source = (
+        backup_logical_source_bytes(
+            database
+        )
+    )
+    migration_extra = (
+        _release_migration_extra_headroom_bytes(
+            logical_source
+        )
+    )
+
+    database_usage = shutil.disk_usage(
+        database.parent
+    )
+    backup_usage = shutil.disk_usage(
+        backup_dir
+    )
+
+    database_reserve = (
+        backup_required_free_bytes(
+            source_size_bytes=0,
+            filesystem_total_bytes=int(
+                database_usage.total
+            ),
+        )
+    )
+    backup_reserve = (
+        backup_required_free_bytes(
+            source_size_bytes=0,
+            filesystem_total_bytes=int(
+                backup_usage.total
+            ),
+        )
+    )
+
+    same_filesystem = (
+        os.stat(
+            database.parent
+        ).st_dev
+        == os.stat(
+            backup_dir
+        ).st_dev
+    )
+
+    if same_filesystem:
+        required = (
+            logical_source
+            + max(
+                database_reserve,
+                backup_reserve,
+            )
+            + migration_extra
+        )
+
+        if int(
+            database_usage.free
+        ) < required:
+            raise RuntimeError(
+                "Insufficient release-migration filesystem headroom: "
+                f"free={int(database_usage.free)} bytes, "
+                f"required={required} bytes, "
+                f"logical_source={logical_source} bytes, "
+                f"migration_workspace={migration_extra} bytes. "
+                "The rollback copy, configured production reserve and "
+                "migration workspace must coexist before any backup or "
+                "migration write begins."
+            )
+
+        return {
+            "same_filesystem": True,
+            "logical_source_bytes":
+                logical_source,
+            "migration_workspace_bytes":
+                migration_extra,
+            "database_free_bytes":
+                int(
+                    database_usage.free
+                ),
+            "backup_free_bytes":
+                int(
+                    backup_usage.free
+                ),
+            "required_database_free_bytes":
+                required,
+            "required_backup_free_bytes":
+                required,
+        }
+
+    required_backup = (
+        logical_source
+        + backup_reserve
+    )
+    required_database = (
+        database_reserve
+        + migration_extra
+    )
+
+    if int(
+        backup_usage.free
+    ) < required_backup:
+        raise RuntimeError(
+            "Insufficient release rollback filesystem headroom: "
+            f"free={int(backup_usage.free)} bytes, "
+            f"required={required_backup} bytes, "
+            f"logical_source={logical_source} bytes."
+        )
+
+    if int(
+        database_usage.free
+    ) < required_database:
+        raise RuntimeError(
+            "Insufficient database filesystem migration headroom: "
+            f"free={int(database_usage.free)} bytes, "
+            f"required={required_database} bytes, "
+            f"migration_workspace={migration_extra} bytes."
+        )
+
+    return {
+        "same_filesystem": False,
+        "logical_source_bytes":
+            logical_source,
+        "migration_workspace_bytes":
+            migration_extra,
+        "database_free_bytes":
+            int(
+                database_usage.free
+            ),
+        "backup_free_bytes":
+            int(
+                backup_usage.free
+            ),
+        "required_database_free_bytes":
+            required_database,
+        "required_backup_free_bytes":
+            required_backup,
+    }
 
 
 def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version: int) -> Path:
@@ -276,6 +464,21 @@ def prepare_release_database(
             schema_after=EXPECTED_SCHEMA_VERSION,
             migrated=False,
         )
+
+    capacity = (
+        _assert_release_migration_capacity(
+            database,
+            backup_dir,
+        )
+    )
+    _progress(
+        "Database preparation: migration capacity passed; "
+        f"logical_source={capacity['logical_source_bytes']} bytes; "
+        f"migration_workspace={capacity['migration_workspace_bytes']} bytes; "
+        f"database_free={capacity['database_free_bytes']} bytes; "
+        f"backup_free={capacity['backup_free_bytes']} bytes; "
+        f"same_filesystem={capacity['same_filesystem']}."
+    )
 
     with _heartbeat(
         "Database preparation: creating and fully verifying rollback backup"
