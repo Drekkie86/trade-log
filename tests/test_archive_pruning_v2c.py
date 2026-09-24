@@ -763,3 +763,163 @@ def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
             assert row[0] == table_name
     finally:
         conn.close()
+
+
+def test_prune_plan_blocks_when_parent_fk_support_index_is_missing(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        conn.execute(
+            """
+            DROP INDEX
+            idx_hypothesis_scanner_evaluations_reference_contract;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert (
+        plan.analytical_parity_verified
+        is True
+    )
+    assert (
+        plan.foreign_key_indexes_verified
+        is False
+    )
+    assert (
+        plan.apply_eligible
+        is False
+    )
+
+    assert any(
+        blocker.startswith(
+            "MISSING_PRUNE_PARENT_FK_INDEX:"
+            "hypothesis_scanner_evaluations:"
+            "reference_contract_id"
+        )
+        for blocker
+        in plan.blockers
+    )
+
+
+def test_prune_plan_blocks_when_hot_analysis_drifted_from_archive(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    run_id = int(
+        manifest.run_ids[0]
+    )
+
+    create_market_snapshot(
+        {
+            "captured_at":
+                "2026-09-01T14:01:00Z",
+            "underlying":
+                "TEST",
+            "provider":
+                "MASSIVE",
+            "provider_snapshot_id":
+                "post-archive-drift",
+            "research_run_id":
+                run_id,
+            "us_session_date":
+                manifest.session_date,
+            "us_session_state":
+                "INTRADAY",
+            "underlying_price":
+                100.0,
+            "underlying_source":
+                "FETCHED",
+            "underlying_at":
+                "2026-09-01T14:01:00Z",
+            "fx_to_eur":
+                None,
+            "fx_source":
+                "UNKNOWN",
+            "fx_at":
+                None,
+            "notes":
+                "synthetic hot/archive drift",
+        },
+        [
+            _quote(
+                "TEST-C-110",
+                110.0,
+            ),
+        ],
+        db_path=db_path,
+    )
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert (
+        plan.foreign_key_indexes_verified
+        is True
+    )
+    assert (
+        plan.analytical_parity_verified
+        is False
+    )
+    assert (
+        "quote_universe_quality"
+        in plan.analytical_parity_mismatches
+    )
+    assert (
+        plan.apply_eligible
+        is False
+    )
+
+    assert any(
+        blocker.startswith(
+            "HISTORICAL_ANALYTICAL_PARITY_MISMATCH:"
+        )
+        for blocker
+        in plan.blockers
+    )
