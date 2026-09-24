@@ -93,7 +93,15 @@ record_state() {
     done
   } > "${temp}"
 
-  mv "${temp}" "${STATE_FILE}"
+  # Promote without overwrite. Hard-link creation is atomic on the same
+  # runtime filesystem, so concurrent maintenance entrants cannot both own
+  # the state. The pre-check above is only for a clearer operator message.
+  if ! ln "${temp}" "${STATE_FILE}" 2>/dev/null; then
+    rm -f "${temp}"
+    fail "maintenance state was claimed concurrently at ${STATE_FILE}"
+  fi
+
+  rm -f "${temp}"
 }
 
 state_contains() {
