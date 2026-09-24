@@ -361,3 +361,12 @@ immediately reduce the file size. Physical compaction is deliberately a
 separate follow-up operation after the first production prune receipt has been
 reviewed. This keeps logical evidence deletion and O(database-size) file
 rewriting as two independently auditable gates.
+
+
+## Storage & Historical Research Reliability V3
+
+The V3 hardening package extends V2C with schema-wide parent-delete FK/index coverage, bounded atomic delete batches, verified read-only archive analytics, and a mandatory hot/cold analytical parity gate.
+
+Detailed contract: docs/operations/STORAGE_HISTORICAL_RELIABILITY_V3.md
+
+V3 does not automatically prune or compact production storage.
