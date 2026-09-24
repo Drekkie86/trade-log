@@ -1349,6 +1349,8 @@ def _restore_delete_triggers(
 
 def _delete_reference_safe_rows(
     conn: sqlite3.Connection,
+    *,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, int]:
     temp_by_table = {
         "local_surface_residual_v2_observations":
@@ -1370,21 +1372,22 @@ def _delete_reference_safe_rows(
         temp_table = temp_by_table[
             table_name
         ]
-        cursor = conn.execute(
-            f"""
-            DELETE FROM {table_name}
-            WHERE id IN (
-                SELECT id
-                FROM {temp_table}
-            );
-            """
-        )
         deleted[
             table_name
-        ] = int(
-            cursor.rowcount
-            if cursor.rowcount is not None
-            else -1
+        ] = _execute_with_progress(
+            conn,
+            label=(
+                "delete "
+                + table_name
+            ),
+            sql=f"""
+                DELETE FROM {table_name}
+                WHERE id IN (
+                    SELECT id
+                    FROM {temp_table}
+                );
+            """,
+            progress=progress,
         )
 
     return deleted
@@ -1419,6 +1422,7 @@ def prune_research_session(
     db_path: str | Path | None = None,
     archive_dir: str | Path | None = None,
     confirm_session: str,
+    progress: Callable[[str], None] | None = None,
 ) -> PruneReceipt:
     if confirm_session != session_date:
         raise RuntimeError(
@@ -1454,9 +1458,17 @@ def prune_research_session(
 
     # Destructive work is blocked until both independent copies are
     # revalidated immediately before the database transaction.
+    _emit_progress(
+        progress,
+        "prune: deep local archive revalidation started",
+    )
     verified_manifest = verify_research_archive(
         manifest_path,
         deep_payload=True,
+    )
+    _emit_progress(
+        progress,
+        "prune: deep local archive revalidation complete",
     )
     if (
         verified_manifest.compressed_sha256
@@ -1467,8 +1479,17 @@ def prune_research_session(
             "the manifest selected for pruning."
         )
 
+    _emit_progress(
+        progress,
+        "prune: immutable remote proof revalidation started",
+    )
     verified_proof = verify_remote_archive_proof(
-        proof_path
+        proof_path,
+        progress=progress,
+    )
+    _emit_progress(
+        progress,
+        "prune: immutable remote proof revalidation complete",
     )
     _validate_local_proof_binding(
         manifest_path=manifest_path,
@@ -1503,7 +1524,15 @@ def prune_research_session(
         conn.execute(
             "PRAGMA temp_store = FILE;"
         )
+        _emit_progress(
+            progress,
+            "prune: acquiring write transaction",
+        )
         conn.execute("BEGIN IMMEDIATE;")
+        _emit_progress(
+            progress,
+            "prune: write transaction acquired",
+        )
         try:
             plan = _build_plan_from_connection(
                 conn,
@@ -1513,6 +1542,7 @@ def prune_research_session(
                 proof_path=proof_path,
                 proof=verified_proof,
                 local_archive_fast_verified=True,
+                progress=progress,
             )
             if not plan.apply_eligible:
                 raise RuntimeError(
@@ -1545,13 +1575,18 @@ def prune_research_session(
                 for item in plan.tables
             }
 
+            _emit_progress(
+                progress,
+                "prune: dropping allow-listed delete guards transactionally",
+            )
             _drop_delete_triggers(
                 conn,
                 trigger_sql,
             )
             deleted = (
                 _delete_reference_safe_rows(
-                    conn
+                    conn,
+                    progress=progress,
                 )
             )
 
@@ -1569,6 +1604,10 @@ def prune_research_session(
                         f"expected={expected}."
                     )
 
+            _emit_progress(
+                progress,
+                "prune: restoring immutability triggers",
+            )
             restored = (
                 _restore_delete_triggers(
                     conn,
@@ -1589,10 +1628,18 @@ def prune_research_session(
                     "byte-semantically after pruning."
                 )
 
+            _emit_progress(
+                progress,
+                "prune: foreign_key_check started",
+            )
             violations = (
                 _foreign_key_violations(
                     conn
                 )
+            )
+            _emit_progress(
+                progress,
+                "prune: foreign_key_check complete",
             )
             if violations:
                 raise RuntimeError(
@@ -1634,7 +1681,15 @@ def prune_research_session(
                         f"for {table_name}."
                     )
 
+            _emit_progress(
+                progress,
+                "prune: all reconciliation checks passed; committing",
+            )
             conn.execute("COMMIT;")
+            _emit_progress(
+                progress,
+                "prune: transaction committed",
+            )
 
         except BaseException:
             conn.execute("ROLLBACK;")
@@ -1698,5 +1753,9 @@ def prune_research_session(
     _write_json_atomic(
         receipt_path,
         receipt.as_dict(),
+    )
+    _emit_progress(
+        progress,
+        f"prune: receipt written {receipt_path}",
     )
     return receipt
