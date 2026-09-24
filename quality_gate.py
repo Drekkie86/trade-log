@@ -391,11 +391,28 @@ def build_fresh_database() -> GateResult:
                 EXPECTED_SCHEMA_VERSION,
             )
 
+            from src.operations.archive_pruning import (
+                audit_prune_foreign_key_indexes,
+            )
+
+            prune_fk_checks = (
+                audit_prune_foreign_key_indexes(
+                    conn
+                )
+            )
+            missing_prune_fk_indexes = [
+                check.label
+                for check
+                in prune_fk_checks
+                if not check.supported
+            ]
+
             ok = (
                 integrity == "ok"
                 and not foreign_keys
                 and int(version)
                 == int(EXPECTED_SCHEMA_VERSION)
+                and not missing_prune_fk_indexes
             )
 
             return GateResult(
@@ -405,7 +422,15 @@ def build_fresh_database() -> GateResult:
                     f"native_schema_version={native_version}; "
                     f"integrity={integrity}; "
                     f"fk_rows={len(foreign_keys)}; "
-                    f"schema_version={version}"
+                    f"schema_version={version}; "
+                    "prune_fk_indexes="
+                    + (
+                        "all-supported"
+                        if not missing_prune_fk_indexes
+                        else ",".join(
+                            missing_prune_fk_indexes
+                        )
+                    )
                 ),
             )
         except Exception as exc:
