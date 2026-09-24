@@ -4,7 +4,6 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 import json
-import shutil
 
 import pytest
 
@@ -776,10 +775,20 @@ def test_v33_archive_remains_readable_and_parity_valid_after_v34_index_migration
         / "legacy-v33.db"
     )
 
-    shutil.copy2(
-        db_path,
-        legacy_db,
+    source = sqlite3.connect(
+        db_path
     )
+    target = sqlite3.connect(
+        legacy_db
+    )
+    try:
+        source.backup(
+            target
+        )
+        target.commit()
+    finally:
+        target.close()
+        source.close()
 
     conn = sqlite3.connect(
         legacy_db
