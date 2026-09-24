@@ -28,6 +28,10 @@ from src.operations.remote_archive import (
     upload_and_verify_remote_archive,
     verify_remote_archive_proof,
 )
+from src.operations.historical_evidence import (
+    read_historical_session_profile,
+    verify_hot_archive_parity,
+)
 from src.operations.research_archive import (
     create_research_archive,
     find_archive_for_run,
@@ -127,6 +131,30 @@ def main() -> int:
     archive_find = sub.add_parser("archive-find-run")
     archive_find.add_argument("--run-id", type=int, required=True)
     archive_find.add_argument("--json", action="store_true")
+
+    archive_profile = sub.add_parser(
+        "archive-profile"
+    )
+    archive_profile.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_profile.add_argument(
+        "--json",
+        action="store_true",
+    )
+
+    archive_parity = sub.add_parser(
+        "archive-parity"
+    )
+    archive_parity.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_parity.add_argument(
+        "--json",
+        action="store_true",
+    )
 
     archive_read = sub.add_parser("archive-read-run")
     archive_read.add_argument("--run-id", type=int, required=True)
@@ -384,6 +412,104 @@ def main() -> int:
             for session in result.skipped_sessions:
                 print(f"SKIPPED {session}")
         return 0
+
+    if args.command == "archive-profile":
+        def profile_progress(message: str) -> None:
+            print(
+                f"[archive-profile] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        profile = (
+            read_historical_session_profile(
+                args.session_date,
+                progress=profile_progress,
+            )
+        )
+
+        if args.json:
+            _print_json(
+                profile.as_dict()
+            )
+        else:
+            print(
+                f"Historical session: "
+                f"{profile.session_date}"
+            )
+            print(
+                "Archive schema: v"
+                f"{profile.archive_source_schema_version}"
+            )
+            print(
+                "Runs: "
+                + ",".join(
+                    str(run_id)
+                    for run_id
+                    in profile.run_ids
+                )
+            )
+            for (
+                table_name,
+                count,
+            ) in profile.table_counts.items():
+                print(
+                    f"{table_name}: {count}"
+                )
+            print(
+                "Quote metrics: "
+                + json.dumps(
+                    profile.quote_metrics,
+                    sort_keys=True,
+                )
+            )
+
+        return 0
+
+    if args.command == "archive-parity":
+        def parity_progress(message: str) -> None:
+            print(
+                f"[archive-parity] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        parity = verify_hot_archive_parity(
+            args.session_date,
+            progress=parity_progress,
+        )
+
+        if args.json:
+            _print_json(
+                parity.as_dict()
+            )
+        else:
+            print(
+                f"Session: "
+                f"{parity.session_date}"
+            )
+            print(
+                f"Parity: "
+                f"{'PASS' if parity.passed else 'FAIL'}"
+            )
+            print(
+                "Archive source schema: v"
+                f"{parity.archive_source_schema_version}"
+            )
+            print(
+                "Hot schema: v"
+                f"{parity.hot_schema_version}"
+            )
+            for item in parity.tables:
+                print(
+                    f"[{'PASS' if item.matches else 'FAIL'}] "
+                    f"{item.table_name} "
+                    f"rows={item.hot.row_count} "
+                    f"hot={item.hot.sha256[:16]} "
+                    f"archive={item.archive.sha256[:16]}"
+                )
+
+        return 0 if parity.passed else 2
 
     if args.command == "archive-find-run":
         manifest = find_archive_for_run(
