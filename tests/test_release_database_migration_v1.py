@@ -348,14 +348,6 @@ def test_release_migration_capacity_same_filesystem_accounts_for_all_headroom(
         lambda logical: 200,
     )
     monkeypatch.setattr(
-        release_db.os,
-        "stat",
-        lambda path: SimpleNamespace(
-            st_dev=7
-        ),
-    )
-
-    monkeypatch.setattr(
         release_db.shutil,
         "disk_usage",
         lambda path: SimpleNamespace(
