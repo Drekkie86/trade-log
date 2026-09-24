@@ -2630,8 +2630,8 @@ def prune_research_session(
 
             _emit_progress(
                 progress,
-                "prune: transaction and commit "
-                "ledger committed",
+                "prune: transaction committed; "
+                "commit ledger durable",
             )
 
         except BaseException:
