@@ -1825,6 +1825,22 @@ def prune_research_session(
         proof=verified_proof,
     )
 
+    validated_manifest_sha256 = (
+        _sha256_file(
+            manifest_path
+        )
+    )
+    validated_remote_proof_sha256 = (
+        _sha256_file(
+            proof_path
+        )
+    )
+    validated_parity_receipt_sha256 = (
+        _sha256_file(
+            parity_path
+        )
+    )
+
     db_size_before = (
         database.stat().st_size
     )
@@ -1890,6 +1906,39 @@ def prune_research_session(
                         plan.blockers
                     )
                 )
+
+            for (
+                label,
+                path,
+                expected_sha,
+            ) in (
+                (
+                    "archive manifest",
+                    manifest_path,
+                    validated_manifest_sha256,
+                ),
+                (
+                    "remote proof",
+                    proof_path,
+                    validated_remote_proof_sha256,
+                ),
+                (
+                    "parity receipt",
+                    parity_path,
+                    validated_parity_receipt_sha256,
+                ),
+            ):
+                if (
+                    _sha256_file(
+                        path
+                    )
+                    != expected_sha
+                ):
+                    raise RuntimeError(
+                        "Prune safety sidecar "
+                        f"changed after validation: "
+                        f"{label}."
+                    )
 
             trigger_sql = (
                 _capture_delete_triggers(
@@ -2062,25 +2111,21 @@ def prune_research_session(
         run_ids=manifest.run_ids,
         archive_manifest_filename=
             manifest.manifest_filename,
-        archive_manifest_sha256=
-            _sha256_file(
-                manifest_path
-            ),
+        archive_manifest_sha256=(
+            validated_manifest_sha256
+        ),
         remote_proof_filename=
             proof_path.name,
-        remote_proof_sha256=
-            _sha256_file(
-                proof_path
-            ),
+        remote_proof_sha256=(
+            validated_remote_proof_sha256
+        ),
         remote_gate_state=
             verified_proof.pruning_gate_state,
         parity_receipt_filename=(
             parity_path.name
         ),
         parity_receipt_sha256=(
-            _sha256_file(
-                parity_path
-            )
+            validated_parity_receipt_sha256
         ),
         parity_state=(
             parity.state
