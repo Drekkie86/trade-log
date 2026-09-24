@@ -158,30 +158,38 @@ def _prune_release_rollback_backups(
 def _release_migration_extra_headroom_bytes(
     logical_source_bytes: int,
 ) -> int:
-    configured = get_runtime_setting(
-        "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES"
-    )
-
-    if configured not in (
-        None,
-        "",
-    ):
-        value = int(
-            configured
-        )
-        if value < 0:
-            raise ValueError(
-                "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES "
-                "cannot be negative."
-            )
-        return value
-
-    return max(
+    safe_default = max(
         DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES,
         int(
             logical_source_bytes
             * DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_FRACTION
         ),
+    )
+
+    configured = get_runtime_setting(
+        "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES"
+    )
+
+    if configured in (
+        None,
+        "",
+    ):
+        return safe_default
+
+    value = int(
+        configured
+    )
+    if value < 0:
+        raise ValueError(
+            "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES "
+            "cannot be negative."
+        )
+
+    # Configuration may make the release more conservative, never weaken
+    # the built-in migration workspace floor.
+    return max(
+        safe_default,
+        value,
     )
 
 
