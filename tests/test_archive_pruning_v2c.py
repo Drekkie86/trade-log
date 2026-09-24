@@ -421,10 +421,13 @@ def test_prune_plan_preserves_referenced_quote(
         monkeypatch,
     )
 
+    progress = []
+
     plan = plan_prune_session(
         manifest.session_date,
         db_path=db_path,
         archive_dir=archive_dir,
+        progress=progress.append,
     )
 
     assert plan.apply_eligible is True
@@ -432,6 +435,16 @@ def test_prune_plan_preserves_referenced_quote(
     assert plan.outside_hot_window is True
     assert plan.remote_gate_state == (
         "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
+    )
+    assert any(
+        "scope option_quotes complete"
+        in message
+        for message in progress
+    )
+    assert any(
+        "references quotes -> surviving consumers complete"
+        in message
+        for message in progress
     )
 
     by_table = {

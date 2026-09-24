@@ -4,10 +4,11 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
@@ -378,311 +379,561 @@ def _prepare_run_scope(
     )
 
 
+def _emit_progress(
+    progress: Callable[[str], None] | None,
+    message: str,
+) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def _execute_with_progress(
+    conn: sqlite3.Connection,
+    *,
+    label: str,
+    sql: str,
+    progress: Callable[[str], None] | None,
+) -> int:
+    started = time.monotonic()
+    next_heartbeat = started + 10.0
+
+    _emit_progress(
+        progress,
+        f"planner: {label} started",
+    )
+
+    def heartbeat() -> int:
+        nonlocal next_heartbeat
+
+        now = time.monotonic()
+        if (
+            progress is not None
+            and now >= next_heartbeat
+        ):
+            progress(
+                f"planner: {label} still running "
+                f"elapsed={now - started:.1f}s"
+            )
+            next_heartbeat = now + 10.0
+
+        return 0
+
+    conn.set_progress_handler(
+        heartbeat,
+        250_000,
+    )
+    try:
+        conn.execute(sql)
+        changed = int(
+            conn.execute(
+                "SELECT changes();"
+            ).fetchone()[0]
+        )
+    finally:
+        conn.set_progress_handler(
+            None,
+            0,
+        )
+
+    elapsed = (
+        time.monotonic()
+        - started
+    )
+    _emit_progress(
+        progress,
+        f"planner: {label} complete "
+        f"rows={changed} elapsed={elapsed:.1f}s",
+    )
+    return changed
+
+
+_SCOPE_TABLE_BY_TARGET = {
+    "local_surface_residual_v2_observations":
+        "_scope_surface_obs",
+    "hypothesis_scanner_evaluations":
+        "_scope_scanner_evals",
+    "provider_model_observations":
+        "_scope_provider_models",
+    "provider_observation_availability":
+        "_scope_provider_availability",
+    "listing_reference_contracts":
+        "_scope_listing_refs",
+    "option_quotes":
+        "_scope_option_quotes",
+}
+
+
+_DELETE_TABLE_BY_TARGET = {
+    "local_surface_residual_v2_observations":
+        "_delete_surface_obs",
+    "hypothesis_scanner_evaluations":
+        "_delete_scanner_evals",
+    "provider_model_observations":
+        "_delete_provider_models",
+    "provider_observation_availability":
+        "_delete_provider_availability",
+    "listing_reference_contracts":
+        "_delete_listing_refs",
+    "option_quotes":
+        "_delete_option_quotes",
+}
+
+
 def _prepare_delete_sets(
     conn: sqlite3.Connection,
-) -> None:
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[
+    dict[str, int],
+    dict[str, int],
+]:
+    # The first V2C production planner used correlated NOT EXISTS queries
+    # directly against the full hot database. Those predicates were safe but
+    # could become effectively quadratic where downstream FK columns lacked
+    # dedicated indexes. Materialize the one-session population once, then
+    # scan each downstream evidence family once into indexed temp keep-sets.
     for name in (
-        "_delete_surface_obs",
-        "_delete_scanner_evals",
-        "_delete_provider_models",
-        "_delete_provider_availability",
-        "_delete_listing_refs",
-        "_delete_option_quotes",
+        *_SCOPE_TABLE_BY_TARGET.values(),
+        *_DELETE_TABLE_BY_TARGET.values(),
+        "_keep_surface_obs",
+        "_keep_scanner_evals",
+        "_keep_provider_models",
+        "_keep_provider_availability",
+        "_keep_listing_refs",
+        "_keep_option_quotes",
     ):
         conn.execute(
             f"""
             CREATE TEMP TABLE IF NOT EXISTS {name}(
                 id INTEGER PRIMARY KEY
-            );
+            ) WITHOUT ROWID;
             """
         )
         conn.execute(
             f"DELETE FROM {name};"
         )
 
-    conn.execute(
-        """
-        INSERT INTO _delete_surface_obs(id)
-        SELECT o.id
-        FROM local_surface_residual_v2_observations AS o
-        JOIN local_surface_residual_v2_runs AS r
-          ON r.id = o.model_run_id
-        JOIN _prune_runs AS pr
-          ON pr.id = r.research_run_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM local_surface_null_v1_membership AS m
-            WHERE m.v2_observation_id = o.id
-        );
-        """
-    )
+    candidates: dict[str, int] = {}
 
-    conn.execute(
-        """
-        INSERT INTO _delete_scanner_evals(id)
-        SELECT e.id
-        FROM hypothesis_scanner_evaluations AS e
-        JOIN hypothesis_scanner_runs AS r
-          ON r.id = e.scanner_run_id
-        JOIN _prune_runs AS pr
-          ON pr.id = r.research_run_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM shadow_structure_proposals AS p
-            WHERE p.hypothesis_evaluation_id = e.id
-        );
-        """
-    )
-
-    conn.execute(
-        """
-        INSERT INTO _delete_provider_models(id)
-        SELECT pmo.id
-        FROM provider_model_observations AS pmo
-        JOIN option_quotes AS oq
-          ON oq.id = pmo.option_quote_id
-        JOIN market_snapshots AS ms
-          ON ms.id = oq.snapshot_id
-        JOIN _prune_runs AS pr
-          ON pr.id = ms.research_run_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM provider_model_timing_reconstruction_v1 AS tr
-            WHERE tr.provider_model_observation_id = pmo.id
-        );
-        """
-    )
-
-    conn.execute(
-        """
-        INSERT INTO _delete_provider_availability(id)
-        SELECT poa.id
-        FROM provider_observation_availability AS poa
-        JOIN listing_reference_contracts AS lrc
-          ON lrc.id = poa.reference_contract_id
-        JOIN _prune_runs AS pr
-          ON pr.id = lrc.research_run_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM shadow_candidates AS sc
-            WHERE sc.entry_quote_observation_id = poa.id
-               OR sc.entry_greek_observation_id = poa.id
-        );
-        """
-    )
-
-    conn.execute(
-        """
-        INSERT INTO _delete_listing_refs(id)
-        SELECT lrc.id
-        FROM listing_reference_contracts AS lrc
-        JOIN _prune_runs AS pr
-          ON pr.id = lrc.research_run_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM shadow_candidates AS sc
-            WHERE sc.reference_contract_id = lrc.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM shadow_structure_proposals AS sp
-            WHERE sp.target_reference_contract_id = lrc.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM provider_observation_availability AS poa
-            WHERE poa.reference_contract_id = lrc.id
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM _delete_provider_availability AS d
-                  WHERE d.id = poa.id
-              )
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM hypothesis_scanner_evaluations AS e
-            WHERE e.reference_contract_id = lrc.id
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM _delete_scanner_evals AS d
-                  WHERE d.id = e.id
-              )
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM local_surface_residual_v2_observations AS o
-            WHERE o.reference_contract_id = lrc.id
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM _delete_surface_obs AS d
-                  WHERE d.id = o.id
-              )
-        );
-        """
-    )
-
-    conn.execute(
-        """
-        INSERT INTO _delete_option_quotes(id)
-        SELECT oq.id
-        FROM option_quotes AS oq
-        JOIN market_snapshots AS ms
-          ON ms.id = oq.snapshot_id
-        JOIN _prune_runs AS pr
-          ON pr.id = ms.research_run_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM candidate_legs AS cl
-            WHERE cl.option_quote_id = oq.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM candidate_controls AS cc
-            WHERE cc.control_quote_id = oq.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM research_selections AS rs
-            WHERE rs.option_quote_id = oq.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM selection_exclusions AS se
-            WHERE se.option_quote_id = oq.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM saxo_option_observations AS so
-            WHERE so.option_quote_id = oq.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM saxo_resolution_failures AS sf
-            WHERE sf.option_quote_id = oq.id
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM provider_model_observations AS pmo
-            WHERE pmo.option_quote_id = oq.id
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM _delete_provider_models AS d
-                  WHERE d.id = pmo.id
-              )
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM hypothesis_scanner_evaluations AS e
-            WHERE e.option_quote_id = oq.id
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM _delete_scanner_evals AS d
-                  WHERE d.id = e.id
-              )
-        )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM local_surface_residual_v2_observations AS o
-            WHERE o.option_quote_id = oq.id
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM _delete_surface_obs AS d
-                  WHERE d.id = o.id
-              )
-        );
-        """
-    )
-
-
-def _candidate_counts(
-    conn: sqlite3.Connection,
-) -> dict[str, int]:
-    sql = {
-        "local_surface_residual_v2_observations": """
-            SELECT COUNT(*)
-            FROM local_surface_residual_v2_observations AS o
-            JOIN local_surface_residual_v2_runs AS r
-              ON r.id = o.model_run_id
-            JOIN _prune_runs AS pr
-              ON pr.id = r.research_run_id;
-        """,
-        "hypothesis_scanner_evaluations": """
-            SELECT COUNT(*)
-            FROM hypothesis_scanner_evaluations AS e
-            JOIN hypothesis_scanner_runs AS r
-              ON r.id = e.scanner_run_id
-            JOIN _prune_runs AS pr
-              ON pr.id = r.research_run_id;
-        """,
-        "provider_model_observations": """
-            SELECT COUNT(*)
-            FROM provider_model_observations AS pmo
-            JOIN option_quotes AS oq
-              ON oq.id = pmo.option_quote_id
-            JOIN market_snapshots AS ms
-              ON ms.id = oq.snapshot_id
-            JOIN _prune_runs AS pr
-              ON pr.id = ms.research_run_id;
-        """,
-        "provider_observation_availability": """
-            SELECT COUNT(*)
-            FROM provider_observation_availability AS poa
-            JOIN listing_reference_contracts AS lrc
-              ON lrc.id = poa.reference_contract_id
-            JOIN _prune_runs AS pr
-              ON pr.id = lrc.research_run_id;
-        """,
-        "listing_reference_contracts": """
-            SELECT COUNT(*)
+    candidates[
+        "listing_reference_contracts"
+    ] = _execute_with_progress(
+        conn,
+        label="scope listing_reference_contracts",
+        sql="""
+            INSERT INTO _scope_listing_refs(id)
+            SELECT lrc.id
             FROM listing_reference_contracts AS lrc
             JOIN _prune_runs AS pr
               ON pr.id = lrc.research_run_id;
         """,
-        "option_quotes": """
-            SELECT COUNT(*)
-            FROM option_quotes AS oq
-            JOIN market_snapshots AS ms
-              ON ms.id = oq.snapshot_id
+        progress=progress,
+    )
+
+    candidates[
+        "option_quotes"
+    ] = _execute_with_progress(
+        conn,
+        label="scope option_quotes",
+        sql="""
+            INSERT INTO _scope_option_quotes(id)
+            SELECT oq.id
+            FROM market_snapshots AS ms
             JOIN _prune_runs AS pr
-              ON pr.id = ms.research_run_id;
+              ON pr.id = ms.research_run_id
+            JOIN option_quotes AS oq
+              ON oq.snapshot_id = ms.id;
         """,
-    }
-    return {
+        progress=progress,
+    )
+
+    scope_sql = (
+        (
+            "local_surface_residual_v2_observations",
+            """
+            INSERT INTO _scope_surface_obs(id)
+            SELECT o.id
+            FROM local_surface_residual_v2_runs AS r
+            JOIN _prune_runs AS pr
+              ON pr.id = r.research_run_id
+            JOIN local_surface_residual_v2_observations AS o
+              ON o.model_run_id = r.id;
+            """,
+        ),
+        (
+            "hypothesis_scanner_evaluations",
+            """
+            INSERT INTO _scope_scanner_evals(id)
+            SELECT e.id
+            FROM hypothesis_scanner_runs AS r
+            JOIN _prune_runs AS pr
+              ON pr.id = r.research_run_id
+            JOIN hypothesis_scanner_evaluations AS e
+              ON e.scanner_run_id = r.id;
+            """,
+        ),
+        (
+            "provider_model_observations",
+            """
+            INSERT INTO _scope_provider_models(id)
+            SELECT pmo.id
+            FROM _scope_option_quotes AS s
+            JOIN provider_model_observations AS pmo
+              ON pmo.option_quote_id = s.id;
+            """,
+        ),
+        (
+            "provider_observation_availability",
+            """
+            INSERT INTO _scope_provider_availability(id)
+            SELECT poa.id
+            FROM _scope_listing_refs AS s
+            JOIN provider_observation_availability AS poa
+              ON poa.reference_contract_id = s.id;
+            """,
+        ),
+    )
+
+    for (
+        table_name,
+        sql,
+    ) in scope_sql:
+        candidates[
+            table_name
+        ] = _execute_with_progress(
+            conn,
+            label=(
+                "scope "
+                + table_name
+            ),
+            sql=sql,
+            progress=progress,
+        )
+
+    # Each keep-set scans the downstream family once and probes the
+    # session-scoped PRIMARY KEY temp table. This avoids one downstream scan
+    # per archived parent row.
+    _execute_with_progress(
+        conn,
+        label="references Surface V2 -> empirical null",
+        sql="""
+            INSERT OR IGNORE INTO _keep_surface_obs(id)
+            SELECT m.v2_observation_id
+            FROM local_surface_null_v1_membership AS m
+            JOIN _scope_surface_obs AS s
+              ON s.id = m.v2_observation_id;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="references scanner -> shadow proposals",
+        sql="""
+            INSERT OR IGNORE INTO _keep_scanner_evals(id)
+            SELECT p.hypothesis_evaluation_id
+            FROM shadow_structure_proposals AS p
+            JOIN _scope_scanner_evals AS s
+              ON s.id = p.hypothesis_evaluation_id;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="references provider models -> timing reconstruction",
+        sql="""
+            INSERT OR IGNORE INTO _keep_provider_models(id)
+            SELECT tr.provider_model_observation_id
+            FROM provider_model_timing_reconstruction_v1 AS tr
+            JOIN _scope_provider_models AS s
+              ON s.id = tr.provider_model_observation_id;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="references provider availability -> shadow candidates",
+        sql="""
+            INSERT OR IGNORE INTO _keep_provider_availability(id)
+            SELECT sc.entry_quote_observation_id
+            FROM shadow_candidates AS sc
+            JOIN _scope_provider_availability AS s
+              ON s.id = sc.entry_quote_observation_id
+            WHERE sc.entry_quote_observation_id IS NOT NULL
+
+            UNION
+
+            SELECT sc.entry_greek_observation_id
+            FROM shadow_candidates AS sc
+            JOIN _scope_provider_availability AS s
+              ON s.id = sc.entry_greek_observation_id
+            WHERE sc.entry_greek_observation_id IS NOT NULL;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="delete-set Surface V2",
+        sql="""
+            INSERT INTO _delete_surface_obs(id)
+            SELECT s.id
+            FROM _scope_surface_obs AS s
+            LEFT JOIN _keep_surface_obs AS k
+              ON k.id = s.id
+            WHERE k.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="delete-set scanner evaluations",
+        sql="""
+            INSERT INTO _delete_scanner_evals(id)
+            SELECT s.id
+            FROM _scope_scanner_evals AS s
+            LEFT JOIN _keep_scanner_evals AS k
+              ON k.id = s.id
+            WHERE k.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="delete-set provider models",
+        sql="""
+            INSERT INTO _delete_provider_models(id)
+            SELECT s.id
+            FROM _scope_provider_models AS s
+            LEFT JOIN _keep_provider_models AS k
+              ON k.id = s.id
+            WHERE k.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="delete-set provider availability",
+        sql="""
+            INSERT INTO _delete_provider_availability(id)
+            SELECT s.id
+            FROM _scope_provider_availability AS s
+            LEFT JOIN _keep_provider_availability AS k
+              ON k.id = s.id
+            WHERE k.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    # Listing-reference keep-set: direct downstream consumers plus any
+    # session-scoped child that survived its own reference check.
+    _execute_with_progress(
+        conn,
+        label="references listing refs -> surviving consumers",
+        sql="""
+            INSERT OR IGNORE INTO _keep_listing_refs(id)
+            SELECT sc.reference_contract_id
+            FROM shadow_candidates AS sc
+            JOIN _scope_listing_refs AS s
+              ON s.id = sc.reference_contract_id
+
+            UNION
+
+            SELECT sp.target_reference_contract_id
+            FROM shadow_structure_proposals AS sp
+            JOIN _scope_listing_refs AS s
+              ON s.id = sp.target_reference_contract_id
+
+            UNION
+
+            SELECT poa.reference_contract_id
+            FROM provider_observation_availability AS poa
+            JOIN _scope_provider_availability AS s
+              ON s.id = poa.id
+            LEFT JOIN _delete_provider_availability AS d
+              ON d.id = poa.id
+            WHERE d.id IS NULL
+
+            UNION
+
+            SELECT e.reference_contract_id
+            FROM hypothesis_scanner_evaluations AS e
+            JOIN _scope_scanner_evals AS s
+              ON s.id = e.id
+            LEFT JOIN _delete_scanner_evals AS d
+              ON d.id = e.id
+            WHERE d.id IS NULL
+
+            UNION
+
+            SELECT o.reference_contract_id
+            FROM local_surface_residual_v2_observations AS o
+            JOIN _scope_surface_obs AS s
+              ON s.id = o.id
+            LEFT JOIN _delete_surface_obs AS d
+              ON d.id = o.id
+            WHERE d.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="delete-set listing references",
+        sql="""
+            INSERT INTO _delete_listing_refs(id)
+            SELECT s.id
+            FROM _scope_listing_refs AS s
+            LEFT JOIN _keep_listing_refs AS k
+              ON k.id = s.id
+            WHERE k.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    # Quote keep-set: direct downstream consumers plus any scoped child that
+    # survived its own reference check.
+    _execute_with_progress(
+        conn,
+        label="references quotes -> surviving consumers",
+        sql="""
+            INSERT OR IGNORE INTO _keep_option_quotes(id)
+            SELECT cl.option_quote_id
+            FROM candidate_legs AS cl
+            JOIN _scope_option_quotes AS s
+              ON s.id = cl.option_quote_id
+
+            UNION
+
+            SELECT cc.control_quote_id
+            FROM candidate_controls AS cc
+            JOIN _scope_option_quotes AS s
+              ON s.id = cc.control_quote_id
+
+            UNION
+
+            SELECT rs.option_quote_id
+            FROM research_selections AS rs
+            JOIN _scope_option_quotes AS s
+              ON s.id = rs.option_quote_id
+
+            UNION
+
+            SELECT se.option_quote_id
+            FROM selection_exclusions AS se
+            JOIN _scope_option_quotes AS s
+              ON s.id = se.option_quote_id
+
+            UNION
+
+            SELECT so.option_quote_id
+            FROM saxo_option_observations AS so
+            JOIN _scope_option_quotes AS s
+              ON s.id = so.option_quote_id
+
+            UNION
+
+            SELECT sf.option_quote_id
+            FROM saxo_resolution_failures AS sf
+            JOIN _scope_option_quotes AS s
+              ON s.id = sf.option_quote_id
+
+            UNION
+
+            SELECT pmo.option_quote_id
+            FROM provider_model_observations AS pmo
+            JOIN _scope_provider_models AS s
+              ON s.id = pmo.id
+            LEFT JOIN _delete_provider_models AS d
+              ON d.id = pmo.id
+            WHERE d.id IS NULL
+
+            UNION
+
+            SELECT e.option_quote_id
+            FROM hypothesis_scanner_evaluations AS e
+            JOIN _scope_scanner_evals AS s
+              ON s.id = e.id
+            LEFT JOIN _delete_scanner_evals AS d
+              ON d.id = e.id
+            WHERE d.id IS NULL
+
+            UNION
+
+            SELECT o.option_quote_id
+            FROM local_surface_residual_v2_observations AS o
+            JOIN _scope_surface_obs AS s
+              ON s.id = o.id
+            LEFT JOIN _delete_surface_obs AS d
+              ON d.id = o.id
+            WHERE d.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    _execute_with_progress(
+        conn,
+        label="delete-set option quotes",
+        sql="""
+            INSERT INTO _delete_option_quotes(id)
+            SELECT s.id
+            FROM _scope_option_quotes AS s
+            LEFT JOIN _keep_option_quotes AS k
+              ON k.id = s.id
+            WHERE k.id IS NULL;
+        """,
+        progress=progress,
+    )
+
+    deletable = {
         table_name: int(
             conn.execute(
-                statement
+                f"""
+                SELECT COUNT(*)
+                FROM {
+                    _DELETE_TABLE_BY_TARGET[
+                        table_name
+                    ]
+                };
+                """
             ).fetchone()[0]
         )
-        for table_name, statement
-        in sql.items()
+        for table_name
+        in TARGET_TABLES
     }
 
+    return (
+        candidates,
+        deletable,
+    )
 
-def _delete_set_counts(
+def _candidate_counts(
     conn: sqlite3.Connection,
 ) -> dict[str, int]:
-    mapping = {
-        "local_surface_residual_v2_observations":
-            "_delete_surface_obs",
-        "hypothesis_scanner_evaluations":
-            "_delete_scanner_evals",
-        "provider_model_observations":
-            "_delete_provider_models",
-        "provider_observation_availability":
-            "_delete_provider_availability",
-        "listing_reference_contracts":
-            "_delete_listing_refs",
-        "option_quotes":
-            "_delete_option_quotes",
-    }
+    # After delete-set preparation, the scoped temp tables are the cheapest
+    # authoritative way to reconcile the live rows for this session.
     return {
         table_name: int(
             conn.execute(
-                f"SELECT COUNT(*) FROM {temp_table};"
+                f"""
+                SELECT COUNT(*)
+                FROM {
+                    _SCOPE_TABLE_BY_TARGET[
+                        table_name
+                    ]
+                } AS s
+                JOIN {table_name} AS t
+                  ON t.id = s.id;
+                """
             ).fetchone()[0]
         )
-        for table_name, temp_table
-        in mapping.items()
+        for table_name
+        in TARGET_TABLES
     }
 
 
@@ -754,6 +1005,7 @@ def _build_plan_from_connection(
     proof_path: Path,
     proof: RemoteArchiveProof,
     local_archive_fast_verified: bool,
+    progress: Callable[[str], None] | None = None,
 ) -> PruneSessionPlan:
     schema_version = _sqlite_version(
         conn
@@ -766,10 +1018,13 @@ def _build_plan_from_connection(
         conn,
         manifest=manifest,
     )
-    _prepare_delete_sets(conn)
-
-    candidates = _candidate_counts(conn)
-    deletable = _delete_set_counts(conn)
+    (
+        candidates,
+        deletable,
+    ) = _prepare_delete_sets(
+        conn,
+        progress=progress,
+    )
 
     table_plans: list[
         PruneTablePlan
@@ -909,6 +1164,7 @@ def plan_prune_session(
     db_path: str | Path | None = None,
     archive_dir: str | Path | None = None,
     verify_remote: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> PruneSessionPlan:
     database = resolve_db_path(
         db_path
@@ -953,8 +1209,17 @@ def plan_prune_session(
     )
 
     if verify_remote:
+        _emit_progress(
+            progress,
+            "planner: remote immutable proof revalidation started",
+        )
         proof = verify_remote_archive_proof(
-            proof_path
+            proof_path,
+            progress=progress,
+        )
+        _emit_progress(
+            progress,
+            "planner: remote immutable proof revalidation complete",
         )
 
     uri = (
@@ -966,6 +1231,9 @@ def plan_prune_session(
         uri=True,
         timeout=60.0,
     )
+    conn.execute(
+        "PRAGMA temp_store = FILE;"
+    )
     try:
         return _build_plan_from_connection(
             conn,
@@ -976,6 +1244,7 @@ def plan_prune_session(
             proof=proof,
             local_archive_fast_verified=
                 local_verified,
+            progress=progress,
         )
     finally:
         conn.close()
@@ -1231,6 +1500,9 @@ def prune_research_session(
             )
         )
 
+        conn.execute(
+            "PRAGMA temp_store = FILE;"
+        )
         conn.execute("BEGIN IMMEDIATE;")
         try:
             plan = _build_plan_from_connection(

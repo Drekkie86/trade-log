@@ -511,9 +511,17 @@ def main() -> int:
         return 0 if not inventory.invalid_proofs else 2
 
     if args.command == "archive-prune-plan":
+        def prune_plan_progress(message: str) -> None:
+            print(
+                f"[prune-plan] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         plan = plan_prune_session(
             args.session_date,
             verify_remote=args.verify_remote,
+            progress=prune_plan_progress,
         )
         if args.json:
             _print_json(plan.as_dict())
