@@ -52,6 +52,26 @@ unit_is_active() {
   systemctl is-active --quiet "$1"
 }
 
+stop_optional_unit() {
+  local unit="$1"
+  local load_state
+
+  load_state="$(
+    systemctl show       --property=LoadState       --value       "${unit}"       2>/dev/null       || true
+  )"
+
+  if [[ -z "${load_state}" || "${load_state}" == "not-found" ]]; then
+    echo "Skipping optional unit ${unit}; not installed."
+    return 0
+  fi
+
+  systemctl stop "${unit}"
+
+  if unit_is_active "${unit}"; then
+    fail "${unit} remained active after maintenance quiescence"
+  fi
+}
+
 record_state() {
   local temp
   temp="$(mktemp "${STATE_DIR}/maintenance.state.XXXXXX")"
@@ -153,23 +173,17 @@ enter_maintenance() {
 
   echo "Stopping scheduled Christiania work..."
   for unit in "${QUIESCE_TIMER_UNITS[@]}"; do
-    systemctl stop "${unit}"
+    stop_optional_unit "${unit}"
   done
 
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    systemctl stop "${unit}"
-  done
-
-  for unit in "${QUIESCE_TIMER_UNITS[@]}" "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    if unit_is_active "${unit}"; then
-      fail "${unit} remained active after maintenance quiescence"
-    fi
+    stop_optional_unit "${unit}"
   done
 
   # Stop the edge explicitly before the app. Stopping the app also propagates
   # to the proxy through Requires=, but explicit ordering keeps the maintenance
   # contract deterministic and makes restoration intent visible.
-  systemctl stop "${SECURE_EDGE_SERVICE}"
+  stop_optional_unit "${SECURE_EDGE_SERVICE}"
 
   echo "Stopping database consumers..."
   for unit in "${DB_CONSUMER_SERVICES[@]}"; do
