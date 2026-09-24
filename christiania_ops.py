@@ -8,6 +8,10 @@ from pathlib import Path
 from src.config import load_runtime_env_file
 from src.dashboard.read_model import load_command_deck
 from src.operations.audit_export import export_audit_snapshot
+from src.operations.archive_analytics import (
+    read_archived_session_profile,
+    verify_archive_session_parity,
+)
 from src.operations.archive_pruning import (
     plan_prune_session,
     prune_research_session,
@@ -21,6 +25,9 @@ from src.operations.backup_recovery import (
 from src.operations.backup_compression import maintain_compressed_backups
 from src.operations.sqlite_runtime import create_verified_backup
 from src.operations.storage_audit import audit_storage
+from src.operations.prune_schema import (
+    audit_prune_foreign_key_indexes,
+)
 from src.operations.remote_archive import (
     check_remote_bucket,
     inventory_remote_archive_proofs,
@@ -130,6 +137,38 @@ def main() -> int:
     archive_read = sub.add_parser("archive-read-run")
     archive_read.add_argument("--run-id", type=int, required=True)
     archive_read.add_argument("--json", action="store_true")
+
+    archive_profile = sub.add_parser(
+        "archive-session-profile"
+    )
+    archive_profile.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_profile.add_argument(
+        "--json",
+        action="store_true",
+    )
+
+    archive_parity = sub.add_parser(
+        "archive-parity"
+    )
+    archive_parity.add_argument(
+        "--session-date",
+        required=True,
+    )
+    archive_parity.add_argument(
+        "--json",
+        action="store_true",
+    )
+
+    prune_index_audit = sub.add_parser(
+        "archive-prune-index-audit"
+    )
+    prune_index_audit.add_argument(
+        "--json",
+        action="store_true",
+    )
 
     archive_verify = sub.add_parser("archive-verify")
     archive_verify.add_argument("--manifest", required=True)
@@ -419,6 +458,171 @@ def main() -> int:
                     f"{table_name}: {count}"
                 )
         return 0
+
+    if args.command == "archive-session-profile":
+        def profile_progress(
+            message: str,
+        ) -> None:
+            print(
+                f"[archive-profile] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        profile = (
+            read_archived_session_profile(
+                args.session_date,
+                progress=profile_progress,
+            )
+        )
+
+        if args.json:
+            _print_json(
+                profile.as_dict()
+            )
+        else:
+            print(
+                "Verified cold archive "
+                "session profile"
+            )
+            print(
+                f"Session: "
+                f"{profile.session_date}"
+            )
+            print(
+                "Runs: "
+                + ",".join(
+                    str(
+                        value
+                    )
+                    for value
+                    in profile.run_ids
+                )
+            )
+            print(
+                "Archive schema: v"
+                f"{profile.archive_source_schema_version}"
+            )
+            print(
+                "Option quote rows: "
+                f"{profile.option_quote_universe['row_count']}"
+            )
+            print(
+                "Underlyings: "
+                f"{profile.option_quote_universe['underlying_count']}"
+            )
+            for (
+                table_name,
+                count,
+            ) in profile.table_counts.items():
+                print(
+                    f"{table_name}: "
+                    f"{count}"
+                )
+        return 0
+
+    if args.command == "archive-parity":
+        def parity_progress(
+            message: str,
+        ) -> None:
+            print(
+                f"[archive-parity] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        receipt = (
+            verify_archive_session_parity(
+                args.session_date,
+                progress=parity_progress,
+            )
+        )
+
+        if args.json:
+            _print_json(
+                receipt.as_dict()
+            )
+        else:
+            print(
+                "Hot/cold content parity PASSED"
+            )
+            print(
+                f"Session: "
+                f"{receipt.session_date}"
+            )
+            print(
+                f"State: "
+                f"{receipt.state}"
+            )
+            print(
+                "Archive source schema: "
+                f"v{receipt.archive_source_schema_version}"
+            )
+            print(
+                "Current schema: "
+                f"v{receipt.current_schema_version}"
+            )
+            for (
+                table_name,
+                fingerprint,
+            ) in receipt.hot_fingerprints.items():
+                print(
+                    f"{table_name}: "
+                    f"rows={fingerprint.row_count} "
+                    f"sha256="
+                    f"{fingerprint.content_sha256}"
+                )
+        return 0
+
+    if args.command == "archive-prune-index-audit":
+        audit = (
+            audit_prune_foreign_key_indexes()
+        )
+
+        if args.json:
+            _print_json(
+                audit.as_dict()
+            )
+        else:
+            print(
+                "Prune parent FK index audit"
+            )
+            print(
+                "State: "
+                + (
+                    "PASS"
+                    if audit.passed
+                    else "FAIL"
+                )
+            )
+            for item in audit.checks:
+                print(
+                    "["
+                    + (
+                        "PASS"
+                        if item.passed
+                        else "FAIL"
+                    )
+                    + "] "
+                    + item.child_table
+                    + "("
+                    + ",".join(
+                        item.child_columns
+                    )
+                    + ")->"
+                    + item.parent_table
+                    + " index="
+                    + str(
+                        item.supporting_index
+                        or "NONE"
+                    )
+                )
+
+        return (
+            0
+            if audit.passed
+            else 2
+        )
 
     if args.command == "archive-verify":
         manifest = verify_research_archive(
