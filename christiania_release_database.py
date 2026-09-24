@@ -16,7 +16,12 @@ from typing import Iterator
 from src.config import load_runtime_env_file
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
-from src.operations.sqlite_runtime import inspect_database, resolve_backup_dir
+from src.operations.sqlite_runtime import (
+    assert_backup_capacity,
+    backup_logical_source_bytes,
+    inspect_database,
+    resolve_backup_dir,
+)
 
 
 HEARTBEAT_INTERVAL_SECONDS = 15.0
@@ -146,6 +151,16 @@ def _prune_release_rollback_backups(
 
 def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version: int) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
+
+    assert_backup_capacity(
+        source=database,
+        target_dir=backup_dir,
+    )
+
+    _progress(
+        "Database preparation: rollback capacity PASS; "
+        f"logical_source_bytes={backup_logical_source_bytes(database)}"
+    )
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     final_path = backup_dir / (
         f"christiania_release_rollback_{stamp}_v{schema_version}.db"
