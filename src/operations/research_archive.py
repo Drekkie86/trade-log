@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1426,6 +1427,114 @@ def verify_research_archive(
     return manifest
 
 
+@contextmanager
+def open_verified_archive_connection(
+    manifest_path: str | Path,
+):
+    path = Path(
+        manifest_path
+    ).expanduser()
+
+    manifest = verify_research_archive(
+        path,
+        deep_payload=False,
+    )
+
+    archive_path = (
+        path.parent
+        / manifest.archive_filename
+    )
+
+    with tempfile.TemporaryDirectory(
+        prefix="christiania-archive-query-"
+    ) as temp_dir:
+        restored = (
+            Path(temp_dir)
+            / "archive.db"
+        )
+
+        digest = hashlib.sha256()
+
+        with gzip.open(
+            archive_path,
+            "rb",
+        ) as src:
+            with restored.open(
+                "wb"
+            ) as dst:
+                while True:
+                    chunk = src.read(
+                        CHUNK_SIZE
+                    )
+
+                    if not chunk:
+                        break
+
+                    digest.update(
+                        chunk
+                    )
+                    dst.write(
+                        chunk
+                    )
+
+        if (
+            digest.hexdigest()
+            != manifest.uncompressed_sha256
+        ):
+            raise RuntimeError(
+                "Archived evidence read-through "
+                "payload SHA-256 mismatch."
+            )
+
+        if (
+            restored.stat().st_size
+            != manifest.uncompressed_size_bytes
+        ):
+            raise RuntimeError(
+                "Archived evidence read-through "
+                "payload size mismatch."
+            )
+
+        uri = (
+            restored.resolve().as_uri()
+            + "?mode=ro"
+        )
+
+        conn = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=30.0,
+        )
+        conn.row_factory = (
+            sqlite3.Row
+        )
+
+        try:
+            conn.execute(
+                "PRAGMA query_only = ON;"
+            )
+
+            integrity = str(
+                conn.execute(
+                    "PRAGMA integrity_check;"
+                ).fetchone()[0]
+            )
+
+            if integrity != "ok":
+                raise RuntimeError(
+                    "Archived evidence read-through "
+                    "integrity_check failed: "
+                    f"{integrity}"
+                )
+
+            yield (
+                conn,
+                manifest,
+            )
+        finally:
+            conn.close()
+
+
 def find_archive_for_run(
     run_id: int,
     *,
@@ -1446,14 +1555,21 @@ def read_archived_run_evidence(
     *,
     archive_dir: str | Path | None = None,
 ) -> ArchivedRunEvidence:
-    target_run = int(run_id)
-    directory = resolve_archive_dir(
-        archive_dir
+    target_run = int(
+        run_id
     )
+
+    directory = (
+        resolve_archive_dir(
+            archive_dir
+        )
+    )
+
     manifest = find_archive_for_run(
         target_run,
         archive_dir=directory,
     )
+
     if manifest is None:
         raise FileNotFoundError(
             "No verified Christiania research archive "
@@ -1464,91 +1580,53 @@ def read_archived_run_evidence(
         directory
         / manifest.manifest_filename
     )
-    verify_research_archive(
-        manifest_path,
-        deep_payload=False,
-    )
-    archive_path = (
-        directory
-        / manifest.archive_filename
-    )
 
-    with tempfile.TemporaryDirectory(
-        prefix="christiania-archive-read-"
-    ) as temp_dir:
-        restored = (
-            Path(temp_dir)
-            / "archive.db"
-        )
-        digest = hashlib.sha256()
-        with gzip.open(
-            archive_path,
-            "rb",
-        ) as src:
-            with restored.open(
-                "wb"
-            ) as dst:
-                while True:
-                    chunk = src.read(
-                        CHUNK_SIZE
-                    )
-                    if not chunk:
-                        break
-                    digest.update(chunk)
-                    dst.write(chunk)
+    with open_verified_archive_connection(
+        manifest_path
+    ) as (
+        conn,
+        verified_manifest,
+    ):
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM research_runs
+            WHERE id = ?
+            LIMIT 1;
+            """,
+            (
+                target_run,
+            ),
+        ).fetchone()
 
-        if (
-            digest.hexdigest()
-            != manifest.uncompressed_sha256
-        ):
+        if exists is None:
             raise RuntimeError(
-                "Archived run read-through payload "
-                "SHA-256 mismatch."
+                "Archive manifest claims run "
+                f"{target_run}, but archive payload "
+                "does not contain it."
             )
 
-        uri = (
-            restored.resolve().as_uri()
-            + "?mode=ro"
-        )
-        conn = sqlite3.connect(
-            uri,
-            uri=True,
-            timeout=30.0,
-        )
-        try:
-            exists = conn.execute(
-                """
-                SELECT 1
-                FROM research_runs
-                WHERE id = ?
-                LIMIT 1;
-                """,
-                (target_run,),
-            ).fetchone()
-            if exists is None:
-                raise RuntimeError(
-                    "Archive manifest claims run "
-                    f"{target_run}, but archive payload "
-                    "does not contain it."
-                )
-
-            counts = {
-                table_name: int(
-                    conn.execute(
-                        sql,
-                        (target_run,),
-                    ).fetchone()[0]
-                )
-                for table_name, sql
-                in ARCHIVED_RUN_COUNT_SQL.items()
-            }
-        finally:
-            conn.close()
+        counts = {
+            table_name: int(
+                conn.execute(
+                    sql,
+                    (
+                        target_run,
+                    ),
+                ).fetchone()[0]
+            )
+            for (
+                table_name,
+                sql,
+            ) in ARCHIVED_RUN_COUNT_SQL.items()
+        }
 
     return ArchivedRunEvidence(
         run_id=target_run,
-        session_date=manifest.session_date,
-        archive_filename=manifest.archive_filename,
+        session_date=
+            verified_manifest.session_date,
+        archive_filename=
+            verified_manifest.archive_filename,
         table_counts=counts,
     )
 
