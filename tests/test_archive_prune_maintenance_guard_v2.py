@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import sqlite3
 
 from src.operations.archive_pruning import (
+    _checkpoint_clean_wal,
+    _prune_capacity_preflight,
     _require_managed_maintenance_state,
     _require_no_database_holders,
     plan_prune_session,
@@ -217,3 +221,190 @@ def test_production_prune_plan_is_refused_during_active_maintenance(
         plan_prune_session(
             "2026-09-16",
         )
+
+
+def test_checkpoint_clean_wal_requires_wal_mode(
+    tmp_path: Path,
+):
+    database = (
+        tmp_path
+        / "not_wal.db"
+    )
+
+    conn = sqlite3.connect(
+        database,
+        isolation_level=None,
+    )
+
+    try:
+        conn.execute(
+            "CREATE TABLE probe(id INTEGER PRIMARY KEY);"
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="requires SQLite WAL mode",
+        ):
+            _checkpoint_clean_wal(
+                conn,
+                database,
+            )
+    finally:
+        conn.close()
+
+
+def test_checkpoint_clean_wal_truncates_wal(
+    tmp_path: Path,
+):
+    database = (
+        tmp_path
+        / "wal.db"
+    )
+
+    conn = sqlite3.connect(
+        database,
+        isolation_level=None,
+    )
+
+    progress: list[str] = []
+
+    try:
+        assert (
+            str(
+                conn.execute(
+                    "PRAGMA journal_mode = WAL;"
+                ).fetchone()[0]
+            ).lower()
+            == "wal"
+        )
+
+        conn.execute(
+            "CREATE TABLE probe(id INTEGER PRIMARY KEY, payload TEXT);"
+        )
+
+        conn.executemany(
+            "INSERT INTO probe(payload) VALUES(?);",
+            [
+                (
+                    "x" * 1000,
+                )
+                for _ in range(
+                    100
+                )
+            ],
+        )
+
+        _checkpoint_clean_wal(
+            conn,
+            database,
+            progress=progress.append,
+        )
+
+        wal_path = Path(
+            str(database)
+            + "-wal"
+        )
+
+        assert (
+            not wal_path.exists()
+            or wal_path.stat().st_size
+            == 0
+        )
+
+        assert any(
+            "WAL checkpoint PASS"
+            in message
+            for message
+            in progress
+        )
+    finally:
+        conn.close()
+
+
+def test_prune_capacity_preflight_fails_closed_when_headroom_is_short(
+    tmp_path: Path,
+):
+    database = (
+        tmp_path
+        / "capacity.db"
+    )
+
+    conn = sqlite3.connect(
+        database
+    )
+
+    try:
+        conn.execute(
+            "CREATE TABLE probe(id INTEGER PRIMARY KEY);"
+        )
+        conn.commit()
+
+        with pytest.raises(
+            RuntimeError,
+            match="Insufficient filesystem headroom",
+        ):
+            _prune_capacity_preflight(
+                conn,
+                database,
+                enforce=True,
+                disk_usage=lambda path: (
+                    SimpleNamespace(
+                        total=1_000,
+                        free=499,
+                    )
+                ),
+                required_free_bytes=lambda **kwargs: 500,
+            )
+    finally:
+        conn.close()
+
+
+def test_prune_capacity_preflight_records_exact_evidence(
+    tmp_path: Path,
+):
+    database = (
+        tmp_path
+        / "capacity_pass.db"
+    )
+
+    conn = sqlite3.connect(
+        database
+    )
+    progress: list[str] = []
+
+    try:
+        conn.execute(
+            "CREATE TABLE probe(id INTEGER PRIMARY KEY);"
+        )
+        conn.commit()
+
+        (
+            logical_bytes,
+            free_bytes,
+            required_bytes,
+        ) = _prune_capacity_preflight(
+            conn,
+            database,
+            enforce=True,
+            disk_usage=lambda path: (
+                SimpleNamespace(
+                    total=10_000,
+                    free=7_000,
+                )
+            ),
+            required_free_bytes=lambda **kwargs: 6_000,
+            progress=progress.append,
+        )
+
+        assert logical_bytes > 0
+        assert free_bytes == 7_000
+        assert required_bytes == 6_000
+
+        assert any(
+            "capacity PASS"
+            in message
+            for message
+            in progress
+        )
+    finally:
+        conn.close()
