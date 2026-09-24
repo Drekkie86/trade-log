@@ -1695,11 +1695,18 @@ def _delete_temp_id_set_in_batches(
             "batch_rows must be >= 1."
         )
 
+    quoted_table = _quote_identifier(
+        table_name
+    )
+    quoted_temp = _quote_identifier(
+        temp_table
+    )
+
     expected = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
-            FROM {temp_table};
+            FROM {quoted_temp};
             """
         ).fetchone()[0]
     )
@@ -1722,7 +1729,7 @@ def _delete_temp_id_set_in_batches(
             batch_ids = conn.execute(
                 f"""
                 SELECT id
-                FROM {temp_table}
+                FROM {quoted_temp}
                 ORDER BY id
                 LIMIT ?;
                 """,
@@ -1732,7 +1739,7 @@ def _delete_temp_id_set_in_batches(
             batch_ids = conn.execute(
                 f"""
                 SELECT id
-                FROM {temp_table}
+                FROM {quoted_temp}
                 WHERE id > ?
                 ORDER BY id
                 LIMIT ?;
@@ -1759,10 +1766,10 @@ def _delete_temp_id_set_in_batches(
                     f"batch {batch_number + 1}"
                 ),
                 sql=f"""
-                    DELETE FROM {table_name}
+                    DELETE FROM {quoted_table}
                     WHERE id IN (
                         SELECT id
-                        FROM {temp_table}
+                        FROM {quoted_temp}
                         WHERE id <= ?
                     );
                 """,
@@ -1780,10 +1787,10 @@ def _delete_temp_id_set_in_batches(
                     f"batch {batch_number + 1}"
                 ),
                 sql=f"""
-                    DELETE FROM {table_name}
+                    DELETE FROM {quoted_table}
                     WHERE id IN (
                         SELECT id
-                        FROM {temp_table}
+                        FROM {quoted_temp}
                         WHERE id > ?
                           AND id <= ?
                     );
