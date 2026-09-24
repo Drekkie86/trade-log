@@ -147,6 +147,28 @@ Batching improves observability and bounds individual SQL statements. It does
 not permit partial success: an error or interruption before COMMIT can still
 roll the complete transaction back.
 
+
+
+### Atomic-prune WAL and capacity preflight
+
+Batching bounds individual DELETE statements but deliberately does not split
+the transaction. The whole session remains one atomic commit, so Christiania
+must assume the transaction WAL can grow materially.
+
+Immediately before the production write transaction Christiania:
+
+1. requires SQLite WAL mode;
+2. runs `wal_checkpoint(TRUNCATE)` and requires a non-busy, zero-byte WAL;
+3. calculates logical database bytes from the larger of the main file and
+   `page_count * page_size`;
+4. measures filesystem free space;
+5. reserves one logical-database-sized WAL allowance plus the same RC0
+   free-space reserve used by verified backup policy; and
+6. refuses the prune before `BEGIN IMMEDIATE` when that headroom is absent.
+
+The resulting logical size, free bytes and required bytes are persisted in the
+prune receipt for later audit.
+
 ## Transactional prune commit ledger
 
 Schema v34 adds `research_archive_prune_commits_v1`.
@@ -190,7 +212,9 @@ When the default production DB path is used, `archive-prune-session` requires:
 
 The canonical maintenance entry additionally:
 
-- stops the configured timers and one-shot jobs;
+- stops the configured timers;
+- refuses to enter while a backup, audit, restore drill or other managed
+  one-shot job is already active, rather than interrupting it;
 - records exactly which runtime units were active beforehand;
 - stops OAuth before the app;
 - stops app and daemon;
@@ -199,7 +223,13 @@ The canonical maintenance entry additionally:
 - fails closed if holder inspection is unavailable or any holder remains.
 
 This closes the orphaned read-only planner/WAL-holder failure mode observed
-during the Sep-16 attempt.
+during the Sep-16 attempt. After remote verification, the destructive path
+revalidates maintenance ownership and proves zero DB/WAL/SHM holders again
+immediately before opening SQLite.
+
+Production prune planning is refused while canonical maintenance is active.
+Planning belongs before maintenance entry; once maintenance owns the runtime,
+no second read-only planner may pin a fresh WAL snapshot.
 
 ### Maintenance rehearsal
 
