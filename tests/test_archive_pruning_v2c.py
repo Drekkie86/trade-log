@@ -1163,3 +1163,121 @@ def test_prune_aborts_if_validated_parity_sidecar_changes_before_delete(
             assert row[0] == table_name
     finally:
         conn.close()
+
+
+
+def test_prune_apply_recomputes_parity_and_rejects_late_hot_evidence(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    # The existing parity receipt is valid at this point. Add late evidence
+    # tied to the archived run after that receipt was created. Apply must not
+    # trust the stale receipt; it must recompute full parity and fail before
+    # destructive work.
+    create_market_snapshot(
+        {
+            "captured_at":
+                "2026-09-01T14:01:00Z",
+            "underlying": "LATE",
+            "provider": "MASSIVE",
+            "provider_snapshot_id":
+                "late-after-parity",
+            "research_run_id":
+                manifest.run_ids[0],
+            "us_session_date":
+                "2026-09-01",
+            "us_session_state":
+                "INTRADAY",
+            "underlying_price": 101.0,
+            "underlying_source":
+                "FETCHED",
+            "underlying_at":
+                "2026-09-01T14:01:00Z",
+            "fx_to_eur": None,
+            "fx_source": "UNKNOWN",
+            "fx_at": None,
+            "notes":
+                "late evidence test",
+        },
+        [
+            _quote(
+                "LATE-C-100",
+                100.0,
+            ),
+        ],
+        db_path=db_path,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "fingerprint counts do not "
+            "match archive manifest"
+        ),
+    ):
+        prune_research_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+            confirm_session=(
+                manifest.session_date
+            ),
+        )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        quote_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+
+        assert quote_count == 3
+
+        for (
+            table_name,
+            trigger_name,
+        ) in DELETE_TRIGGER_BY_TABLE.items():
+            row = conn.execute(
+                """
+                SELECT tbl_name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = ?;
+                """,
+                (
+                    trigger_name,
+                ),
+            ).fetchone()
+
+            assert row is not None
+            assert row[0] == table_name
+    finally:
+        conn.close()
