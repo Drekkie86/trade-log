@@ -187,7 +187,8 @@ def test_receiver_preflights_before_activation():
         < activation
     )
     current_gate = script[current_control_plane:current_database]
-    assert '"${RELEASE_DIR}/christiania_status.py"' in current_gate
+    assert '"${PREVIOUS_TARGET}/christiania_status.py"' in current_gate
+    assert '"${RELEASE_DIR}/christiania_status.py"' not in current_gate
     assert "--deployment-safe" in current_gate
 
 
