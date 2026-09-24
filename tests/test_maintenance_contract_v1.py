@@ -219,9 +219,16 @@ def test_maintenance_rehearsal_restores_on_failure():
         )
     ]
 
-    assert (
+    enter_position = rehearsal.index(
+        "enter_maintenance"
+    )
+    trap_position = rehearsal.index(
         "trap rehearsal_restore ERR INT TERM HUP"
-        in rehearsal
+    )
+
+    assert (
+        enter_position
+        < trap_position
     )
     assert (
         'if [[ -f "${STATE_FILE}" ]]'
@@ -229,5 +236,13 @@ def test_maintenance_rehearsal_restores_on_failure():
     )
     assert (
         "exit_maintenance"
+        in rehearsal
+    )
+    assert (
+        "rehearsal refused while one-shot service is active"
+        in rehearsal
+    )
+    assert (
+        "christiania-supervisor.service"
         in rehearsal
     )
