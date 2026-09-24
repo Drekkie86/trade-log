@@ -8,6 +8,7 @@ import pytest
 
 import christiania_release_database as release_db
 from christiania_release_database import (
+    preflight_release_database,
     prepare_release_database,
     restore_backup,
 )
@@ -505,3 +506,153 @@ def test_release_rollback_copy_failure_removes_partial_temp_file(
         ).schema_version
         == 27
     )
+
+
+
+def test_release_database_preflight_surfaces_migration_capacity(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    monkeypatch.setattr(
+        release_db,
+        "backup_logical_source_bytes",
+        lambda source: 100,
+    )
+    monkeypatch.setattr(
+        release_db.shutil,
+        "disk_usage",
+        lambda path: type(
+            "Usage",
+            (),
+            {
+                "total": 1000,
+                "free": 900,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        release_db,
+        "backup_required_free_bytes",
+        lambda **kwargs: 500,
+    )
+
+    result = (
+        preflight_release_database()
+    )
+
+    assert result.passed is True
+    assert result.migration_required is True
+    assert result.schema_before == 27
+    assert (
+        result.schema_target
+        == EXPECTED_SCHEMA_VERSION
+    )
+    assert (
+        result.logical_source_bytes
+        == 100
+    )
+    assert (
+        result.filesystem_free_bytes
+        == 900
+    )
+    assert (
+        result.required_free_bytes
+        == 500
+    )
+    assert (
+        result.capacity_state
+        == "PASS"
+    )
+
+
+def test_release_database_preflight_fails_capacity_without_mutating_database(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    monkeypatch.setattr(
+        release_db,
+        "backup_logical_source_bytes",
+        lambda source: 700,
+    )
+    monkeypatch.setattr(
+        release_db.shutil,
+        "disk_usage",
+        lambda path: type(
+            "Usage",
+            (),
+            {
+                "total": 1000,
+                "free": 400,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        release_db,
+        "backup_required_free_bytes",
+        lambda **kwargs: 500,
+    )
+
+    result = (
+        preflight_release_database()
+    )
+
+    assert result.passed is False
+    assert (
+        result.capacity_state
+        == "FAIL"
+    )
+    assert (
+        result.filesystem_free_bytes
+        == 400
+    )
+    assert (
+        result.required_free_bytes
+        == 500
+    )
+
+    assert (
+        inspect_database(
+            db
+        ).schema_version
+        == 27
+    )
+
+    assert list(
+        backups.glob(
+            "christiania_release_rollback_*"
+        )
+    ) == []
