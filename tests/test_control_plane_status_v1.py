@@ -848,3 +848,93 @@ def test_control_plane_status_accepts_enabled_healthy_public_edge(
         status.ready
         is True
     )
+
+
+def test_public_edge_supervisor_failure_does_not_deadlock_deployment_repair(
+    tmp_path: Path,
+):
+    (
+        app_dir,
+        audit_dir,
+        systemd_root,
+    ) = _prepare(
+        tmp_path
+    )
+
+    audit_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    (
+        audit_dir
+        / "rc0_supervisor_status.json"
+    ).write_text(
+        json.dumps(
+            {
+                "state": "UNHEALTHY",
+                "observed_at": (
+                    FRESH_OBSERVED_AT
+                ),
+                "checks": [
+                    {
+                        "name": (
+                            "research-progress"
+                        ),
+                        "state": "PASS",
+                        "detail": (
+                            "Research production current."
+                        ),
+                    },
+                    {
+                        "name": (
+                            "public-edge-services"
+                        ),
+                        "state": "FAIL",
+                        "detail": (
+                            "OAuth proxy inactive."
+                        ),
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def service_state(
+        unit: str,
+    ) -> str:
+        if (
+            unit
+            == PUBLIC_EDGE_SERVICE
+        ):
+            return "inactive"
+
+        return "active"
+
+    status = _collect(
+        app_dir=app_dir,
+        audit_dir=audit_dir,
+        systemd_root=systemd_root,
+        service_state=service_state,
+        service_enabled=lambda unit: (
+            "enabled"
+            if unit
+            == PUBLIC_EDGE_SERVICE
+            else "disabled"
+        ),
+    )
+
+    assert status.ready is False
+    assert (
+        status.supervisor_state
+        == "UNHEALTHY"
+    )
+    assert (
+        status.deployment_supervisor_state
+        == "PASS"
+    )
+    assert (
+        status.deployment_safe
+        is True
+    )
