@@ -18,6 +18,9 @@ from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
 )
+from src.operations.sqlite_runtime import (
+    backup_required_free_bytes,
+)
 from src.operations.research_archive import (
     ARCHIVE_TABLE_SPECS,
     CHUNK_SIZE,
@@ -449,6 +452,34 @@ def open_verified_archive_session(
             / "archive.db"
         )
 
+        usage = shutil.disk_usage(
+            temp_dir
+        )
+        required_free = (
+            backup_required_free_bytes(
+                source_size_bytes=(
+                    manifest.uncompressed_size_bytes
+                ),
+                filesystem_total_bytes=int(
+                    usage.total
+                ),
+            )
+        )
+
+        if int(
+            usage.free
+        ) < required_free:
+            raise RuntimeError(
+                "Insufficient temporary "
+                "filesystem headroom for "
+                "verified archive "
+                "materialization: "
+                f"free={int(usage.free)} "
+                f"required={required_free} "
+                "uncompressed_archive="
+                f"{manifest.uncompressed_size_bytes}."
+            )
+
         digest = hashlib.sha256()
         restored_bytes = 0
 
@@ -473,14 +504,31 @@ def open_verified_archive_session(
                     if not chunk:
                         break
 
+                    next_size = (
+                        restored_bytes
+                        + len(
+                            chunk
+                        )
+                    )
+
+                    if (
+                        next_size
+                        > manifest.uncompressed_size_bytes
+                    ):
+                        raise RuntimeError(
+                            "Materialized archive "
+                            "exceeded manifest "
+                            "uncompressed size."
+                        )
+
                     digest.update(
                         chunk
                     )
                     target.write(
                         chunk
                     )
-                    restored_bytes += len(
-                        chunk
+                    restored_bytes = (
+                        next_size
                     )
 
         if (
@@ -1042,6 +1090,69 @@ def verify_archive_session_parity(
         cold,
     )
 
+    count_mismatches = [
+        (
+            table_name,
+            int(
+                manifest.table_counts.get(
+                    table_name,
+                    -1,
+                )
+            ),
+            hot[
+                table_name
+            ].row_count,
+            cold[
+                table_name
+            ].row_count,
+        )
+        for table_name
+        in sorted(
+            hot
+        )
+        if (
+            hot[
+                table_name
+            ].row_count
+            != int(
+                manifest.table_counts.get(
+                    table_name,
+                    -1,
+                )
+            )
+            or cold[
+                table_name
+            ].row_count
+            != int(
+                manifest.table_counts.get(
+                    table_name,
+                    -1,
+                )
+            )
+        )
+    ]
+
+    if count_mismatches:
+        raise RuntimeError(
+            "Hot/cold fingerprint counts "
+            "do not match archive manifest: "
+            + "; ".join(
+                (
+                    f"{table}:"
+                    f"manifest={expected}:"
+                    f"hot={hot_count}:"
+                    f"archive={cold_count}"
+                )
+                for (
+                    table,
+                    expected,
+                    hot_count,
+                    cold_count,
+                )
+                in count_mismatches
+            )
+        )
+
     if not parity:
         mismatches = [
             table_name
@@ -1445,6 +1556,32 @@ def validate_archive_parity_receipt(
             "Archive parity receipt contains "
             "non-matching fingerprints."
         )
+
+    for table_name in (
+        expected_tables
+    ):
+        expected_count = int(
+            manifest.table_counts.get(
+                table_name,
+                -1,
+            )
+        )
+
+        if (
+            receipt.hot_fingerprints[
+                table_name
+            ].row_count
+            != expected_count
+            or receipt.archive_fingerprints[
+                table_name
+            ].row_count
+            != expected_count
+        ):
+            raise RuntimeError(
+                "Archive parity receipt row "
+                "count does not match manifest "
+                f"for {table_name}."
+            )
 
     return receipt
 
