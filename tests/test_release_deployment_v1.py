@@ -564,3 +564,48 @@ def test_release_receiver_never_stops_busy_oneshot_during_rollback():
         "deactivating",
     ):
         assert state in helper
+
+
+
+def test_release_rollback_refuses_database_restore_if_new_oneshot_is_busy():
+    receiver = (
+        ROOT
+        / "deploy/receive_release.sh"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    rollback_start = receiver.index(
+        "rollback() {"
+    )
+    rollback_end = receiver.index(
+        "trap 'rollback $?'",
+        rollback_start,
+    )
+    rollback = receiver[
+        rollback_start:rollback_end
+    ]
+
+    guard = rollback.index(
+        "AUTOMATIC ROLLBACK REFUSED"
+    )
+    app_link_restore = rollback.index(
+        'if [[ "${APP_LINK_MUTATED}" -eq 1 ]]'
+    )
+    database_restore = rollback.index(
+        'if [[ "${DATABASE_PREPARED}" -eq 1 ]]'
+    )
+
+    assert (
+        guard
+        < app_link_restore
+        < database_restore
+    )
+    assert (
+        'unit_is_busy_for_release "${service}"'
+        in rollback
+    )
+    assert (
+        "Core services remain stopped"
+        in rollback
+    )
