@@ -75,10 +75,10 @@ def test_maintenance_records_and_restores_public_edge():
         "record_state"
     )
     stop_edge = script.index(
-        'systemctl stop "\${SECURE_EDGE_SERVICE}"'
+        'systemctl stop "${SECURE_EDGE_SERVICE}"'
     )
     restore = script.index(
-        'Restoring \${SECURE_EDGE_SERVICE}'
+        'Restoring ${SECURE_EDGE_SERVICE}'
     )
 
     assert record < stop_edge
@@ -96,7 +96,7 @@ def test_maintenance_state_is_retained_on_incomplete_restore():
     )
 
     assert (
-        'rm -f "\${STATE_FILE}"'
+        'rm -f "${STATE_FILE}"'
         in script
     )
 
