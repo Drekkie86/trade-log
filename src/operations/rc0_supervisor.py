@@ -62,6 +62,20 @@ CORE_SERVICES = (
 
 RUNTIME_MEMORY_SERVICES = CORE_SERVICES
 
+SECURE_EDGE_SERVICE = (
+    "christiania-oauth2-proxy.service"
+)
+
+PUBLIC_EDGE_SERVICES = (
+    SECURE_EDGE_SERVICE,
+    "caddy.service",
+)
+
+PUBLIC_EDGE_ENABLED_STATES = {
+    "enabled",
+    "enabled-runtime",
+}
+
 EXPECTED_ENABLED_TIMERS = (
     "christiania-backup.timer",
     "christiania-audit.timer",
@@ -1546,6 +1560,60 @@ def collect_snapshot(
             ),
         )
     )
+
+    secure_edge_enabled_state = (
+        timer_state(
+            SECURE_EDGE_SERVICE
+        )
+    )
+
+    if (
+        secure_edge_enabled_state
+        in PUBLIC_EDGE_ENABLED_STATES
+    ):
+        edge_states = {
+            unit: service_state(
+                unit
+            )
+            for unit
+            in PUBLIC_EDGE_SERVICES
+        }
+
+        edge_ok = all(
+            state == "active"
+            for state
+            in edge_states.values()
+        )
+
+        checks.append(
+            SupervisorCheck(
+                "public-edge-services",
+                (
+                    "PASS"
+                    if edge_ok
+                    else "FAIL"
+                ),
+                "; ".join(
+                    f"{unit}={state}"
+                    for unit, state
+                    in edge_states.items()
+                )
+                + ".",
+            )
+        )
+    else:
+        checks.append(
+            SupervisorCheck(
+                "public-edge-services",
+                "INFO",
+                (
+                    "Christiania public edge is not enabled; "
+                    f"{SECURE_EDGE_SERVICE} is "
+                    f"{secure_edge_enabled_state}."
+                ),
+                blocking=False,
+            )
+        )
 
     external_required = (
         _setting_bool(
