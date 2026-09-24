@@ -506,7 +506,7 @@ def test_hot_archive_analytics_detect_same_count_value_drift(
         conn.execute(
             """
             UPDATE option_quotes
-            SET bid = bid + 0.5
+            SET bid = bid - 0.05
             WHERE id = ?;
             """,
             (
