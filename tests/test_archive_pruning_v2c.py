@@ -516,7 +516,7 @@ def test_prune_apply_revalidates_archive_restores_triggers_and_fk(
     )
 
     assert any(
-        "delete option_quotes complete"
+        "prune-delete: option_quotes complete"
         in message
         for message in progress
     )
