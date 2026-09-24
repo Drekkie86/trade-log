@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -36,6 +37,9 @@ PRUNE_FORMAT_VERSION = 2
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
 DEFAULT_PRUNE_DELETE_BATCH_ROWS = 25_000
+DEFAULT_MAINTENANCE_STATE_PATH = Path(
+    "/run/christiania/maintenance.state"
+)
 
 PRUNE_PARENT_TABLES = (
     "listing_reference_contracts",
@@ -193,6 +197,64 @@ class PruneReceipt:
         data = asdict(self)
         data["run_ids"] = list(self.run_ids)
         return data
+
+
+def _systemd_state(
+    unit: str,
+) -> str:
+    completed = subprocess.run(
+        [
+            "systemctl",
+            "is-active",
+            unit,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    return (
+        completed.stdout
+        or completed.stderr
+        or "unknown"
+    ).strip()
+
+
+def _require_managed_maintenance_state(
+    *,
+    state_path: Path = DEFAULT_MAINTENANCE_STATE_PATH,
+    service_state: Callable[[str], str] = _systemd_state,
+) -> None:
+    if not state_path.is_file():
+        raise RuntimeError(
+            "Production archive pruning requires the canonical Christiania "
+            f"maintenance state: {state_path}"
+        )
+
+    for unit in (
+        "christiania-daemon.service",
+        "christiania-app.service",
+        "christiania-oauth2-proxy.service",
+    ):
+        state = service_state(
+            unit
+        )
+        if state == "active":
+            raise RuntimeError(
+                "Production archive pruning requires quiesced runtime; "
+                f"{unit} is active."
+            )
+
+    theta_state = service_state(
+        "christiania-theta.service"
+    )
+
+    if theta_state != "active":
+        raise RuntimeError(
+            "Production archive pruning requires christiania-theta.service "
+            f"to remain active; found {theta_state}."
+        )
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -1915,6 +1977,9 @@ def prune_research_session(
     confirm_session: str,
     progress: Callable[[str], None] | None = None,
 ) -> PruneReceipt:
+    if db_path is None:
+        _require_managed_maintenance_state()
+
     if confirm_session != session_date:
         raise RuntimeError(
             "Destructive prune confirmation does not match "
