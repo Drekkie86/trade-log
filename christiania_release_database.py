@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -18,6 +19,8 @@ from src.database.migration_runner import apply_pending_migrations, get_schema_v
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
 from src.operations.sqlite_runtime import (
     assert_backup_capacity,
+    backup_logical_source_bytes,
+    backup_required_free_bytes,
     inspect_database,
     resolve_backup_dir,
 )
@@ -25,6 +28,34 @@ from src.operations.sqlite_runtime import (
 
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 DEFAULT_RELEASE_ROLLBACK_RETENTION = 3
+
+
+@dataclass(frozen=True)
+class ReleaseDatabasePreflight:
+    database_path: str
+    backup_dir: str
+    schema_before: int
+    schema_target: int
+    migration_required: bool
+    logical_source_bytes: int | None
+    filesystem_total_bytes: int | None
+    filesystem_free_bytes: int | None
+    required_free_bytes: int | None
+    capacity_state: str
+
+    @property
+    def passed(self) -> bool:
+        return self.capacity_state in {
+            "PASS",
+            "NOT_REQUIRED",
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(
+            self
+        ) | {
+            "passed": self.passed,
+        }
 
 
 @dataclass(frozen=True)
@@ -146,6 +177,135 @@ def _prune_release_rollback_backups(
         stale.unlink()
         pruned += 1
     return pruned
+
+
+def preflight_release_database() -> ReleaseDatabasePreflight:
+    database = resolve_db_path()
+    backup_dir = resolve_backup_dir()
+
+    _progress(
+        "Database preflight: validating "
+        "current schema and WAL metadata."
+    )
+
+    health = inspect_database(
+        database,
+        deep_integrity=False,
+    )
+
+    if (
+        not health.exists
+        or health.schema_version is None
+    ):
+        raise RuntimeError(
+            "Persistent Christiania database "
+            "is missing or unversioned."
+        )
+
+    if (
+        health.schema_version
+        > EXPECTED_SCHEMA_VERSION
+    ):
+        raise RuntimeError(
+            "Database schema "
+            f"v{health.schema_version} is "
+            "newer than release schema "
+            f"v{EXPECTED_SCHEMA_VERSION}."
+        )
+
+    if health.journal_mode != "wal":
+        raise RuntimeError(
+            "Database must be in WAL mode "
+            "before release migration."
+        )
+
+    schema_before = int(
+        health.schema_version
+    )
+
+    if (
+        schema_before
+        == EXPECTED_SCHEMA_VERSION
+    ):
+        return ReleaseDatabasePreflight(
+            database_path=str(
+                database
+            ),
+            backup_dir=str(
+                backup_dir
+            ),
+            schema_before=schema_before,
+            schema_target=(
+                EXPECTED_SCHEMA_VERSION
+            ),
+            migration_required=False,
+            logical_source_bytes=None,
+            filesystem_total_bytes=None,
+            filesystem_free_bytes=None,
+            required_free_bytes=None,
+            capacity_state="NOT_REQUIRED",
+        )
+
+    backup_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    usage = shutil.disk_usage(
+        backup_dir
+    )
+
+    logical_source = (
+        backup_logical_source_bytes(
+            database
+        )
+    )
+
+    required = (
+        backup_required_free_bytes(
+            source_size_bytes=(
+                logical_source
+            ),
+            filesystem_total_bytes=int(
+                usage.total
+            ),
+        )
+    )
+
+    state = (
+        "PASS"
+        if int(
+            usage.free
+        ) >= required
+        else "FAIL"
+    )
+
+    return ReleaseDatabasePreflight(
+        database_path=str(
+            database
+        ),
+        backup_dir=str(
+            backup_dir
+        ),
+        schema_before=schema_before,
+        schema_target=(
+            EXPECTED_SCHEMA_VERSION
+        ),
+        migration_required=True,
+        logical_source_bytes=(
+            logical_source
+        ),
+        filesystem_total_bytes=int(
+            usage.total
+        ),
+        filesystem_free_bytes=int(
+            usage.free
+        ),
+        required_free_bytes=(
+            required
+        ),
+        capacity_state=state,
+    )
 
 
 def _copy_sqlite_backup(
@@ -454,6 +614,14 @@ def main() -> int:
     parser.add_argument("--env-file", required=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    preflight = subparsers.add_parser(
+        "preflight"
+    )
+    preflight.add_argument(
+        "--json",
+        action="store_true",
+    )
+
     prepare = subparsers.add_parser("prepare")
     prepare.add_argument("--migrations-dir", required=True)
     prepare.add_argument("--rollback-pointer", default=None)
@@ -466,6 +634,50 @@ def main() -> int:
     args = parser.parse_args()
     if not load_runtime_env_file(args.env_file, overwrite=False):
         raise SystemExit(f"Environment file missing or empty: {args.env_file}")
+
+    if args.command == "preflight":
+        result = (
+            preflight_release_database()
+        )
+
+        if args.json:
+            print(
+                json.dumps(
+                    result.as_dict(),
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "Database release preflight: "
+                f"{result.capacity_state}"
+            )
+            print(
+                f"Schema: v{result.schema_before} "
+                f"-> v{result.schema_target}"
+            )
+
+            if (
+                result.migration_required
+            ):
+                print(
+                    "Logical source bytes: "
+                    f"{result.logical_source_bytes}"
+                )
+                print(
+                    "Filesystem free bytes: "
+                    f"{result.filesystem_free_bytes}"
+                )
+                print(
+                    "Required free bytes: "
+                    f"{result.required_free_bytes}"
+                )
+
+        return (
+            0
+            if result.passed
+            else 2
+        )
 
     if args.command == "prepare":
         result = prepare_release_database(
