@@ -559,6 +559,16 @@ def audit_prune_foreign_key_indexes(
         ] = []
 
         for index_row in index_rows:
+            # Partial indexes cannot be treated as a universal child-FK
+            # lookup guarantee. Even when today's predicate appears to cover
+            # current rows, V2C must fail closed for future inserts/schemas.
+            if (
+                len(index_row) > 4
+                and int(index_row[4])
+                != 0
+            ):
+                continue
+
             index_name = str(
                 index_row[1]
             )
