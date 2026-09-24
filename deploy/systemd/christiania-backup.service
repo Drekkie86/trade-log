@@ -10,6 +10,6 @@ WorkingDirectory=/opt/christiania
 EnvironmentFile=/etc/christiania/christiania.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py
-ExecStopPost=/bin/sh -c 'dir="${CHRISTIANIA_BACKUP_DIR:-/var/lib/christiania/backups}"; find "$dir" -maxdepth 1 -type f \( -name ".christiania_backup_*.tmp.db" -o -name ".christiania_backup_*.tmp.db-journal" -o -name ".christiania_backup_*.tmp.db-wal" -o -name ".christiania_backup_*.tmp.db-shm" \) -delete'
+ExecStopPost=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py --cleanup-stale-temp
 NoNewPrivileges=true
 PrivateTmp=true
