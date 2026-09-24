@@ -528,18 +528,27 @@ def collect_control_plane_status(
         )
     )
 
+    public_edge_service_state = (
+        service_state(
+            PUBLIC_EDGE_SERVICE
+        )
+    )
+
     public_edge_expected = (
-        public_edge_enabled_state
+        public_edge_service_state
+        == "active"
+        or public_edge_enabled_state
         in PUBLIC_EDGE_ENABLED_STATES
     )
 
     public_edge_services = (
         {
-            unit: service_state(
-                unit
-            )
-            for unit
-            in PUBLIC_EDGE_SERVICES
+            PUBLIC_EDGE_SERVICE:
+                public_edge_service_state,
+            "caddy.service":
+                service_state(
+                    "caddy.service"
+                ),
         }
         if public_edge_expected
         else {}
