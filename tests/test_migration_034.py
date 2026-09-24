@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from src.database.migration_runner import (
     apply_migration_file,
     get_schema_version,
@@ -205,46 +207,59 @@ def test_migration_034_adds_only_required_fk_support_indexes(
         conn.close()
 
 
-def test_migration_034_is_idempotent_at_sql_object_level(
+def test_migration_034_fails_on_conflicting_index_name(
     tmp_path: Path,
 ) -> None:
     db = (
         tmp_path
-        / "migration034-idempotent.db"
+        / "migration034-conflict.db"
     )
     conn = _build_v33_minimal(
         db
     )
 
     try:
-        sql = MIGRATION.read_text(
-            encoding="utf-8"
+        conn.execute(
+            """
+            CREATE INDEX
+            idx_shadow_candidates_reference_contract
+            ON shadow_candidates(id);
+            """
         )
+        conn.commit()
 
-        conn.executescript(
-            sql
-        )
-        conn.executescript(
-            sql
-        )
+        with pytest.raises(
+            sqlite3.OperationalError,
+            match="already exists",
+        ):
+            apply_migration_file(
+                conn,
+                MIGRATION,
+                expected_from=33,
+                target_version=34,
+            )
 
         assert (
             get_schema_version(
                 conn
             )
-            == 34
+            == 33
         )
 
-        versions = int(
-            conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM schema_version
-                WHERE version = 34;
-                """
-            ).fetchone()[0]
+        columns = (
+            _leading_index_columns(
+                conn,
+                "shadow_candidates",
+            )
         )
 
-        assert versions == 1
+        assert (
+            columns[
+                "idx_shadow_candidates_reference_contract"
+            ]
+            == (
+                "id",
+            )
+        )
     finally:
         conn.close()
