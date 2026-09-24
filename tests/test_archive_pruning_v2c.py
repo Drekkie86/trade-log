@@ -541,6 +541,17 @@ def test_prune_apply_revalidates_archive_restores_triggers_and_fk(
         receipt.remote_gate_state
         == "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
     )
+
+    assert (
+        len(
+            receipt.archive_parity_proof_sha256
+        )
+        == 64
+    )
+    assert (
+        receipt.archive_source_schema_version
+        == 34
+    )
     assert (
         receipt.rows_deleted[
             "option_quotes"
@@ -906,3 +917,97 @@ def test_prune_delete_batch_size_is_bounded(
             match="must be between",
         ):
             prune_delete_batch_size()
+
+
+
+def test_prune_plan_blocks_value_drift_even_when_counts_match(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    clean = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert clean.archive_parity_verified is True
+    assert (
+        len(
+            clean.archive_parity_proof_sha256
+            or ""
+        )
+        == 64
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        conn.execute(
+            "DROP TRIGGER "
+            "trg_option_quotes_no_update;"
+        )
+        conn.execute(
+            """
+            UPDATE option_quotes
+            SET bid = bid + 0.01
+            WHERE id = (
+                SELECT MIN(oq.id)
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?
+            );
+            """,
+            (
+                manifest.run_ids[0],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    changed = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert (
+        changed.archive_parity_verified
+        is False
+    )
+    assert (
+        "HOT_ARCHIVE_PARITY_NOT_VERIFIED"
+        in changed.blockers
+    )
+    assert changed.apply_eligible is False
+
+    # Counts alone still reconcile; the blocker is value-level parity.
+    by_table = {
+        item.table_name: item
+        for item in changed.tables
+    }
+
+    assert (
+        by_table[
+            "option_quotes"
+        ].archive_count_matches_hot
+        is True
+    )
