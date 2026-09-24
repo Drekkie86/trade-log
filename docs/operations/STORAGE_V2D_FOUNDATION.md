@@ -164,9 +164,15 @@ attempt.
 Migration 034 adds the support indexes that were absent in the reviewed schema:
 
 - `shadow_candidates(reference_contract_id)`;
+- `shadow_candidates(entry_quote_observation_id)`;
+- `shadow_candidates(entry_greek_observation_id)`;
 - `hypothesis_scanner_evaluations(reference_contract_id)`;
 - `hypothesis_scanner_evaluations(option_quote_id)`;
 - `local_surface_residual_v2_observations(reference_contract_id)`.
+
+Existing leading indexes/unique indexes already cover downstream foreign keys
+into the other V2C target parents. The generic audit, rather than this
+hard-coded list, is the enduring requirement.
 
 ### Generic audit
 
@@ -179,7 +185,15 @@ key, selects only FKs whose parent is:
 - `option_quotes`;
 
 and requires a non-partial child index whose leading columns exactly match the
-FK child columns in order.
+FK child columns in order. The audited parent set is the complete V2C delete
+set:
+
+- `local_surface_residual_v2_observations`;
+- `hypothesis_scanner_evaluations`;
+- `provider_model_observations`;
+- `provider_observation_availability`;
+- `listing_reference_contracts`;
+- `option_quotes`.
 
 A new migration that introduces another child reference without an appropriate
 index makes the audit fail automatically. V2C plan/apply then becomes
@@ -343,6 +357,20 @@ Require:
 
 Deploy through the immutable release receiver. Schema v34 is a real migration;
 the release migration/rollback machinery remains authoritative.
+
+Before the release rollback snapshot is created, the migration path now applies
+the same WAL-aware capacity contract as normal verified backups:
+
+- logical source size is the greater of main-file bytes and
+  `page_count * page_size`;
+- one complete rollback copy must fit;
+- the configured production free-space reserve must remain after that copy;
+- capacity failure occurs before a rollback file or migration pointer is
+  created.
+
+A failure while the SQLite backup API is writing the temporary rollback copy
+removes that partial temporary file. A rollback artifact is promoted only after
+SQLite verification, file fsync, atomic rename and directory fsync.
 
 After activation require:
 
