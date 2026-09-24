@@ -464,6 +464,27 @@ The rehearsal uses the same enter/exit implementation as real maintenance and
 has an emergency restore trap. It exists specifically to prove orchestration
 before trusting it with a destructive storage operation.
 
+### Release migration capacity
+
+A release that advances the database schema must prove capacity before creating
+its rollback copy or running any migration SQL.
+
+On a shared database/backup filesystem, required free space is:
+
+- one logical SQLite source-sized rollback copy;
+- the normal Christiania production free-space reserve; and
+- migration workspace, defaulting to the larger of 2 GiB or 10% of logical
+  source size.
+
+If rollback backups live on a different filesystem, Christiania checks the
+rollback-copy requirement on that filesystem and reserve-plus-workspace on the
+database filesystem independently.
+
+The optional
+`CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES` setting may raise or
+explicitly set the migration-workspace allowance. Capacity failure occurs
+before a rollback file or migration write is created.
+
 ### Physical compaction remains separate
 
 Logical pruning and physical SQLite compaction remain separate changes.
