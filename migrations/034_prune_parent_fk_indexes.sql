@@ -14,6 +14,12 @@ PRAGMA foreign_keys = ON;
 CREATE INDEX IF NOT EXISTS idx_shadow_candidates_reference_contract
 ON shadow_candidates(reference_contract_id);
 
+CREATE INDEX IF NOT EXISTS idx_shadow_candidates_entry_quote_observation
+ON shadow_candidates(entry_quote_observation_id);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_candidates_entry_greek_observation
+ON shadow_candidates(entry_greek_observation_id);
+
 CREATE INDEX IF NOT EXISTS idx_hypothesis_scanner_evaluations_reference_contract
 ON hypothesis_scanner_evaluations(reference_contract_id);
 
