@@ -100,7 +100,7 @@ This is the raw historical evidence interface for future replay code. It is not 
 
 V3 adds a deterministic session-level analytical profile that can be run using the same logic against either the hot production evidence or the immutable cold session archive.
 
-For every archived family the profile records row count, minimum ID, maximum ID and ID population sum. It also records market/provider availability metrics, quote and model-value aggregates, scanner and Surface V2 residual aggregates, plus deterministic categorical distributions for research-run status, option right, provider-model provider, provider-observation state/family, scanner state/direction and Surface V2 state/reason.
+For every archived family the profile records row count, minimum ID, maximum ID and ID population sum. It also records deterministic availability/timestamp metrics and categorical distributions for research-run status, option right, provider-model provider, provider-observation state/family, scanner state/direction and Surface V2 state/reason. Replay-relevant raw fields are streamed in evidence-ID order into typed SHA-256 fingerprints; floating-point values use their exact Python/SQLite binary value representation rather than order-sensitive SQL sums.
 
 The canonical analytical payload is serialized deterministically and SHA-256 hashed. Source location and current/source schema version remain provenance but are intentionally excluded from the analytical hash because migration 034 changes indexes, not archived research meaning.
 
@@ -113,9 +113,9 @@ Operator commands:
 
 Parity state is HOT_ARCHIVE_ANALYTICAL_PARITY_PASS or HOT_ARCHIVE_ANALYTICAL_PARITY_FAIL.
 
-A pass requires identical table-identity profiles, scalar analytical metrics, categorical distributions and canonical analytical SHA-256.
+A pass requires identical table-identity profiles, scalar analytical metrics, ordered raw-field analytical fingerprints, categorical distributions and canonical analytical SHA-256.
 
-This detects more than missing rows. A hot quote-value change can fail parity even when row count and row IDs remain unchanged.
+This detects more than missing rows. A hot quote-value change can fail parity even when row count and row IDs remain unchanged. Archive payload hashes remain the byte-level durability proof; the ordered fingerprints are the deterministic query-path proof for replay-relevant fields.
 
 The archive manifest and payload hashes prove evidence durability. Analytical parity proves that Christiania can actually read the cold evidence through its supported historical query path and obtain the same research population and metrics it obtains from the hot copy. V3 requires both.
 
