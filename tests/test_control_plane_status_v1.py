@@ -91,12 +91,21 @@ def _write_supervisor(
 def _active(
     unit: str,
 ) -> str:
-    assert (
+    if (
         unit
         in CORE_SERVICES
-    )
+    ):
+        return "active"
 
-    return "active"
+    if (
+        unit
+        == PUBLIC_EDGE_SERVICE
+    ):
+        return "inactive"
+
+    raise AssertionError(
+        f"Unexpected unit: {unit}"
+    )
 
 
 def _prepare(
@@ -938,3 +947,44 @@ def test_public_edge_supervisor_failure_does_not_deadlock_deployment_repair(
         status.deployment_safe
         is True
     )
+
+
+def test_control_plane_status_monitors_active_public_edge_even_if_disabled(
+    tmp_path: Path,
+):
+    (
+        app_dir,
+        audit_dir,
+        systemd_root,
+    ) = _prepare(
+        tmp_path
+    )
+
+    _write_supervisor(
+        audit_dir
+    )
+
+    def service_state(
+        unit: str,
+    ) -> str:
+        if (
+            unit
+            == "caddy.service"
+        ):
+            return "inactive"
+
+        return "active"
+
+    status = _collect(
+        app_dir=app_dir,
+        audit_dir=audit_dir,
+        systemd_root=systemd_root,
+        service_state=service_state,
+        service_enabled=lambda unit: (
+            "disabled"
+        ),
+    )
+
+    assert status.public_edge_expected is True
+    assert status.public_edge_state == "FAIL"
+    assert status.ready is False
