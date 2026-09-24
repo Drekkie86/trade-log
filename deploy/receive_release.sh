@@ -611,9 +611,13 @@ if [[ "${RECOVERY_NO_SCHEMA_CHANGE}" -eq 1 ]]; then
   printf '%s\n' "${CURRENT_STATUS_JSON}"
   validate_recovery_operational_gate "${CURRENT_STATUS_JSON}"
 else
+  # Pre-activation safety is a statement about the currently installed
+  # production release and its currently installed systemd policy. Using the
+  # target release here makes legitimate resource-policy changes impossible
+  # to deploy because target canonical values are compared against old units.
   sudo -u "${SERVICE_USER}" \
-    "${RELEASE_DIR}/.venv/bin/python" \
-    "${RELEASE_DIR}/christiania_status.py" \
+    "${PREVIOUS_TARGET}/.venv/bin/python" \
+    "${PREVIOUS_TARGET}/christiania_status.py" \
     --json \
     --deployment-safe
 fi
