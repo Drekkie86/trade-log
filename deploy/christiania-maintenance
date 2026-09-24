@@ -52,6 +52,22 @@ unit_is_active() {
   systemctl is-active --quiet "$1"
 }
 
+unit_state() {
+  local unit="$1"
+  local load_state
+  local active_state
+
+  load_state="$(
+    systemctl show       --property=LoadState       --value       "${unit}"       2>/dev/null       || true
+  )"
+
+  active_state="$(
+    systemctl is-active       "${unit}"       2>/dev/null       || true
+  )"
+
+  printf '%s|%s\n'     "${load_state:-unknown}"     "${active_state:-unknown}"
+}
+
 stop_optional_unit() {
   local unit="$1"
   local load_state
@@ -185,7 +201,9 @@ enter_maintenance() {
   done
 
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    stop_optional_unit "${unit}"
+    if unit_is_active "${unit}"; then
+      fail "one-shot maintenance service is already active; refusing to interrupt it: ${unit}"
+    fi
   done
 
   # Stop the edge explicitly before the app. Stopping the app also propagates
@@ -234,6 +252,95 @@ exit_maintenance() {
   fi
 }
 
+rehearse_maintenance() {
+  require_root
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "cannot rehearse while maintenance state already exists"
+  fi
+
+  local before
+  local after
+
+  before="$(mktemp)"
+  after="$(mktemp)"
+
+  cleanup_rehearsal_files() {
+    rm -f "${before}" "${after}"
+  }
+
+  snapshot_rehearsal_state() {
+    local output="$1"
+
+    : > "${output}"
+
+    for unit in       christiania-theta.service       "${DB_CONSUMER_SERVICES[@]}"       "${SECURE_EDGE_SERVICE}"       caddy.service       "${QUIESCE_TIMER_UNITS[@]}"; do
+      printf '%s=%s\n'         "${unit}"         "$(unit_state "${unit}")"         >> "${output}"
+    done
+  }
+
+  snapshot_rehearsal_state "${before}"
+
+  echo "=== MAINTENANCE REHEARSAL: ENTER ==="
+  enter_maintenance
+
+  rehearsal_restore_on_failure() {
+    local rc=$?
+    trap - ERR INT TERM HUP
+
+    echo "Maintenance rehearsal failed; restoring runtime." >&2
+
+    if [[ -f "${STATE_FILE}" ]]; then
+      exit_maintenance || true
+    fi
+
+    cleanup_rehearsal_files
+    exit "${rc}"
+  }
+
+  trap rehearsal_restore_on_failure ERR INT TERM HUP
+
+  if [[ ! -f "${STATE_FILE}" ]]; then
+    fail "maintenance state file missing during rehearsal"
+  fi
+
+  if ! unit_is_active christiania-theta.service; then
+    fail "Theta is not active during rehearsal maintenance window"
+  fi
+
+  for unit in "${DB_CONSUMER_SERVICES[@]}" "${SECURE_EDGE_SERVICE}"; do
+    if unit_is_active "${unit}"; then
+      fail "${unit} remained active during rehearsal maintenance window"
+    fi
+  done
+
+  for unit in "${QUIESCE_TIMER_UNITS[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "${unit} remained active during rehearsal maintenance window"
+    fi
+  done
+
+  for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "${unit} became active during rehearsal maintenance window"
+    fi
+  done
+
+  echo "=== MAINTENANCE REHEARSAL: EXIT ==="
+  exit_maintenance
+
+  snapshot_rehearsal_state "${after}"
+
+  if ! diff -u "${before}" "${after}"; then
+    fail "runtime state did not restore exactly after maintenance rehearsal"
+  fi
+
+  trap - ERR INT TERM HUP
+  cleanup_rehearsal_files
+
+  echo "MAINTENANCE_REHEARSAL_PASS"
+}
+
 show_status() {
   require_root
 
@@ -260,8 +367,11 @@ case "${1:-}" in
   status)
     show_status
     ;;
+  rehearse)
+    rehearse_maintenance
+    ;;
   *)
-    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status}" >&2
+    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status|rehearse}" >&2
     exit 2
     ;;
 esac
