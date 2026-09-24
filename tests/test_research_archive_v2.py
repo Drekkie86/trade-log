@@ -3,13 +3,23 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from src.database.repository import (
     create_market_snapshot,
+)
+from src.operations.historical_research import (
+    PARITY_STATE_FAIL,
+    PARITY_STATE_PASS,
+    compare_hot_archive_session,
+    profile_archived_session,
+    profile_hot_session,
 )
 from src.operations.research_archive import (
     create_research_archive,
     find_archive_for_run,
     inventory_research_archives,
+    open_verified_archive_connection,
     plan_archive_sessions,
     read_archived_run_evidence,
     verify_research_archive,
@@ -306,3 +316,225 @@ def test_archive_plan_is_idempotent_after_verified_archive(
     assert old.eligible is False
     assert old.already_archived is True
     assert old.reason == "ALREADY_ARCHIVED"
+
+
+
+def test_archive_is_read_only_query_source_and_matches_hot_analytics(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    old_run = _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = create_research_archive(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+        keep_hot_runs=50,
+    )
+
+    manifest_path = (
+        archive_dir
+        / manifest.manifest_filename
+    )
+
+    with open_verified_archive_connection(
+        manifest_path
+    ) as (
+        archive_conn,
+        verified,
+    ):
+        assert (
+            verified.run_ids
+            == (
+                old_run,
+            )
+        )
+
+        quote_count = int(
+            archive_conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes;
+                """
+            ).fetchone()[0]
+        )
+
+        assert quote_count == 1
+
+        with pytest.raises(
+            sqlite3.OperationalError,
+        ):
+            archive_conn.execute(
+                """
+                UPDATE option_quotes
+                SET bid = 999.0;
+                """
+            )
+
+    hot = profile_hot_session(
+        manifest.session_date,
+        run_ids=
+            manifest.run_ids,
+        db_path=db_path,
+    )
+
+    cold = profile_archived_session(
+        manifest.session_date,
+        archive_dir=archive_dir,
+    )
+
+    assert (
+        hot.analytical_sha256
+        == cold.analytical_sha256
+    )
+
+    parity = (
+        compare_hot_archive_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert (
+        parity.state
+        == PARITY_STATE_PASS
+    )
+    assert parity.passed is True
+    assert (
+        parity.differing_sections
+        == ()
+    )
+
+
+def test_hot_archive_analytics_detect_same_count_value_drift(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = create_research_archive(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+        keep_hot_runs=50,
+    )
+
+    before = (
+        compare_hot_archive_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert before.passed is True
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        trigger_rows = (
+            conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND tbl_name = 'option_quotes'
+                  AND UPPER(sql)
+                      LIKE '%BEFORE UPDATE%';
+                """
+            ).fetchall()
+        )
+
+        for row in trigger_rows:
+            trigger_name = str(
+                row[0]
+            )
+
+            assert (
+                trigger_name.replace(
+                    "_",
+                    "",
+                ).isalnum()
+            )
+
+            conn.execute(
+                f'DROP TRIGGER "{trigger_name}";'
+            )
+
+        quote_id = int(
+            conn.execute(
+                """
+                SELECT oq.id
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?
+                LIMIT 1;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+
+        conn.execute(
+            """
+            UPDATE option_quotes
+            SET bid = bid + 0.5
+            WHERE id = ?;
+            """,
+            (
+                quote_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    after = (
+        compare_hot_archive_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert (
+        after.state
+        == PARITY_STATE_FAIL
+    )
+    assert after.passed is False
+    assert (
+        "scalar_metrics"
+        in after.differing_sections
+    )
+    assert (
+        after.hot_analytical_sha256
+        != after.archive_analytical_sha256
+    )
