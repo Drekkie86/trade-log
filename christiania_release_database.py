@@ -162,18 +162,21 @@ def _copy_sqlite_backup(
         uri=True,
         timeout=30.0,
     )
-    target = sqlite3.connect(
-        temp_path,
-        timeout=30.0,
-    )
 
     try:
-        source.backup(
-            target
+        target = sqlite3.connect(
+            temp_path,
+            timeout=30.0,
         )
-        target.commit()
+
+        try:
+            source.backup(
+                target
+            )
+            target.commit()
+        finally:
+            target.close()
     finally:
-        target.close()
         source.close()
 
 
