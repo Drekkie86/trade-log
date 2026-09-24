@@ -56,16 +56,46 @@ unit_state() {
   local unit="$1"
   local load_state
   local active_state
+  local sub_state
+  local enabled_state
 
   load_state="$(
-    systemctl show       --property=LoadState       --value       "${unit}"       2>/dev/null       || true
+    systemctl show \
+      --property=LoadState \
+      --value \
+      "${unit}" \
+      2>/dev/null \
+      || true
   )"
 
   active_state="$(
-    systemctl is-active       "${unit}"       2>/dev/null       || true
+    systemctl is-active \
+      "${unit}" \
+      2>/dev/null \
+      || true
   )"
 
-  printf '%s|%s\n'     "${load_state:-unknown}"     "${active_state:-unknown}"
+  sub_state="$(
+    systemctl show \
+      --property=SubState \
+      --value \
+      "${unit}" \
+      2>/dev/null \
+      || true
+  )"
+
+  enabled_state="$(
+    systemctl is-enabled \
+      "${unit}" \
+      2>/dev/null \
+      || true
+  )"
+
+  printf '%s|%s|%s|%s\n' \
+    "${load_state:-unknown}" \
+    "${active_state:-unknown}" \
+    "${sub_state:-unknown}" \
+    "${enabled_state:-unknown}"
 }
 
 stop_optional_unit() {
@@ -226,6 +256,15 @@ enter_maintenance() {
     fail "christiania-theta.service must remain active during database maintenance"
   fi
 
+  # Check one-shot work again at the final boundary. This catches a service
+  # manually started after scheduling timers were stopped but before the
+  # maintenance window would otherwise be declared open.
+  for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "one-shot maintenance service became active while entering maintenance: ${unit}"
+    fi
+  done
+
   trap - ERR INT TERM HUP
 
   echo "CHRISTIANIA_MAINTENANCE_ENTERED"
@@ -268,6 +307,11 @@ rehearse_maintenance() {
   cleanup_rehearsal_files() {
     rm -f "${before}" "${after}"
   }
+
+  # The enter path owns ERR/INT/TERM/HUP while it transitions runtime state.
+  # Keep a separate EXIT cleanup active before calling it so rehearsal
+  # scratch files cannot leak if entry itself exits early.
+  trap cleanup_rehearsal_files EXIT
 
   snapshot_rehearsal_state() {
     local output="$1"
@@ -337,6 +381,7 @@ rehearse_maintenance() {
 
   trap - ERR INT TERM HUP
   cleanup_rehearsal_files
+  trap - EXIT
 
   echo "MAINTENANCE_REHEARSAL_PASS"
 }
