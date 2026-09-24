@@ -239,3 +239,90 @@ def test_maintenance_rehearsal_is_non_sql_and_restores_exact_runtime_state():
         "wal_checkpoint",
     ):
         assert forbidden not in block
+
+
+
+def test_maintenance_rehearsal_installs_cleanup_before_entry():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    start = script.index(
+        "rehearse_maintenance()"
+    )
+    end = script.index(
+        "show_status()",
+        start,
+    )
+    block = script[
+        start:end
+    ]
+
+    exit_trap = block.index(
+        "trap cleanup_rehearsal_files EXIT"
+    )
+    enter = block.index(
+        "enter_maintenance"
+    )
+
+    assert exit_trap < enter
+    assert (
+        "trap - EXIT"
+        in block
+    )
+
+
+def test_maintenance_checks_one_shots_twice_around_quiescence():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    start = script.index(
+        "enter_maintenance()"
+    )
+    end = script.index(
+        "exit_maintenance()",
+        start,
+    )
+    block = script[
+        start:end
+    ]
+
+    assert (
+        block.count(
+            'for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+        )
+        == 2
+    )
+
+    assert (
+        "one-shot maintenance service became active "
+        "while entering maintenance"
+        in block
+    )
+
+
+def test_rehearsal_state_snapshot_includes_substate_and_enablement():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    state_start = script.index(
+        "unit_state()"
+    )
+    state_end = script.index(
+        "stop_optional_unit()",
+        state_start,
+    )
+    block = script[
+        state_start:state_end
+    ]
+
+    assert (
+        "--property=SubState"
+        in block
+    )
+    assert (
+        "systemctl is-enabled"
+        in block
+    )
