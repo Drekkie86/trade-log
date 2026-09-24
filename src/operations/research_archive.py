@@ -1302,6 +1302,7 @@ def verify_research_archive(
     manifest_path: str | Path,
     *,
     deep_payload: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> ResearchArchiveManifest:
     path = Path(
         manifest_path
