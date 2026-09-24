@@ -580,3 +580,152 @@ def test_parity_can_run_inside_existing_hot_write_transaction(
 
     finally:
         conn.close()
+
+
+def test_archived_analysis_survives_hot_raw_evidence_removal(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        old_run,
+        _,
+    ) = _seed_archive(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    before = (
+        analyze_archived_session(
+            SESSION,
+            archive_dir=
+                archive_dir,
+        )
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+
+    try:
+        # Model the post-prune state without coupling this historical-reader
+        # test to V2C's full remote-proof machinery. The production prune
+        # temporarily drops this exact guard transactionally.
+        conn.execute(
+            """
+            DROP TRIGGER
+            trg_option_quotes_no_delete;
+            """
+        )
+
+        conn.execute(
+            """
+            DELETE FROM option_quotes
+            WHERE snapshot_id IN (
+                SELECT id
+                FROM market_snapshots
+                WHERE research_run_id = ?
+            );
+            """,
+            (
+                old_run,
+            ),
+        )
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+    after = (
+        analyze_archived_session(
+            SESSION,
+            archive_dir=
+                archive_dir,
+        )
+    )
+
+    hot_after = (
+        analyze_hot_session(
+            SESSION,
+            db_path=db_path,
+        )
+    )
+
+    assert (
+        after.canonical_sha256
+        == before.canonical_sha256
+    )
+
+    quote_before = next(
+        metric
+        for metric in before.metrics
+        if (
+            metric.name
+            == "quote_universe_quality"
+        )
+    )
+
+    quote_after = next(
+        metric
+        for metric in after.metrics
+        if (
+            metric.name
+            == "quote_universe_quality"
+        )
+    )
+
+    assert (
+        quote_after.sha256
+        == quote_before.sha256
+    )
+    assert (
+        len(
+            quote_after.rows
+        )
+        == 1
+    )
+
+    assert (
+        hot_after.canonical_sha256
+        != after.canonical_sha256
+    )
+
+
+def test_historical_analysis_fails_closed_on_missing_required_columns():
+    conn = sqlite3.connect(
+        ":memory:"
+    )
+
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE research_runs(
+                id INTEGER PRIMARY KEY
+            );
+            """
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "Historical Analysis V1 "
+                "schema is incompatible"
+            ),
+        ):
+            analyze_historical_connection(
+                conn,
+                session_date=SESSION,
+                run_ids=(1,),
+                source="ARCHIVE",
+                source_schema_version=1,
+            )
+
+    finally:
+        conn.close()
