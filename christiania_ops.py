@@ -707,6 +707,33 @@ def main() -> int:
             print(
                 f"Remote gate: {plan.remote_gate_state}"
             )
+            print(
+                "Hot/archive parity: "
+                + (
+                    "PASS"
+                    if plan.archive_parity_verified
+                    else "FAIL"
+                )
+            )
+            if plan.archive_parity_proof_sha256:
+                print(
+                    "Parity proof SHA-256: "
+                    f"{plan.archive_parity_proof_sha256}"
+                )
+            print(
+                "V2C FK indexes: "
+                + (
+                    "PASS"
+                    if plan.foreign_key_indexes_verified
+                    else "FAIL"
+                )
+            )
+            for check in plan.foreign_key_index_checks:
+                print(
+                    f"[{'PASS' if check.supported else 'FAIL'}] "
+                    f"{check.label} "
+                    f"index={check.supporting_index or 'NONE'}"
+                )
             for item in plan.tables:
                 print(
                     f"{item.table_name}: "
@@ -741,6 +768,14 @@ def main() -> int:
             print(f"Session: {receipt.session_date}")
             print(
                 f"Remote gate: {receipt.remote_gate_state}"
+            )
+            print(
+                "Archive source schema: v"
+                f"{receipt.archive_source_schema_version}"
+            )
+            print(
+                "Parity proof SHA-256: "
+                f"{receipt.archive_parity_proof_sha256}"
             )
             for table_name, count in receipt.rows_deleted.items():
                 print(
