@@ -365,8 +365,9 @@ the same WAL-aware capacity contract as normal verified backups:
   `page_count * page_size`;
 - one complete rollback copy must fit;
 - the configured production free-space reserve must remain after that copy;
-- capacity failure occurs before a rollback file or migration pointer is
-  created.
+- capacity failure occurs before a rollback snapshot is created or rollback
+  metadata is committed into the receiver's pre-created private pointer
+  workspace.
 
 A failure while the SQLite backup API is writing the temporary rollback copy
 removes that partial temporary file. A rollback artifact is promoted only after
