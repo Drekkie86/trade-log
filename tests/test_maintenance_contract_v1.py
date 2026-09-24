@@ -352,3 +352,38 @@ def test_maintenance_busy_state_includes_activating_services():
         "deactivating",
     ):
         assert state in block
+
+
+
+def test_maintenance_exit_refuses_restore_while_oneshot_is_busy():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    start = script.index(
+        "exit_maintenance()"
+    )
+    end = script.index(
+        "rehearse_maintenance()",
+        start,
+    )
+    block = script[
+        start:end
+    ]
+
+    busy_guard = block.index(
+        'for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+    )
+    restore = block.index(
+        "restore_recorded"
+    )
+
+    assert busy_guard < restore
+    assert (
+        'unit_is_busy "${unit}"'
+        in block
+    )
+    assert (
+        "maintenance state retained"
+        in block
+    )
