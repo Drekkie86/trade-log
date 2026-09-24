@@ -285,6 +285,42 @@ def _runtime_nonnegative_float(name: str, default: float) -> float:
     return value
 
 
+def backup_logical_source_bytes(
+    source: Path,
+) -> int:
+    """Return the logical SQLite size that an online backup must materialize.
+
+    In WAL mode the main `.db` file can lag committed growth held in the WAL.
+    The backup API writes the logical page set, so capacity must use the larger
+    of the main-file size and `page_count * page_size`.
+    """
+    uri = source.resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=30.0,
+    )
+    try:
+        page_size = int(
+            conn.execute(
+                "PRAGMA page_size;"
+            ).fetchone()[0]
+        )
+        page_count = int(
+            conn.execute(
+                "PRAGMA page_count;"
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+    logical = page_size * page_count
+    return max(
+        int(source.stat().st_size),
+        logical,
+    )
+
+
 def backup_required_free_bytes(
     *,
     source_size_bytes: int,
@@ -317,15 +353,19 @@ def assert_backup_capacity(
     target_dir: Path,
 ) -> None:
     usage = shutil.disk_usage(target_dir)
+    source_bytes = backup_logical_source_bytes(
+        source
+    )
     required = backup_required_free_bytes(
-        source_size_bytes=source.stat().st_size,
+        source_size_bytes=source_bytes,
         filesystem_total_bytes=int(usage.total),
     )
 
     if int(usage.free) < required:
         raise RuntimeError(
             "Insufficient backup filesystem headroom: "
-            f"free={int(usage.free)} bytes, required={required} bytes. "
+            f"free={int(usage.free)} bytes, required={required} bytes, "
+            f"logical_source={source_bytes} bytes. "
             "A full temporary backup must fit while preserving the configured "
             "production free-space reserve. No backup file was created."
         )
@@ -456,7 +496,8 @@ def create_verified_backup(
     if progress is not None:
         progress(
             "capacity: passed "
-            f"source_bytes={source.stat().st_size}"
+            f"logical_source_bytes={backup_logical_source_bytes(source)} "
+            f"main_file_bytes={source.stat().st_size}"
         )
 
     keep = (
