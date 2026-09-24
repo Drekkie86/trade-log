@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
+from src.config import get_runtime_setting
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
@@ -31,6 +32,15 @@ from src.operations.research_archive import (
 PRUNE_FORMAT_VERSION = 1
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
+
+DEFAULT_PRUNE_DELETE_BATCH_SIZE = 25_000
+MIN_PRUNE_DELETE_BATCH_SIZE = 100
+MAX_PRUNE_DELETE_BATCH_SIZE = 100_000
+
+PRUNE_PARENT_TABLES = (
+    "listing_reference_contracts",
+    "option_quotes",
+)
 
 TARGET_TABLES = (
     "local_surface_residual_v2_observations",
@@ -67,6 +77,39 @@ DELETE_ORDER = (
 
 
 @dataclass(frozen=True)
+class PruneForeignKeyIndexCheck:
+    child_table: str
+    parent_table: str
+    child_columns: tuple[str, ...]
+    supporting_index: str | None
+
+    @property
+    def supported(self) -> bool:
+        return self.supporting_index is not None
+
+    @property
+    def label(self) -> str:
+        columns = ",".join(
+            self.child_columns
+        )
+        return (
+            f"{self.child_table}({columns})->"
+            f"{self.parent_table}"
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["child_columns"] = list(
+            self.child_columns
+        )
+        data["supported"] = (
+            self.supported
+        )
+        data["label"] = self.label
+        return data
+
+
+@dataclass(frozen=True)
 class PruneTablePlan:
     table_name: str
     archived_rows: int
@@ -93,6 +136,11 @@ class PruneSessionPlan:
     remote_gate_state: str
     local_archive_fast_verified: bool
     run_lineage_verified: bool
+    foreign_key_indexes_verified: bool
+    foreign_key_index_checks: tuple[
+        PruneForeignKeyIndexCheck,
+        ...,
+    ]
     tables: tuple[PruneTablePlan, ...]
     total_archived_rows: int
     total_deletable_rows: int
@@ -104,6 +152,11 @@ class PruneSessionPlan:
         return {
             **asdict(self),
             "run_ids": list(self.run_ids),
+            "foreign_key_index_checks": [
+                item.as_dict()
+                for item
+                in self.foreign_key_index_checks
+            ],
             "tables": [
                 item.as_dict()
                 for item in self.tables
@@ -385,6 +438,229 @@ def _emit_progress(
 ) -> None:
     if progress is not None:
         progress(message)
+
+
+def prune_delete_batch_size() -> int:
+    configured = get_runtime_setting(
+        "CHRISTIANIA_PRUNE_DELETE_BATCH_SIZE"
+    )
+
+    if configured in (
+        None,
+        "",
+    ):
+        return DEFAULT_PRUNE_DELETE_BATCH_SIZE
+
+    value = int(
+        configured
+    )
+
+    if not (
+        MIN_PRUNE_DELETE_BATCH_SIZE
+        <= value
+        <= MAX_PRUNE_DELETE_BATCH_SIZE
+    ):
+        raise ValueError(
+            "CHRISTIANIA_PRUNE_DELETE_BATCH_SIZE "
+            f"must be between "
+            f"{MIN_PRUNE_DELETE_BATCH_SIZE} and "
+            f"{MAX_PRUNE_DELETE_BATCH_SIZE}."
+        )
+
+    return value
+
+
+def _quote_sqlite_identifier(
+    value: str,
+) -> str:
+    return (
+        '"'
+        + value.replace(
+            '"',
+            '""',
+        )
+        + '"'
+    )
+
+
+def audit_prune_foreign_key_indexes(
+    conn: sqlite3.Connection,
+) -> tuple[
+    PruneForeignKeyIndexCheck,
+    ...,
+]:
+    rows = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name NOT LIKE 'sqlite_%'
+        ORDER BY name;
+        """
+    ).fetchall()
+
+    checks: list[
+        PruneForeignKeyIndexCheck
+    ] = []
+
+    for row in rows:
+        child_table = str(
+            row[0]
+        )
+        quoted_table = (
+            _quote_sqlite_identifier(
+                child_table
+            )
+        )
+
+        fk_rows = conn.execute(
+            f"PRAGMA foreign_key_list({quoted_table});"
+        ).fetchall()
+
+        grouped: dict[
+            int,
+            list[tuple],
+        ] = {}
+
+        for fk_row in fk_rows:
+            parent_table = str(
+                fk_row[2]
+            )
+
+            if (
+                parent_table
+                not in PRUNE_PARENT_TABLES
+            ):
+                continue
+
+            grouped.setdefault(
+                int(fk_row[0]),
+                [],
+            ).append(
+                tuple(fk_row)
+            )
+
+        if not grouped:
+            continue
+
+        index_rows = conn.execute(
+            f"PRAGMA index_list({quoted_table});"
+        ).fetchall()
+
+        indexes: list[
+            tuple[str, tuple[str, ...]]
+        ] = []
+
+        for index_row in index_rows:
+            index_name = str(
+                index_row[1]
+            )
+            quoted_index = (
+                _quote_sqlite_identifier(
+                    index_name
+                )
+            )
+            info = conn.execute(
+                f"PRAGMA index_info({quoted_index});"
+            ).fetchall()
+            columns = tuple(
+                str(item[2])
+                for item in sorted(
+                    info,
+                    key=lambda item:
+                        int(item[0]),
+                )
+                if item[2] is not None
+            )
+            indexes.append(
+                (
+                    index_name,
+                    columns,
+                )
+            )
+
+        for fk_id in sorted(
+            grouped
+        ):
+            fk_group = sorted(
+                grouped[fk_id],
+                key=lambda item:
+                    int(item[1]),
+            )
+            parent_table = str(
+                fk_group[0][2]
+            )
+            child_columns = tuple(
+                str(item[3])
+                for item in fk_group
+            )
+
+            supporting = None
+
+            for (
+                index_name,
+                index_columns,
+            ) in indexes:
+                if (
+                    index_columns[
+                        :len(child_columns)
+                    ]
+                    == child_columns
+                ):
+                    supporting = (
+                        index_name
+                    )
+                    break
+
+            checks.append(
+                PruneForeignKeyIndexCheck(
+                    child_table=(
+                        child_table
+                    ),
+                    parent_table=(
+                        parent_table
+                    ),
+                    child_columns=(
+                        child_columns
+                    ),
+                    supporting_index=(
+                        supporting
+                    ),
+                )
+            )
+
+    return tuple(
+        checks
+    )
+
+
+def audit_prune_database_foreign_key_indexes(
+    *,
+    db_path: str | Path | None = None,
+) -> tuple[
+    PruneForeignKeyIndexCheck,
+    ...,
+]:
+    database = resolve_db_path(
+        db_path
+    )
+    uri = (
+        database.resolve().as_uri()
+        + "?mode=ro"
+    )
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=30.0,
+    )
+    try:
+        return (
+            audit_prune_foreign_key_indexes(
+                conn
+            )
+        )
+    finally:
+        conn.close()
 
 
 def _execute_with_progress(
@@ -1010,6 +1286,19 @@ def _build_plan_from_connection(
     schema_version = _sqlite_version(
         conn
     )
+
+    foreign_key_index_checks = (
+        audit_prune_foreign_key_indexes(
+            conn
+        )
+    )
+    missing_foreign_key_indexes = [
+        item
+        for item
+        in foreign_key_index_checks
+        if not item.supported
+    ]
+
     _prepare_run_scope(
         conn,
         manifest.run_ids,
@@ -1084,6 +1373,12 @@ def _build_plan_from_connection(
         and manifest.max_run_id < hot_floor
     )
 
+    for check in missing_foreign_key_indexes:
+        blockers.append(
+            "MISSING_FK_INDEX:"
+            + check.label
+        )
+
     if schema_version != EXPECTED_SCHEMA_VERSION:
         blockers.append(
             "SCHEMA_MISMATCH:"
@@ -1147,6 +1442,12 @@ def _build_plan_from_connection(
         local_archive_fast_verified=
             local_archive_fast_verified,
         run_lineage_verified=lineage_ok,
+        foreign_key_indexes_verified=(
+            not missing_foreign_key_indexes
+        ),
+        foreign_key_index_checks=(
+            foreign_key_index_checks
+        ),
         tables=tuple(table_plans),
         total_archived_rows=total_archived,
         total_deletable_rows=
@@ -1347,46 +1648,273 @@ def _restore_delete_triggers(
     return restored
 
 
+def _delete_temp_id_batches(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    temp_table: str,
+    batch_size: int,
+    progress: Callable[[str], None] | None,
+) -> int:
+    if (
+        table_name
+        not in TARGET_TABLES
+        or temp_table
+        not in _DELETE_TABLE_BY_TARGET.values()
+    ):
+        raise RuntimeError(
+            "Unsafe prune delete table mapping."
+        )
+
+    total = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {temp_table};
+            """
+        ).fetchone()[0]
+    )
+
+    _emit_progress(
+        progress,
+        "prune: delete "
+        f"{table_name} started "
+        f"rows={total} "
+        f"batch_size={batch_size}",
+    )
+
+    if total == 0:
+        _emit_progress(
+            progress,
+            "prune: delete "
+            f"{table_name} complete "
+            "rows=0 elapsed=0.0s",
+        )
+        return 0
+
+    started = time.monotonic()
+    deleted = 0
+    last_id: int | None = None
+    next_report = 0.05
+
+    while deleted < total:
+        if last_id is None:
+            batch_sql = f"""
+                SELECT
+                    COUNT(*),
+                    MAX(id)
+                FROM (
+                    SELECT id
+                    FROM {temp_table}
+                    ORDER BY id
+                    LIMIT ?
+                );
+            """
+            batch_params: tuple[
+                object,
+                ...,
+            ] = (
+                batch_size,
+            )
+            delete_sql = f"""
+                DELETE FROM {table_name}
+                WHERE id IN (
+                    SELECT id
+                    FROM {temp_table}
+                    ORDER BY id
+                    LIMIT ?
+                );
+            """
+            delete_params: tuple[
+                object,
+                ...,
+            ] = (
+                batch_size,
+            )
+        else:
+            batch_sql = f"""
+                SELECT
+                    COUNT(*),
+                    MAX(id)
+                FROM (
+                    SELECT id
+                    FROM {temp_table}
+                    WHERE id > ?
+                    ORDER BY id
+                    LIMIT ?
+                );
+            """
+            batch_params = (
+                last_id,
+                batch_size,
+            )
+            delete_sql = f"""
+                DELETE FROM {table_name}
+                WHERE id IN (
+                    SELECT id
+                    FROM {temp_table}
+                    WHERE id > ?
+                    ORDER BY id
+                    LIMIT ?
+                );
+            """
+            delete_params = (
+                last_id,
+                batch_size,
+            )
+
+        batch_row = conn.execute(
+            batch_sql,
+            batch_params,
+        ).fetchone()
+
+        batch_count = int(
+            batch_row[0]
+        )
+        batch_max_id = (
+            None
+            if batch_row[1] is None
+            else int(batch_row[1])
+        )
+
+        if (
+            batch_count <= 0
+            or batch_max_id is None
+        ):
+            raise RuntimeError(
+                "Prune delete batching exhausted "
+                f"before expected rows for "
+                f"{table_name}: "
+                f"deleted={deleted} "
+                f"expected={total}."
+            )
+
+        batch_started = time.monotonic()
+        next_heartbeat = (
+            batch_started
+            + 10.0
+        )
+
+        def heartbeat() -> int:
+            nonlocal next_heartbeat
+
+            now = time.monotonic()
+            if (
+                progress is not None
+                and now >= next_heartbeat
+            ):
+                progress(
+                    "prune: delete "
+                    f"{table_name} batch "
+                    "still running "
+                    f"completed={deleted}/"
+                    f"{total} "
+                    f"batch_rows={batch_count} "
+                    f"batch_elapsed="
+                    f"{now - batch_started:.1f}s"
+                )
+                next_heartbeat = (
+                    now
+                    + 10.0
+                )
+
+            return 0
+
+        conn.set_progress_handler(
+            heartbeat,
+            250_000,
+        )
+        try:
+            conn.execute(
+                delete_sql,
+                delete_params,
+            )
+            changed = int(
+                conn.execute(
+                    "SELECT changes();"
+                ).fetchone()[0]
+            )
+        finally:
+            conn.set_progress_handler(
+                None,
+                0,
+            )
+
+        if changed != batch_count:
+            raise RuntimeError(
+                "Prune batch row-count mismatch "
+                f"for {table_name}: "
+                f"deleted={changed} "
+                f"expected={batch_count}."
+            )
+
+        deleted += changed
+        last_id = batch_max_id
+
+        fraction = (
+            deleted
+            / total
+        )
+
+        if (
+            fraction >= next_report
+            or deleted == total
+        ):
+            _emit_progress(
+                progress,
+                "prune: delete "
+                f"{table_name} progress "
+                f"rows={deleted}/{total} "
+                f"pct={fraction * 100:.1f}",
+            )
+
+            while (
+                next_report
+                <= fraction
+            ):
+                next_report += 0.05
+
+    elapsed = (
+        time.monotonic()
+        - started
+    )
+
+    _emit_progress(
+        progress,
+        "prune: delete "
+        f"{table_name} complete "
+        f"rows={deleted} "
+        f"elapsed={elapsed:.1f}s",
+    )
+
+    return deleted
+
+
 def _delete_reference_safe_rows(
     conn: sqlite3.Connection,
     *,
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, int]:
-    temp_by_table = {
-        "local_surface_residual_v2_observations":
-            "_delete_surface_obs",
-        "hypothesis_scanner_evaluations":
-            "_delete_scanner_evals",
-        "provider_model_observations":
-            "_delete_provider_models",
-        "provider_observation_availability":
-            "_delete_provider_availability",
-        "listing_reference_contracts":
-            "_delete_listing_refs",
-        "option_quotes":
-            "_delete_option_quotes",
-    }
+    batch_size = (
+        prune_delete_batch_size()
+    )
 
     deleted: dict[str, int] = {}
+
     for table_name in DELETE_ORDER:
-        temp_table = temp_by_table[
-            table_name
-        ]
+        temp_table = (
+            _DELETE_TABLE_BY_TARGET[
+                table_name
+            ]
+        )
+
         deleted[
             table_name
-        ] = _execute_with_progress(
+        ] = _delete_temp_id_batches(
             conn,
-            label=(
-                "delete "
-                + table_name
-            ),
-            sql=f"""
-                DELETE FROM {table_name}
-                WHERE id IN (
-                    SELECT id
-                    FROM {temp_table}
-                );
-            """,
+            table_name=table_name,
+            temp_table=temp_table,
+            batch_size=batch_size,
             progress=progress,
         )
 
