@@ -1387,6 +1387,11 @@ def verify_research_archive(
             timeout=30.0,
         )
         try:
+            if progress is not None:
+                progress(
+                    "archive integrity_check started"
+                )
+
             integrity = str(
                 conn.execute(
                     "PRAGMA integrity_check;"
@@ -1465,6 +1470,7 @@ def open_verified_research_archive(
     manifest_path: str | Path,
     *,
     query_only: bool = True,
+    progress: Callable[[str], None] | None = None,
 ) -> Iterator[
     tuple[
         ResearchArchiveManifest,
@@ -1497,6 +1503,14 @@ def open_verified_research_archive(
         )
 
         digest = hashlib.sha256()
+        restored_bytes = 0
+        next_percent = 10
+
+        if progress is not None:
+            progress(
+                "archive materialization started "
+                f"{manifest.archive_filename}"
+            )
 
         with gzip.open(
             archive_path,
@@ -1518,6 +1532,34 @@ def open_verified_research_archive(
                     dst.write(
                         chunk
                     )
+                    restored_bytes += len(
+                        chunk
+                    )
+
+                    if (
+                        progress is not None
+                        and manifest.uncompressed_size_bytes
+                        > 0
+                    ):
+                        percent = int(
+                            restored_bytes
+                            * 100
+                            / manifest.uncompressed_size_bytes
+                        )
+
+                        if percent >= next_percent:
+                            progress(
+                                "archive materialization "
+                                f"{min(percent, 100)}% "
+                                f"bytes={restored_bytes}/"
+                                f"{manifest.uncompressed_size_bytes}"
+                            )
+
+                            while (
+                                next_percent
+                                <= percent
+                            ):
+                                next_percent += 10
 
         if (
             digest.hexdigest()
@@ -1535,6 +1577,12 @@ def open_verified_research_archive(
             raise RuntimeError(
                 "Materialized research archive "
                 "size mismatch."
+            )
+
+        if progress is not None:
+            progress(
+                "archive materialization complete "
+                f"bytes={restored_bytes}"
             )
 
         uri = (
@@ -1560,6 +1608,11 @@ def open_verified_research_archive(
                     "Materialized research archive "
                     "integrity_check failed: "
                     f"{integrity}"
+                )
+
+            if progress is not None:
+                progress(
+                    "archive integrity_check PASS"
                 )
 
             for (
