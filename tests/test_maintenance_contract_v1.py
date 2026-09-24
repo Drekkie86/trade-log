@@ -135,3 +135,22 @@ def test_maintenance_quiescence_fails_closed():
         "remained active after maintenance quiescence"
         in script
     )
+
+
+def test_maintenance_state_acquisition_is_atomic():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        'ln "${temp}" "${STATE_FILE}"'
+        in script
+    )
+    assert (
+        'mv "${temp}" "${STATE_FILE}"'
+        not in script
+    )
+    assert (
+        "maintenance state was claimed concurrently"
+        in script
+    )
