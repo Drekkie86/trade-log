@@ -285,20 +285,40 @@ def test_release_receiver_quiesces_all_scheduled_jobs_before_migration():
 
     assert 'ACTIVE_QUIESCE_TIMERS+=("${timer}")' in receiver
     assert 'stop_unit_for_release "${timer}"' in receiver
+
+    quiesce_block = receiver[
+        quiesce:prepare
+    ]
+
+    # One-shot work is guarded, never stopped by the release receiver.
     assert (
-        'stop_unit_for_release "${service}"'
-        not in receiver[
-            quiesce:prepare
-        ]
+        'for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+        not in quiesce_block
     )
     assert (
-        receiver[
-            quiesce:prepare
-        ].count(
+        quiesce_block.count(
             "assert_no_busy_oneshots"
         )
         == 2
     )
+
+    # Database consumers still must actually be stopped.
+    core_loop_start = quiesce_block.index(
+        'for service in "${QUIESCE_SERVICES[@]}"; do'
+    )
+    core_loop_end = quiesce_block.index(
+        "done",
+        core_loop_start,
+    )
+    core_loop = quiesce_block[
+        core_loop_start:core_loop_end
+    ]
+
+    assert (
+        'stop_unit_for_release "${service}"'
+        in core_loop
+    )
+
     assert 'systemctl start "${timer}"' in receiver
 
 
