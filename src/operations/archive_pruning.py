@@ -1726,6 +1726,12 @@ def prune_research_session(
             "the requested session."
         )
 
+    resolved_delete_batch_rows = (
+        prune_delete_batch_rows(
+            delete_batch_rows
+        )
+    )
+
     database = resolve_db_path(
         db_path
     )
@@ -1887,7 +1893,7 @@ def prune_research_session(
                     conn,
                     progress=progress,
                     batch_rows=
-                        delete_batch_rows,
+                        resolved_delete_batch_rows,
                 )
             )
 
@@ -2045,9 +2051,7 @@ def prune_research_session(
         rows_preserved=
             rows_preserved,
         delete_batch_rows=
-            prune_delete_batch_rows(
-                delete_batch_rows
-            ),
+            resolved_delete_batch_rows,
         delete_batches=
             delete_batches,
         freelist_bytes_before=
