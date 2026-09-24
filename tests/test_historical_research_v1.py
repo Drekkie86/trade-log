@@ -380,27 +380,18 @@ def test_historical_parity_detects_hot_drift_after_archive(
 def test_historical_analysis_hash_excludes_storage_schema_version(
     db_path,
 ):
+    run_id = (
+        _insert_completed_run_for_hash_test(
+            db_path
+        )
+    )
+
     uri = (
         Path(
             db_path
         ).resolve().as_uri()
         + "?mode=ro"
     )
-
-    conn = sqlite3.connect(
-        uri,
-        uri=True,
-    )
-
-    try:
-        run_id = (
-            _insert_completed_run_for_hash_test(
-                db_path
-            )
-        )
-
-    finally:
-        conn.close()
 
     conn = sqlite3.connect(
         uri,
