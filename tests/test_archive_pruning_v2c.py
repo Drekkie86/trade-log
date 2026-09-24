@@ -833,9 +833,12 @@ def test_chunked_delete_reports_exact_batches() -> None:
                 (
                     (value,)
                     for value
-                    in range(
+                    in (
                         1,
-                        6,
+                        3,
+                        10,
+                        20,
+                        100,
                     )
                 ),
             )
@@ -848,9 +851,12 @@ def test_chunked_delete_reports_exact_batches() -> None:
                 (
                     (value,)
                     for value
-                    in range(
+                    in (
                         1,
-                        6,
+                        3,
+                        10,
+                        20,
+                        100,
                     )
                 ),
             )
