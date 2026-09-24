@@ -282,3 +282,50 @@ def test_maintenance_entry_proves_zero_database_holders():
         "is installed"
         in script
     )
+
+
+def test_maintenance_refuses_to_interrupt_active_oneshots():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "assert_optional_unit_inactive()"
+        in script
+    )
+    assert (
+        "maintenance refuses to interrupt active one-shot unit"
+        in script
+    )
+
+    enter = script[
+        script.index(
+            "enter_maintenance()"
+        ):
+        script.index(
+            "exit_maintenance()"
+        )
+    ]
+
+    assert (
+        'for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+        in enter
+    )
+    assert (
+        'assert_optional_unit_inactive "${unit}"'
+        in enter
+    )
+
+    one_shot_loop = enter[
+        enter.index(
+            'for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+        ):
+        enter.index(
+            "# Stop the edge explicitly"
+        )
+    ]
+
+    assert (
+        'stop_optional_unit "${unit}"'
+        not in one_shot_loop
+    )
