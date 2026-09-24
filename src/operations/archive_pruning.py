@@ -1581,17 +1581,167 @@ def _restore_delete_triggers(
     return restored
 
 
+def _delete_temp_id_set_in_batches(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    temp_table: str,
+    progress: Callable[[str], None] | None = None,
+    batch_rows: int = DEFAULT_PRUNE_DELETE_BATCH_ROWS,
+) -> int:
+    if batch_rows < 1:
+        raise ValueError(
+            "batch_rows must be >= 1."
+        )
+
+    expected = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {temp_table};
+            """
+        ).fetchone()[0]
+    )
+
+    total = 0
+    last_id: int | None = None
+    batch_number = 0
+    started = time.monotonic()
+
+    _emit_progress(
+        progress,
+        "prune-delete: "
+        f"{table_name} started "
+        f"rows={expected} "
+        f"batch_rows={batch_rows}",
+    )
+
+    while total < expected:
+        if last_id is None:
+            batch_ids = conn.execute(
+                f"""
+                SELECT id
+                FROM {temp_table}
+                ORDER BY id
+                LIMIT ?;
+                """,
+                (batch_rows,),
+            ).fetchall()
+        else:
+            batch_ids = conn.execute(
+                f"""
+                SELECT id
+                FROM {temp_table}
+                WHERE id > ?
+                ORDER BY id
+                LIMIT ?;
+                """,
+                (
+                    last_id,
+                    batch_rows,
+                ),
+            ).fetchall()
+
+        if not batch_ids:
+            break
+
+        batch_last_id = int(
+            batch_ids[-1][0]
+        )
+
+        if last_id is None:
+            changed = _execute_with_progress(
+                conn,
+                label=(
+                    "delete "
+                    f"{table_name} "
+                    f"batch {batch_number + 1}"
+                ),
+                sql=f"""
+                    DELETE FROM {table_name}
+                    WHERE id IN (
+                        SELECT id
+                        FROM {temp_table}
+                        WHERE id <= ?
+                    );
+                """,
+                parameters=(
+                    batch_last_id,
+                ),
+                progress=progress,
+            )
+        else:
+            changed = _execute_with_progress(
+                conn,
+                label=(
+                    "delete "
+                    f"{table_name} "
+                    f"batch {batch_number + 1}"
+                ),
+                sql=f"""
+                    DELETE FROM {table_name}
+                    WHERE id IN (
+                        SELECT id
+                        FROM {temp_table}
+                        WHERE id > ?
+                          AND id <= ?
+                    );
+                """,
+                parameters=(
+                    last_id,
+                    batch_last_id,
+                ),
+                progress=progress,
+            )
+
+        batch_number += 1
+        total += changed
+        last_id = batch_last_id
+
+        _emit_progress(
+            progress,
+            "prune-delete: "
+            f"{table_name} "
+            f"batch={batch_number} "
+            f"rows={changed} "
+            f"total={total}/{expected} "
+            f"elapsed="
+            f"{time.monotonic() - started:.1f}s",
+        )
+
+        if changed <= 0:
+            raise RuntimeError(
+                "Chunked prune delete made no "
+                f"progress for {table_name}."
+            )
+
+    if total != expected:
+        raise RuntimeError(
+            "Chunked prune delete count "
+            f"mismatch for {table_name}: "
+            f"deleted={total} "
+            f"expected={expected}."
+        )
+
+    _emit_progress(
+        progress,
+        "prune-delete: "
+        f"{table_name} complete "
+        f"rows={total} "
+        f"batches={batch_number} "
+        f"elapsed="
+        f"{time.monotonic() - started:.1f}s",
+    )
+
+    return total
+
+
 def _delete_reference_safe_rows(
     conn: sqlite3.Connection,
     *,
     progress: Callable[[str], None] | None = None,
     batch_rows: int = DEFAULT_PRUNE_DELETE_BATCH_ROWS,
 ) -> dict[str, int]:
-    if batch_rows < 1:
-        raise ValueError(
-            "batch_rows must be >= 1."
-        )
-
     temp_by_table = {
         "local_surface_residual_v2_observations":
             "_delete_surface_obs",
@@ -1607,157 +1757,23 @@ def _delete_reference_safe_rows(
             "_delete_option_quotes",
     }
 
-    deleted: dict[str, int] = {}
-
-    for table_name in DELETE_ORDER:
-        temp_table = temp_by_table[
-            table_name
-        ]
-
-        expected = int(
-            conn.execute(
-                f"""
-                SELECT COUNT(*)
-                FROM {temp_table};
-                """
-            ).fetchone()[0]
-        )
-
-        total = 0
-        last_id: int | None = None
-        batch_number = 0
-        started = time.monotonic()
-
-        _emit_progress(
-            progress,
-            "prune-delete: "
-            f"{table_name} started "
-            f"rows={expected} "
-            f"batch_rows={batch_rows}",
-        )
-
-        while total < expected:
-            if last_id is None:
-                batch_ids = conn.execute(
-                    f"""
-                    SELECT id
-                    FROM {temp_table}
-                    ORDER BY id
-                    LIMIT ?;
-                    """,
-                    (batch_rows,),
-                ).fetchall()
-            else:
-                batch_ids = conn.execute(
-                    f"""
-                    SELECT id
-                    FROM {temp_table}
-                    WHERE id > ?
-                    ORDER BY id
-                    LIMIT ?;
-                    """,
-                    (
-                        last_id,
-                        batch_rows,
-                    ),
-                ).fetchall()
-
-            if not batch_ids:
-                break
-
-            batch_last_id = int(
-                batch_ids[-1][0]
+    return {
+        table_name: (
+            _delete_temp_id_set_in_batches(
+                conn,
+                table_name=table_name,
+                temp_table=(
+                    temp_by_table[
+                        table_name
+                    ]
+                ),
+                progress=progress,
+                batch_rows=batch_rows,
             )
-
-            if last_id is None:
-                changed = _execute_with_progress(
-                    conn,
-                    label=(
-                        "delete "
-                        f"{table_name} "
-                        f"batch {batch_number + 1}"
-                    ),
-                    sql=f"""
-                        DELETE FROM {table_name}
-                        WHERE id IN (
-                            SELECT id
-                            FROM {temp_table}
-                            WHERE id <= ?
-                        );
-                    """,
-                    parameters=(
-                        batch_last_id,
-                    ),
-                    progress=progress,
-                )
-            else:
-                changed = _execute_with_progress(
-                    conn,
-                    label=(
-                        "delete "
-                        f"{table_name} "
-                        f"batch {batch_number + 1}"
-                    ),
-                    sql=f"""
-                        DELETE FROM {table_name}
-                        WHERE id IN (
-                            SELECT id
-                            FROM {temp_table}
-                            WHERE id > ?
-                              AND id <= ?
-                        );
-                    """,
-                    parameters=(
-                        last_id,
-                        batch_last_id,
-                    ),
-                    progress=progress,
-                )
-
-            batch_number += 1
-            total += changed
-            last_id = batch_last_id
-
-            _emit_progress(
-                progress,
-                "prune-delete: "
-                f"{table_name} "
-                f"batch={batch_number} "
-                f"rows={changed} "
-                f"total={total}/{expected} "
-                f"elapsed="
-                f"{time.monotonic() - started:.1f}s",
-            )
-
-            if changed <= 0:
-                raise RuntimeError(
-                    "Chunked prune delete made no "
-                    f"progress for {table_name}."
-                )
-
-        if total != expected:
-            raise RuntimeError(
-                "Chunked prune delete count "
-                f"mismatch for {table_name}: "
-                f"deleted={total} "
-                f"expected={expected}."
-            )
-
-        _emit_progress(
-            progress,
-            "prune-delete: "
-            f"{table_name} complete "
-            f"rows={total} "
-            f"batches={batch_number} "
-            f"elapsed="
-            f"{time.monotonic() - started:.1f}s",
         )
-
-        deleted[
-            table_name
-        ] = total
-
-    return deleted
+        for table_name
+        in DELETE_ORDER
+    }
 
 
 def _foreign_key_violations(
