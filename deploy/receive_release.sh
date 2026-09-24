@@ -627,6 +627,18 @@ phase_start "Validating current database schema/WAL metadata"
 validate_current_database_metadata
 phase_done
 
+phase_start "Preflighting target database migration capacity"
+DB_PREFLIGHT_OUTPUT="$(
+  sudo -u "${SERVICE_USER}" \
+    "${RELEASE_DIR}/.venv/bin/python" \
+    "${RELEASE_DIR}/christiania_release_database.py" \
+    --env-file "${ENV_FILE}" \
+    preflight \
+    --json
+)"
+printf '%s\n' "${DB_PREFLIGHT_OUTPUT}"
+phase_done
+
 echo "Deep database integrity is not repeated here. If the target release requires a schema migration, the release database safety step fully verifies a fresh rollback copy before migration SQL and then fully verifies the migrated database. If schema is unchanged, both O(database-size) scans are skipped."
 
 TEMP_SYSTEMD_ROOT="$(mktemp -d)"
