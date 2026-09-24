@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -255,6 +256,114 @@ def _require_managed_maintenance_state(
         raise RuntimeError(
             "Production archive pruning requires christiania-theta.service "
             f"to remain active; found {theta_state}."
+        )
+
+
+def _database_holder_pids(
+    database: Path,
+) -> tuple[int, ...]:
+    paths = [
+        path
+        for path in (
+            database,
+            Path(str(database) + "-wal"),
+            Path(str(database) + "-shm"),
+        )
+        if path.exists()
+    ]
+
+    if not paths:
+        raise RuntimeError(
+            "Christiania database path does not exist: "
+            f"{database}"
+        )
+
+    commands = (
+        (
+            "fuser",
+            *(
+                str(path)
+                for path in paths
+            ),
+        ),
+        (
+            "lsof",
+            "-t",
+            "--",
+            *(
+                str(path)
+                for path in paths
+            ),
+        ),
+    )
+
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            continue
+
+        if completed.returncode not in {
+            0,
+            1,
+        }:
+            detail = (
+                completed.stderr
+                or completed.stdout
+                or "unknown error"
+            ).strip()
+
+            raise RuntimeError(
+                "Database-holder probe failed: "
+                f"{command[0]}: {detail}"
+            )
+
+        return tuple(
+            sorted(
+                {
+                    int(value)
+                    for value in re.findall(
+                        r"\d+",
+                        completed.stdout
+                        or "",
+                    )
+                }
+            )
+        )
+
+    raise RuntimeError(
+        "Cannot prove database quiescence: "
+        "neither fuser nor lsof is installed."
+    )
+
+
+def _require_no_database_holders(
+    database: Path,
+    *,
+    holder_probe: Callable[
+        [Path],
+        tuple[int, ...],
+    ] = _database_holder_pids,
+) -> None:
+    holders = holder_probe(
+        database
+    )
+
+    if holders:
+        raise RuntimeError(
+            "Production archive pruning requires "
+            "zero DB/WAL/SHM holders immediately "
+            "before SQLite open; found PIDs="
+            + ",".join(
+                str(pid)
+                for pid in holders
+            )
         )
 
 
@@ -1830,6 +1939,17 @@ def plan_prune_session(
     verify_remote: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> PruneSessionPlan:
+    if (
+        db_path is None
+        and DEFAULT_MAINTENANCE_STATE_PATH.exists()
+    ):
+        raise RuntimeError(
+            "Production archive-prune planning is refused "
+            "while canonical maintenance is active. "
+            "Exit maintenance before running another "
+            "read-only plan."
+        )
+
     database = resolve_db_path(
         db_path
     )
@@ -2337,6 +2457,15 @@ def prune_research_session(
         proof_path=proof_path,
         proof=verified_proof,
     )
+
+    if db_path is None:
+        # Remote verification can take minutes. Revalidate the maintenance
+        # contract immediately before SQLite open, then prove that no
+        # operator/read-only process has re-acquired DB/WAL/SHM handles.
+        _require_managed_maintenance_state()
+        _require_no_database_holders(
+            database
+        )
 
     manifest_sha256 = (
         _sha256_file(
