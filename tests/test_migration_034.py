@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from src.database.migration_runner import (
     apply_migration_file,
     get_schema_version,
@@ -281,5 +283,98 @@ def test_v34_audit_fails_if_support_index_is_removed(
                 "reference_contract_id",
             )
         )
+    finally:
+        conn.close()
+
+
+
+def test_migration_034_prune_commit_ledger_is_immutable(
+    tmp_path: Path,
+) -> None:
+    db = (
+        tmp_path
+        / "migration034_ledger.db"
+    )
+    conn = _build_v33_minimal(
+        db
+    )
+
+    try:
+        apply_migration_file(
+            conn,
+            MIGRATION,
+            expected_from=33,
+            target_version=34,
+        )
+
+        conn.execute(
+            """
+            INSERT INTO research_archive_prune_commits_v1(
+                session_date,
+                committed_at,
+                state,
+                schema_version,
+                archive_manifest_sha256,
+                remote_proof_sha256,
+                historical_analysis_version,
+                hot_analysis_sha256,
+                archive_analysis_sha256,
+                receipt_json,
+                receipt_sha256
+            )
+            VALUES(
+                '2026-09-01',
+                '2026-09-25T00:00:00Z',
+                'REFERENCE_AWARE_HOT_PRUNE_COMMITTED',
+                34,
+                ?,
+                ?,
+                1,
+                ?,
+                ?,
+                '{}',
+                ?
+            );
+            """,
+            (
+                "a" * 64,
+                "b" * 64,
+                "c" * 64,
+                "d" * 64,
+                "e" * 64,
+            ),
+        )
+
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match=(
+                "Research archive prune commit "
+                "evidence is immutable"
+            ),
+        ):
+            conn.execute(
+                """
+                UPDATE research_archive_prune_commits_v1
+                SET committed_at =
+                    '2026-09-25T01:00:00Z'
+                WHERE session_date =
+                    '2026-09-01';
+                """
+            )
+
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match=(
+                "Research archive prune commit "
+                "evidence cannot be deleted"
+            ),
+        ):
+            conn.execute(
+                """
+                DELETE FROM research_archive_prune_commits_v1
+                WHERE session_date =
+                    '2026-09-01';
+                """
+            )
     finally:
         conn.close()
