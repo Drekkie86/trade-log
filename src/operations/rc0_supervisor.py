@@ -15,7 +15,6 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from src.config import get_runtime_setting
-from src.dashboard.read_model import load_command_deck
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
@@ -29,6 +28,16 @@ from src.operations.backup_recovery import (
 )
 from src.operations.market_calendar import (
     market_clock_snapshot,
+)
+from src.operations.runtime_health import (
+    assess_daemon_health,
+)
+from src.operations.sqlite_runtime import (
+    inspect_database,
+    open_readonly_connection,
+)
+from src.providers.thetadata_control import (
+    probe_theta_terminal,
 )
 from src.operations.service_resources import (
     SERVICE_RESOURCE_POLICIES,
@@ -1294,6 +1303,84 @@ def _ping_heartbeat(
         ) from exc
 
 
+def _collect_lightweight_runtime_health(
+    *,
+    observed: datetime,
+) -> dict[str, object]:
+    """Collect only the bounded signals needed by the RC0 supervisor.
+
+    The dashboard command deck intentionally performs broad research/reporting
+    queries. Those are useful interactively but scale with the evidence store
+    and must never sit on the supervisor's critical path.
+    """
+    db_path = resolve_db_path()
+
+    health = inspect_database(
+        db_path,
+        deep_integrity=False,
+    )
+
+    daemon_lock: dict[str, object] | None = None
+
+    if health.exists:
+        try:
+            conn = open_readonly_connection(
+                db_path
+            )
+            try:
+                row = conn.execute(
+                    """
+                    SELECT
+                        owner_token,
+                        acquired_at,
+                        heartbeat_at
+                    FROM research_daemon_lock
+                    WHERE singleton_id = 1;
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+
+        except sqlite3.Error:
+            row = None
+
+        if row is not None:
+            daemon_lock = dict(row)
+
+    daemon = assess_daemon_health(
+        daemon_lock,
+        now=observed,
+    ).as_dict()
+
+    theta = probe_theta_terminal().as_dict()
+
+    db = health.as_dict()
+    ready = (
+        health.exists
+        and health.schema_version
+        == EXPECTED_SCHEMA_VERSION
+        and str(
+            health.journal_mode
+            or ""
+        ).lower()
+        == "wal"
+    )
+
+    reason = (
+        None
+        if ready
+        else "DATABASE_FAST_HEALTH_FAILED"
+    )
+
+    return {
+        "ready": ready,
+        "reason": reason,
+        "database": db,
+        "daemon_health": daemon,
+        "theta_health": theta,
+    }
+
+
 def collect_snapshot(
     *,
     now: datetime | None = None,
@@ -1331,9 +1418,8 @@ def collect_snapshot(
         dict[str, int | None],
     ] = {}
 
-    deck = load_command_deck(
-        include_provider_health=True,
-        deep_integrity=False,
+    deck = _collect_lightweight_runtime_health(
+        observed=observed,
     )
 
     db = deck.get(
@@ -1369,12 +1455,12 @@ def collect_snapshot(
             (
                 (
                     f"Schema v{schema_version}; "
-                    "WAL; interactive read "
-                    "model ready."
+                    "WAL; lightweight runtime "
+                    "health ready."
                 )
                 if db_ok
                 else (
-                    "Fast database/read-model "
+                    "Fast database/runtime "
                     "check failed: "
                     f"{deck.get('reason')}"
                 )
