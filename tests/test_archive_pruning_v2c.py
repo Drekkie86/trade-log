@@ -435,6 +435,22 @@ def test_prune_plan_preserves_referenced_quote(
 
     assert plan.apply_eligible is True
     assert plan.blockers == ()
+    assert (
+        plan.foreign_key_index_state
+        == "PASS"
+    )
+    assert (
+        plan.missing_foreign_key_indexes
+        == ()
+    )
+    assert (
+        plan.analytical_parity_state
+        == "HOT_ARCHIVE_ANALYTICAL_PARITY_PASS"
+    )
+    assert (
+        plan.hot_analytical_sha256
+        == plan.archive_analytical_sha256
+    )
     assert plan.outside_hot_window is True
     assert plan.remote_gate_state == (
         "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
@@ -1001,4 +1017,114 @@ def test_prune_receipt_records_delete_batching(
             "option_quotes"
         ]
         == 1
+    )
+
+
+
+def test_prune_plan_blocks_hot_archive_analytical_drift(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _manifest_path,
+        _proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+
+    try:
+        trigger_rows = (
+            conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND tbl_name = 'option_quotes'
+                  AND UPPER(sql)
+                      LIKE '%BEFORE UPDATE%';
+                """
+            ).fetchall()
+        )
+
+        for row in trigger_rows:
+            trigger_name = str(
+                row[0]
+            )
+
+            assert (
+                trigger_name.replace(
+                    "_",
+                    "",
+                ).isalnum()
+            )
+
+            conn.execute(
+                f'DROP TRIGGER "{trigger_name}";'
+            )
+
+        quote_id = int(
+            conn.execute(
+                """
+                SELECT oq.id
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?
+                ORDER BY oq.id
+                LIMIT 1;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+
+        conn.execute(
+            """
+            UPDATE option_quotes
+            SET bid = bid + 0.25
+            WHERE id = ?;
+            """,
+            (
+                quote_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert plan.apply_eligible is False
+    assert (
+        plan.analytical_parity_state
+        == "HOT_ARCHIVE_ANALYTICAL_PARITY_FAIL"
+    )
+    assert (
+        plan.hot_analytical_sha256
+        != plan.archive_analytical_sha256
+    )
+    assert any(
+        blocker.startswith(
+            "HOT_ARCHIVE_ANALYTICAL_PARITY_FAILED:"
+        )
+        for blocker
+        in plan.blockers
     )
