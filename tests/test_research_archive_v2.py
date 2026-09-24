@@ -2,9 +2,20 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+import json
+
+import pytest
 
 from src.database.repository import (
     create_market_snapshot,
+)
+from src.operations.archive_analytics import (
+    ARCHIVE_PARITY_STATE,
+    open_verified_archive_session,
+    parity_receipt_path,
+    read_archived_session_profile,
+    validate_archive_parity_receipt,
+    verify_archive_session_parity,
 )
 from src.operations.research_archive import (
     create_research_archive,
@@ -306,3 +317,310 @@ def test_archive_plan_is_idempotent_after_verified_archive(
     assert old.eligible is False
     assert old.already_archived is True
     assert old.reason == "ALREADY_ARCHIVED"
+
+
+
+def test_verified_archive_session_is_read_only_and_analytically_queryable(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = (
+        create_research_archive(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+            keep_hot_runs=50,
+        )
+    )
+
+    with open_verified_archive_session(
+        "2026-09-01",
+        archive_dir=archive_dir,
+    ) as archive:
+        assert (
+            archive.manifest
+            == manifest
+        )
+
+        count = int(
+            archive.connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes;
+                """
+            ).fetchone()[0]
+        )
+
+        assert count == 1
+
+        with pytest.raises(
+            sqlite3.OperationalError,
+        ):
+            archive.connection.execute(
+                """
+                DELETE FROM option_quotes;
+                """
+            )
+
+
+def test_hot_cold_full_content_parity_writes_bound_receipt(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    old_run = _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = (
+        create_research_archive(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+            keep_hot_runs=50,
+        )
+    )
+
+    progress = []
+
+    receipt = (
+        verify_archive_session_parity(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+            progress=progress.append,
+        )
+    )
+
+    assert (
+        receipt.state
+        == ARCHIVE_PARITY_STATE
+    )
+    assert receipt.content_parity is True
+    assert receipt.run_ids == (
+        old_run,
+    )
+    assert (
+        receipt.archive_source_schema_version
+        == manifest.source_schema_version
+    )
+    assert (
+        receipt.current_schema_version
+        == 34
+    )
+
+    assert set(
+        receipt.hot_fingerprints
+    ) == set(
+        receipt.archive_fingerprints
+    )
+
+    for table_name in (
+        receipt.hot_fingerprints
+    ):
+        assert (
+            receipt.hot_fingerprints[
+                table_name
+            ]
+            == receipt.archive_fingerprints[
+                table_name
+            ]
+        )
+
+    manifest_path = (
+        archive_dir
+        / manifest.manifest_filename
+    )
+
+    receipt_path = (
+        parity_receipt_path(
+            manifest_path
+        )
+    )
+
+    assert receipt_path.is_file()
+
+    validated = (
+        validate_archive_parity_receipt(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert validated == receipt
+
+    assert any(
+        "hot option_quotes complete"
+        in message
+        for message in progress
+    )
+    assert any(
+        "archive option_quotes complete"
+        in message
+        for message in progress
+    )
+    assert any(
+        "receipt written"
+        in message
+        for message in progress
+    )
+
+
+def test_parity_receipt_fails_closed_when_tampered(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    manifest = (
+        create_research_archive(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+            keep_hot_runs=50,
+        )
+    )
+
+    verify_archive_session_parity(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    receipt_path = (
+        parity_receipt_path(
+            archive_dir
+            / manifest.manifest_filename
+        )
+    )
+
+    payload = json.loads(
+        receipt_path.read_text(
+            encoding="utf-8",
+        )
+    )
+
+    payload[
+        "hot_fingerprints"
+    ][
+        "option_quotes"
+    ][
+        "content_sha256"
+    ] = "0" * 64
+
+    receipt_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="non-matching fingerprints",
+    ):
+        validate_archive_parity_receipt(
+            "2026-09-01",
+            db_path=db_path,
+            archive_dir=archive_dir,
+        )
+
+
+def test_archive_session_profile_exposes_replayable_universe_summary(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    old_run = _seed_sessions(
+        db_path
+    )
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    create_research_archive(
+        "2026-09-01",
+        db_path=db_path,
+        archive_dir=archive_dir,
+        keep_hot_runs=50,
+    )
+
+    profile = (
+        read_archived_session_profile(
+            "2026-09-01",
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert profile.run_ids == (
+        old_run,
+    )
+    assert (
+        profile.table_counts[
+            "option_quotes"
+        ]
+        == 1
+    )
+    assert (
+        profile.option_quote_universe[
+            "row_count"
+        ]
+        == 1
+    )
+    assert (
+        profile.option_quote_universe[
+            "underlying_count"
+        ]
+        == 1
+    )
+    assert (
+        profile.option_quote_universe[
+            "bid_rows"
+        ]
+        == 1
+    )
