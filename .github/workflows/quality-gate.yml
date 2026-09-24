@@ -87,9 +87,11 @@ jobs:
           test -x .venv/bin/python
           .venv/bin/python -m pip check
 
-      - name: Validate release receiver syntax
+      - name: Validate release and maintenance shell syntax
         shell: bash
-        run: bash -n deploy/receive_release.sh
+        run: |
+          bash -n deploy/receive_release.sh
+          bash -n deploy/christiania-maintenance
 
       - name: Run release safety regressions
         shell: bash
