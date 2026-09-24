@@ -458,14 +458,23 @@ def main() -> int:
         return 0
 
     if args.command == "archive-analyze-session":
+        def historical_progress(message: str) -> None:
+            print(
+                f"[historical] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         result = (
             analyze_archived_session(
                 args.session_date,
+                progress=historical_progress,
             )
             if args.source
             == "archive"
             else analyze_hot_session(
                 args.session_date,
+                progress=historical_progress,
             )
         )
 
@@ -502,9 +511,17 @@ def main() -> int:
         return 0
 
     if args.command == "archive-compare-session":
+        def parity_progress(message: str) -> None:
+            print(
+                f"[historical-parity] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         result = (
             compare_hot_archive_session(
                 args.session_date,
+                progress=parity_progress,
             )
         )
 
@@ -681,6 +698,30 @@ def main() -> int:
             print(
                 f"Remote gate: {plan.remote_gate_state}"
             )
+            print(
+                "FK parent-delete indexes: "
+                + (
+                    "PASS"
+                    if plan.foreign_key_indexes_verified
+                    else "FAIL"
+                )
+            )
+            print(
+                "Historical analytical parity: "
+                + (
+                    "PASS"
+                    if plan.analytical_parity_verified
+                    else "FAIL"
+                )
+            )
+            print(
+                "Hot analysis SHA-256: "
+                f"{plan.hot_analysis_sha256 or 'UNAVAILABLE'}"
+            )
+            print(
+                "Archive analysis SHA-256: "
+                f"{plan.archive_analysis_sha256 or 'UNAVAILABLE'}"
+            )
             for item in plan.tables:
                 print(
                     f"{item.table_name}: "
@@ -715,6 +756,22 @@ def main() -> int:
             print(f"Session: {receipt.session_date}")
             print(
                 f"Remote gate: {receipt.remote_gate_state}"
+            )
+            print(
+                "Historical analytical parity: "
+                + (
+                    "PASS"
+                    if receipt.analytical_parity_verified
+                    else "FAIL"
+                )
+            )
+            print(
+                "Hot analysis SHA-256: "
+                f"{receipt.hot_analysis_sha256}"
+            )
+            print(
+                "Archive analysis SHA-256: "
+                f"{receipt.archive_analysis_sha256}"
             )
             for table_name, count in receipt.rows_deleted.items():
                 print(
