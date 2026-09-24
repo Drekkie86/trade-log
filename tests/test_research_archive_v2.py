@@ -4,10 +4,12 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import shutil
 
 import pytest
 
 import src.operations.archive_analytics as archive_analytics
+import src.operations.research_archive as research_archive
 
 from src.database.repository import (
     create_market_snapshot,
@@ -761,3 +763,166 @@ def test_parity_receipt_row_counts_are_bound_to_manifest(
             db_path=db_path,
             archive_dir=archive_dir,
         )
+
+
+
+def test_v33_archive_remains_readable_and_parity_valid_after_v34_index_migration(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    legacy_db = (
+        tmp_path
+        / "legacy-v33.db"
+    )
+
+    shutil.copy2(
+        db_path,
+        legacy_db,
+    )
+
+    conn = sqlite3.connect(
+        legacy_db
+    )
+    try:
+        for index_name in (
+            "idx_shadow_candidates_reference_contract",
+            "idx_shadow_candidates_entry_quote_observation",
+            "idx_shadow_candidates_entry_greek_observation",
+            "idx_hypothesis_scanner_evaluations_reference_contract",
+            "idx_hypothesis_scanner_evaluations_option_quote",
+            "idx_surface_v2_reference_contract",
+        ):
+            conn.execute(
+                f'DROP INDEX IF EXISTS "{index_name}";'
+            )
+
+        conn.execute(
+            """
+            DELETE FROM schema_version
+            WHERE version = 34;
+            """
+        )
+        conn.commit()
+
+        version = int(
+            conn.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0]
+        )
+        assert version == 33
+    finally:
+        conn.close()
+
+    _seed_sessions(
+        legacy_db
+    )
+
+    archive_dir = (
+        tmp_path
+        / "legacy-archives"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_EVIDENCE_ARCHIVE_MIN_FREE_BYTES",
+        "0",
+    )
+
+    monkeypatch.setattr(
+        research_archive,
+        "EXPECTED_SCHEMA_VERSION",
+        33,
+    )
+
+    manifest = (
+        create_research_archive(
+            "2026-09-01",
+            db_path=legacy_db,
+            archive_dir=archive_dir,
+            keep_hot_runs=50,
+        )
+    )
+
+    assert (
+        manifest.source_schema_version
+        == 33
+    )
+
+    monkeypatch.setattr(
+        research_archive,
+        "EXPECTED_SCHEMA_VERSION",
+        34,
+    )
+
+    migration = (
+        Path(__file__).resolve()
+        .parents[1]
+        / "migrations"
+        / "034_prune_parent_fk_indexes.sql"
+    )
+
+    conn = sqlite3.connect(
+        legacy_db
+    )
+    try:
+        conn.executescript(
+            migration.read_text(
+                encoding="utf-8",
+            )
+        )
+        conn.commit()
+
+        assert int(
+            conn.execute(
+                """
+                SELECT MAX(version)
+                FROM schema_version;
+                """
+            ).fetchone()[0]
+        ) == 34
+    finally:
+        conn.close()
+
+    verified = verify_research_archive(
+        archive_dir
+        / manifest.manifest_filename,
+        deep_payload=True,
+    )
+
+    assert (
+        verified.source_schema_version
+        == 33
+    )
+
+    profile = (
+        read_archived_session_profile(
+            "2026-09-01",
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert (
+        profile.archive_source_schema_version
+        == 33
+    )
+
+    receipt = (
+        verify_archive_session_parity(
+            "2026-09-01",
+            db_path=legacy_db,
+            archive_dir=archive_dir,
+        )
+    )
+
+    assert (
+        receipt.archive_source_schema_version
+        == 33
+    )
+    assert (
+        receipt.current_schema_version
+        == 34
+    )
+    assert receipt.content_parity is True
