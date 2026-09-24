@@ -1095,7 +1095,7 @@ def test_prune_plan_blocks_hot_archive_analytical_drift(
         conn.execute(
             """
             UPDATE option_quotes
-            SET bid = bid + 0.25
+            SET bid = bid - 0.05
             WHERE id = ?;
             """,
             (
