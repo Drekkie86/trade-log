@@ -10,5 +10,6 @@ WorkingDirectory=/opt/christiania
 EnvironmentFile=/etc/christiania/christiania.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py
+ExecStopPost=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py --cleanup-stale-temp
 NoNewPrivileges=true
 PrivateTmp=true

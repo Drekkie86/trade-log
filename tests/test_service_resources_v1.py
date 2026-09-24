@@ -215,3 +215,10 @@ def test_resource_check_detects_drift(
         ].state
         == "FAIL"
     )
+
+def test_backup_allows_large_database_copy_window():
+    backup = service_resource_policy(
+        "christiania-backup.service"
+    )
+
+    assert backup.timeout_start_seconds == 7200

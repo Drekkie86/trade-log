@@ -224,3 +224,37 @@ def test_backup_capacity_preflight_refuses_before_file_creation(
             ".christiania_backup_*.tmp.db"
         )
     )
+
+
+def test_backup_temp_is_removed_on_baseexception(
+    tmp_path,
+    monkeypatch,
+):
+    import pytest
+    import src.operations.sqlite_runtime as sqlite_runtime
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+
+    def interrupted_verify(path, *, progress=None):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(
+        sqlite_runtime,
+        "_verify_backup",
+        interrupted_verify,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        create_verified_backup(
+            db_path=source,
+            backup_dir=backup_dir,
+            retention=3,
+        )
+
+    assert not list(
+        backup_dir.glob(
+            ".christiania_backup_*.tmp.db"
+        )
+    )

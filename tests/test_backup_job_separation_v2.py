@@ -124,3 +124,71 @@ def test_backup_entrypoint_skips_when_policy_says_nothing_new(
         payload["decision"]["reason"]
         == "NO_NEW_COMPLETED_RESEARCH"
     )
+
+
+def test_backup_service_runs_bounded_temp_cleanup_after_exit():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    unit = (
+        root
+        / "deploy/systemd/christiania-backup.service"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "ExecStopPost=/opt/christiania/.venv/bin/python "
+        "/opt/christiania/backup_christiania.py "
+        "--cleanup-stale-temp"
+    ) in unit
+
+
+def test_cleanup_mode_removes_only_incomplete_backup_temp_files(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+
+    stale = [
+        backup_dir / ".christiania_backup_20260922T233158Z.tmp.db",
+        backup_dir / ".christiania_backup_20260922T233158Z.tmp.db-journal",
+        backup_dir / ".christiania_backup_20260922T233158Z.tmp.db-wal",
+        backup_dir / ".christiania_backup_20260922T233158Z.tmp.db-shm",
+    ]
+    for path in stale:
+        path.write_bytes(b"x")
+
+    valid = (
+        backup_dir
+        / "christiania_backup_20260921T190133Z.db"
+    )
+    valid.write_bytes(b"keep")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backup_christiania.py",
+            "--backup-dir",
+            str(backup_dir),
+            "--cleanup-stale-temp",
+            "--json",
+        ],
+    )
+
+    backup_christiania.main()
+
+    payload = json.loads(
+        capsys.readouterr().out
+    )
+
+    assert payload["state"] == "CLEANED"
+    assert payload["removed_count"] == 4
+    assert valid.is_file()
+    assert not any(
+        path.exists()
+        for path in stale
+    )

@@ -548,23 +548,23 @@ def create_verified_backup(
         )
 
     try:
-        source_conn.backup(
-            target_conn,
-            pages=8192,
-            progress=report_copy,
-        )
-        target_conn.commit()
-
-        if progress is not None:
-            progress(
-                "copy: completed "
-                f"temp_bytes={temp_path.stat().st_size}"
+        try:
+            source_conn.backup(
+                target_conn,
+                pages=8192,
+                progress=report_copy,
             )
-    finally:
-        target_conn.close()
-        source_conn.close()
+            target_conn.commit()
 
-    try:
+            if progress is not None:
+                progress(
+                    "copy: completed "
+                    f"temp_bytes={temp_path.stat().st_size}"
+                )
+        finally:
+            target_conn.close()
+            source_conn.close()
+
         version, integrity, fk_count = (
             _verify_backup(
                 temp_path,
@@ -589,8 +589,13 @@ def create_verified_backup(
                 f"path={final_path}"
             )
 
-    except Exception:
+    except BaseException:
         if temp_path.exists():
+            if progress is not None:
+                progress(
+                    "cleanup: removing incomplete temp backup "
+                    f"path={temp_path}"
+                )
             temp_path.unlink()
         raise
 

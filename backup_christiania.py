@@ -9,6 +9,7 @@ from src.operations.backup_policy import (
 )
 from src.operations.sqlite_runtime import (
     create_verified_backup,
+    resolve_backup_dir,
 )
 
 def main() -> None:
@@ -33,6 +34,14 @@ def main() -> None:
         action="store_true",
     )
     parser.add_argument(
+        "--cleanup-stale-temp",
+        action="store_true",
+        help=(
+            "Remove only incomplete Christiania backup temp files "
+            "from the configured backup directory and exit."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help=(
@@ -42,6 +51,49 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.cleanup_stale_temp:
+        directory = resolve_backup_dir(
+            args.backup_dir
+        )
+        removed = []
+        if directory.exists():
+            for pattern in (
+                ".christiania_backup_*.tmp.db",
+                ".christiania_backup_*.tmp.db-journal",
+                ".christiania_backup_*.tmp.db-wal",
+                ".christiania_backup_*.tmp.db-shm",
+            ):
+                for path in directory.glob(pattern):
+                    if path.is_file():
+                        path.unlink()
+                        removed.append(
+                            str(path)
+                        )
+
+        payload = {
+            "state": "CLEANED",
+            "backup_dir": str(directory),
+            "removed_count": len(removed),
+            "removed": sorted(removed),
+        }
+        if args.json:
+            print(
+                json.dumps(
+                    payload,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "Christiania stale backup temp cleanup complete"
+            )
+            print(
+                "Removed: "
+                f"{len(removed)}"
+            )
+        return
 
     decision = evaluate_backup_due(
         db_path=args.db,
