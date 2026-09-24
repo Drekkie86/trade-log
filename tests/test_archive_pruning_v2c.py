@@ -1281,3 +1281,125 @@ def test_prune_apply_recomputes_parity_and_rejects_late_hot_evidence(
             assert row[0] == table_name
     finally:
         conn.close()
+
+
+
+def test_prune_detects_parity_receipt_tampering_during_remote_revalidation(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        manifest_path,
+        proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    proof = load_remote_archive_proof(
+        proof_path
+    )
+
+    def remote_verify_then_tamper(
+        path,
+        **kwargs,
+    ):
+        del path
+        del kwargs
+
+        receipt_path = (
+            parity_receipt_path(
+                manifest_path
+            )
+        )
+
+        # Apply has already freshly recomputed parity and pinned its receipt
+        # hash before entering this remote verification phase.
+        receipt_path.write_text(
+            receipt_path.read_text(
+                encoding="utf-8",
+            )
+            + " ",
+            encoding="utf-8",
+        )
+
+        return proof
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning.verify_remote_archive_proof",
+        remote_verify_then_tamper,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Prune safety sidecar "
+            "changed after validation: "
+            "parity receipt"
+        ),
+    ):
+        prune_research_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+            confirm_session=(
+                manifest.session_date
+            ),
+        )
+
+    prune_receipt = (
+        archive_dir
+        / manifest_path.name.replace(
+            ".manifest.json",
+            ".prune-receipt.json",
+        )
+    )
+    assert prune_receipt.exists() is False
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        quote_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM option_quotes AS oq
+                JOIN market_snapshots AS ms
+                  ON ms.id = oq.snapshot_id
+                WHERE ms.research_run_id = ?;
+                """,
+                (
+                    manifest.run_ids[0],
+                ),
+            ).fetchone()[0]
+        )
+        assert quote_count == 2
+
+        for (
+            table_name,
+            trigger_name,
+        ) in DELETE_TRIGGER_BY_TABLE.items():
+            row = conn.execute(
+                """
+                SELECT tbl_name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = ?;
+                """,
+                (
+                    trigger_name,
+                ),
+            ).fetchone()
+            assert row is not None
+            assert row[0] == table_name
+    finally:
+        conn.close()
