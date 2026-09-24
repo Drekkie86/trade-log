@@ -9,6 +9,7 @@ from src.config import load_runtime_env_file
 from src.dashboard.read_model import load_command_deck
 from src.operations.audit_export import export_audit_snapshot
 from src.operations.archive_pruning import (
+    audit_prune_database_foreign_key_indexes,
     plan_prune_session,
     prune_research_session,
 )
@@ -149,6 +150,14 @@ def main() -> int:
 
     remote_inventory = sub.add_parser("archive-remote-inventory")
     remote_inventory.add_argument("--json", action="store_true")
+
+    prune_index_audit = sub.add_parser(
+        "archive-prune-index-audit"
+    )
+    prune_index_audit.add_argument(
+        "--json",
+        action="store_true",
+    )
 
     prune_plan = sub.add_parser("archive-prune-plan")
     prune_plan.add_argument("--session-date", required=True)
@@ -509,6 +518,39 @@ def main() -> int:
                     file=sys.stderr,
                 )
         return 0 if not inventory.invalid_proofs else 2
+
+    if args.command == "archive-prune-index-audit":
+        checks = (
+            audit_prune_database_foreign_key_indexes()
+        )
+        payload = [
+            item.as_dict()
+            for item in checks
+        ]
+        passed = all(
+            item.supported
+            for item in checks
+        )
+
+        if args.json:
+            _print_json(
+                {
+                    "passed": passed,
+                    "checks": payload,
+                }
+            )
+        else:
+            print(
+                "V2C parent foreign-key index audit"
+            )
+            for item in checks:
+                print(
+                    f"[{'PASS' if item.supported else 'FAIL'}] "
+                    f"{item.label} "
+                    f"index={item.supporting_index or 'NONE'}"
+                )
+
+        return 0 if passed else 2
 
     if args.command == "archive-prune-plan":
         def prune_plan_progress(message: str) -> None:
