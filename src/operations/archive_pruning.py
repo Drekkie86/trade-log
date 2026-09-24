@@ -36,6 +36,7 @@ from src.operations.research_archive import (
 PRUNE_FORMAT_VERSION = 2
 PRUNE_GATE_STATE = "OFFHOST_IMMUTABLE_RESTORE_VERIFIED"
 PRUNE_RECEIPT_STATE = "REFERENCE_AWARE_HOT_PRUNE_COMMITTED"
+PRUNE_COMMIT_LEDGER_TABLE = "research_archive_prune_commits_v1"
 DEFAULT_PRUNE_DELETE_BATCH_ROWS = 25_000
 DEFAULT_MAINTENANCE_STATE_PATH = Path(
     "/run/christiania/maintenance.state"
@@ -279,6 +280,272 @@ def _normalized_sql_sha256(sql: str) -> str:
     return _sha256_bytes(
         normalized.encode("utf-8")
     )
+
+
+def _canonical_json_bytes(
+    payload: dict[str, object],
+) -> bytes:
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(
+            ",",
+            ":",
+        ),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode(
+        "utf-8"
+    )
+
+
+def _prune_ledger_payload(
+    conn: sqlite3.Connection,
+    session_date: str,
+) -> dict[str, object] | None:
+    try:
+        row = conn.execute(
+            f"""
+            SELECT
+                receipt_json,
+                receipt_sha256
+            FROM {PRUNE_COMMIT_LEDGER_TABLE}
+            WHERE session_date = ?;
+            """,
+            (
+                session_date,
+            ),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if (
+            "no such table"
+            in str(exc).lower()
+        ):
+            return None
+        raise
+
+    if row is None:
+        return None
+
+    receipt_json = str(
+        row[0]
+    )
+    expected_sha = str(
+        row[1]
+    )
+    actual_sha = _sha256_bytes(
+        receipt_json.encode(
+            "utf-8"
+        )
+    )
+
+    if actual_sha != expected_sha:
+        raise RuntimeError(
+            "Prune commit ledger receipt hash "
+            "mismatch for session "
+            f"{session_date}."
+        )
+
+    try:
+        payload = json.loads(
+            receipt_json
+        )
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Prune commit ledger contains "
+            "invalid receipt JSON for session "
+            f"{session_date}."
+        ) from exc
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        raise RuntimeError(
+            "Prune commit ledger receipt "
+            "must be a JSON object."
+        )
+
+    if (
+        str(
+            payload.get(
+                "session_date"
+            )
+        )
+        != session_date
+    ):
+        raise RuntimeError(
+            "Prune commit ledger session "
+            "does not match receipt payload."
+        )
+
+    if (
+        payload.get(
+            "state"
+        )
+        != PRUNE_RECEIPT_STATE
+    ):
+        raise RuntimeError(
+            "Prune commit ledger receipt "
+            "has an unexpected state."
+        )
+
+    canonical = (
+        _canonical_json_bytes(
+            payload
+        )
+    )
+
+    if (
+        _sha256_bytes(
+            canonical
+        )
+        != expected_sha
+    ):
+        raise RuntimeError(
+            "Prune commit ledger receipt "
+            "is not canonically encoded."
+        )
+
+    return payload
+
+
+def _recover_external_prune_receipt(
+    *,
+    database: Path,
+    session_date: str,
+    receipt_path: Path,
+    progress: Callable[[str], None] | None = None,
+) -> bool:
+    conn = sqlite3.connect(
+        database,
+        timeout=30.0,
+    )
+
+    try:
+        payload = (
+            _prune_ledger_payload(
+                conn,
+                session_date,
+            )
+        )
+    finally:
+        conn.close()
+
+    if payload is None:
+        return False
+
+    if receipt_path.exists():
+        try:
+            existing = json.loads(
+                receipt_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise RuntimeError(
+                "External prune receipt exists "
+                "but cannot be verified against "
+                "the committed database ledger."
+            ) from exc
+
+        if (
+            not isinstance(
+                existing,
+                dict,
+            )
+            or _canonical_json_bytes(
+                existing
+            )
+            != _canonical_json_bytes(
+                payload
+            )
+        ):
+            raise RuntimeError(
+                "External prune receipt does "
+                "not match committed database "
+                "ledger evidence."
+            )
+
+        _emit_progress(
+            progress,
+            "prune: committed ledger and "
+            "external receipt agree",
+        )
+        return True
+
+    _write_json_atomic(
+        receipt_path,
+        payload,
+    )
+
+    _emit_progress(
+        progress,
+        "prune: recovered missing external "
+        "receipt from committed database ledger",
+    )
+
+    return True
+
+
+def _insert_prune_commit_ledger(
+    conn: sqlite3.Connection,
+    receipt: PruneReceipt,
+) -> str:
+    payload = receipt.as_dict()
+    canonical = (
+        _canonical_json_bytes(
+            payload
+        )
+    )
+    receipt_json = canonical.decode(
+        "utf-8"
+    )
+    receipt_sha256 = (
+        _sha256_bytes(
+            canonical
+        )
+    )
+
+    conn.execute(
+        f"""
+        INSERT INTO {PRUNE_COMMIT_LEDGER_TABLE}(
+            session_date,
+            committed_at,
+            state,
+            schema_version,
+            archive_manifest_sha256,
+            remote_proof_sha256,
+            historical_analysis_version,
+            hot_analysis_sha256,
+            archive_analysis_sha256,
+            receipt_json,
+            receipt_sha256
+        )
+        VALUES(
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?
+        );
+        """,
+        (
+            receipt.session_date,
+            receipt.committed_at,
+            receipt.state,
+            receipt.schema_version,
+            receipt.archive_manifest_sha256,
+            receipt.remote_proof_sha256,
+            receipt.historical_analysis_version,
+            receipt.hot_analysis_sha256,
+            receipt.archive_analysis_sha256,
+            receipt_json,
+            receipt_sha256,
+        ),
+    )
+
+    return receipt_sha256
 
 
 def _write_json_atomic(
@@ -2006,10 +2273,26 @@ def prune_research_session(
     receipt_path = prune_receipt_path(
         manifest_path
     )
+
+    if _recover_external_prune_receipt(
+        database=database,
+        session_date=session_date,
+        receipt_path=receipt_path,
+        progress=progress,
+    ):
+        raise FileExistsError(
+            "Session was already durably "
+            "pruned; committed ledger evidence "
+            "exists for "
+            f"{session_date}."
+        )
+
     if receipt_path.exists():
         raise FileExistsError(
-            "A prune receipt already exists for this "
-            f"session: {receipt_path}"
+            "A prune receipt exists without "
+            "matching database-ledger evidence "
+            f"for session {session_date}: "
+            f"{receipt_path}"
         )
 
     # Destructive work is blocked until both independent copies are
@@ -2052,6 +2335,17 @@ def prune_research_session(
         manifest=manifest,
         proof_path=proof_path,
         proof=verified_proof,
+    )
+
+    manifest_sha256 = (
+        _sha256_file(
+            manifest_path
+        )
+    )
+    proof_sha256 = (
+        _sha256_file(
+            proof_path
+        )
     )
 
     db_size_before = (
@@ -2237,14 +2531,107 @@ def prune_research_session(
                         f"for {table_name}."
                     )
 
-            _emit_progress(
-                progress,
-                "prune: all reconciliation checks passed; committing",
+            freelist_after = (
+                _page_freelist_bytes(
+                    conn
+                )
             )
-            conn.execute("COMMIT;")
+
+            receipt = PruneReceipt(
+                format_version=
+                    PRUNE_FORMAT_VERSION,
+                state=
+                    PRUNE_RECEIPT_STATE,
+                committed_at=(
+                    datetime.now(UTC)
+                    .isoformat()
+                    .replace(
+                        "+00:00",
+                        "Z",
+                    )
+                ),
+                session_date=
+                    session_date,
+                run_ids=
+                    manifest.run_ids,
+                archive_manifest_filename=
+                    manifest.manifest_filename,
+                archive_manifest_sha256=
+                    manifest_sha256,
+                remote_proof_filename=
+                    proof_path.name,
+                remote_proof_sha256=
+                    proof_sha256,
+                remote_gate_state=
+                    verified_proof.pruning_gate_state,
+                schema_version=
+                    EXPECTED_SCHEMA_VERSION,
+                trigger_sql_sha256_before=
+                    trigger_before,
+                trigger_sql_sha256_after=
+                    trigger_after,
+                rows_before=
+                    rows_before,
+                rows_deleted=
+                    deleted,
+                rows_preserved=
+                    rows_preserved,
+                freelist_bytes_before=
+                    freelist_before,
+                freelist_bytes_after=
+                    freelist_after,
+                database_size_bytes_before=
+                    db_size_before,
+                database_size_bytes_after=(
+                    database.stat().st_size
+                ),
+                foreign_key_check=
+                    "ok",
+                historical_analysis_version=(
+                    plan.historical_analysis_version
+                ),
+                analytical_parity_verified=(
+                    plan.analytical_parity_verified
+                ),
+                hot_analysis_sha256=(
+                    plan.hot_analysis_sha256
+                    or ""
+                ),
+                archive_analysis_sha256=(
+                    plan.archive_analysis_sha256
+                    or ""
+                ),
+            )
+
+            ledger_sha256 = (
+                _insert_prune_commit_ledger(
+                    conn,
+                    receipt,
+                )
+            )
+
             _emit_progress(
                 progress,
-                "prune: transaction committed",
+                "prune: transactional commit "
+                "ledger staged "
+                f"sha256={ledger_sha256}",
+            )
+
+            _emit_progress(
+                progress,
+                "prune: all reconciliation "
+                "checks and ledger staging "
+                "passed; committing",
+            )
+
+            conn.execute(
+                "COMMIT;"
+            )
+
+            _emit_progress(
+                progress,
+                "prune: transaction and commit "
+                "ledger committed",
             )
 
         except BaseException:
@@ -2255,81 +2642,28 @@ def prune_research_session(
                 conn.rollback()
             raise
 
-        freelist_after = (
-            _page_freelist_bytes(
-                conn
-            )
-        )
-
     finally:
         conn.close()
 
-    receipt = PruneReceipt(
-        format_version=
-            PRUNE_FORMAT_VERSION,
-        state=PRUNE_RECEIPT_STATE,
-        committed_at=(
-            datetime.now(UTC)
-            .isoformat()
-            .replace("+00:00", "Z")
-        ),
-        session_date=session_date,
-        run_ids=manifest.run_ids,
-        archive_manifest_filename=
-            manifest.manifest_filename,
-        archive_manifest_sha256=
-            _sha256_file(
-                manifest_path
-            ),
-        remote_proof_filename=
-            proof_path.name,
-        remote_proof_sha256=
-            _sha256_file(
-                proof_path
-            ),
-        remote_gate_state=
-            verified_proof.pruning_gate_state,
-        schema_version=
-            EXPECTED_SCHEMA_VERSION,
-        trigger_sql_sha256_before=
-            trigger_before,
-        trigger_sql_sha256_after=
-            trigger_after,
-        rows_before=rows_before,
-        rows_deleted=deleted,
-        rows_preserved=
-            rows_preserved,
-        freelist_bytes_before=
-            freelist_before,
-        freelist_bytes_after=
-            freelist_after,
-        database_size_bytes_before=
-            db_size_before,
-        database_size_bytes_after=
-            database.stat().st_size,
-        foreign_key_check="ok",
-        historical_analysis_version=(
-            plan.historical_analysis_version
-        ),
-        analytical_parity_verified=(
-            plan.analytical_parity_verified
-        ),
-        hot_analysis_sha256=(
-            plan.hot_analysis_sha256
-            or ""
-        ),
-        archive_analysis_sha256=(
-            plan.archive_analysis_sha256
-            or ""
-        ),
-    )
+    try:
+        _write_json_atomic(
+            receipt_path,
+            receipt.as_dict(),
+        )
+    except Exception:
+        _emit_progress(
+            progress,
+            "prune: DATABASE COMMIT DURABLE; "
+            "external receipt write failed. "
+            "A retry will recover the receipt "
+            "from the committed database ledger.",
+        )
+        raise
 
-    _write_json_atomic(
-        receipt_path,
-        receipt.as_dict(),
-    )
     _emit_progress(
         progress,
-        f"prune: receipt written {receipt_path}",
+        "prune: external receipt written "
+        f"{receipt_path}",
     )
+
     return receipt
