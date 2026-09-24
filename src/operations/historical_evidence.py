@@ -673,6 +673,7 @@ def verify_hot_archive_parity(
 
         hot_conn = sqlite3.connect(
             ":memory:",
+            uri=True,
             isolation_level=None,
         )
 
