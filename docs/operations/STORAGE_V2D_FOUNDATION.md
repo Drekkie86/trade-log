@@ -129,13 +129,16 @@ Before yielding a SQLite connection it:
 
 1. locates exactly one archive for the requested session;
 2. verifies the compressed payload against the immutable manifest;
-3. materializes the gzip payload into a temporary database;
-4. hashes the uncompressed bytes while materializing;
-5. verifies exact uncompressed size and SHA-256;
-6. opens the materialized SQLite database with `mode=ro&immutable=1`;
-7. runs `PRAGMA integrity_check`;
-8. verifies embedded archive metadata against the manifest; and
-9. enables SQLite `query_only`.
+3. proves the temporary filesystem can hold two uncompressed archive
+   sizes while preserving Christiania's normal reserve (one materialized
+   archive plus one conservative SQLite sort/query workspace allowance);
+4. materializes the gzip payload into a temporary database;
+5. hashes the uncompressed bytes while materializing;
+6. verifies exact uncompressed size and SHA-256;
+7. opens the materialized SQLite database with `mode=ro&immutable=1`;
+8. runs `PRAGMA integrity_check`;
+9. verifies embedded archive metadata against the manifest; and
+10. enables SQLite `query_only`.
 
 The materialized file exists only for the context lifetime and is deleted on
 exit.
