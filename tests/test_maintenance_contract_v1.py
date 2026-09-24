@@ -154,3 +154,80 @@ def test_maintenance_state_acquisition_is_atomic():
         "maintenance state was claimed concurrently"
         in script
     )
+
+
+def test_maintenance_rehearsal_contract():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "rehearse_maintenance()"
+        in script
+    )
+    assert (
+        "MAINTENANCE_QUIESCENCE_PASS"
+        in script
+    )
+    assert (
+        "MAINTENANCE_RESTORE_PASS"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+        in script
+    )
+
+    rehearsal = script[
+        script.index(
+            "rehearse_maintenance()"
+        ):
+        script.index(
+            "show_status()"
+        )
+    ]
+
+    assert (
+        "enter_maintenance"
+        in rehearsal
+    )
+    assert (
+        "exit_maintenance"
+        in rehearsal
+    )
+    assert (
+        "christiania-theta.service"
+        in rehearsal
+    )
+    assert (
+        "christiania-status"
+        in rehearsal
+    )
+
+
+def test_maintenance_rehearsal_restores_on_failure():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    rehearsal = script[
+        script.index(
+            "rehearse_maintenance()"
+        ):
+        script.index(
+            "show_status()"
+        )
+    ]
+
+    assert (
+        "trap rehearsal_restore ERR INT TERM HUP"
+        in rehearsal
+    )
+    assert (
+        'if [[ -f "${STATE_FILE}" ]]'
+        in rehearsal
+    )
+    assert (
+        "exit_maintenance"
+        in rehearsal
+    )
