@@ -366,3 +366,42 @@ def test_maintenance_holder_probe_distinguishes_errors_from_no_matches():
         "cannot prove database quiescence"
         in holder_check
     )
+
+
+def test_maintenance_unit_inspection_is_fail_closed():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "unit_load_state()"
+        in script
+    )
+    assert (
+        "cannot inspect systemd LoadState"
+        in script
+    )
+
+    for function_name in (
+        "stop_optional_unit()",
+        "assert_optional_unit_inactive()",
+    ):
+        start = script.index(
+            function_name
+        )
+
+        next_function = script.find(
+            "\n}\n\n",
+            start,
+        )
+
+        function_body = script[
+            start:
+            next_function
+            + 3
+        ]
+
+        assert (
+            "unit_load_state"
+            in function_body
+        )
