@@ -5,6 +5,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from src.database.repository import (
     create_market_snapshot,
 )
@@ -661,3 +663,103 @@ def test_prune_requires_matching_destructive_confirmation(
         raise AssertionError(
             "Expected destructive confirmation guard."
         )
+
+
+def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        manifest_path,
+        proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    proof = load_remote_archive_proof(
+        proof_path
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning.verify_remote_archive_proof",
+        lambda path, **kwargs: proof,
+    )
+
+    def interrupted_delete(
+        conn,
+        *,
+        progress=None,
+    ):
+        assert conn.in_transaction is True
+
+        # Model SQLite SQLITE_INTERRUPT: the transaction has
+        # already been rolled back before Python surfaces the error.
+        conn.execute(
+            "ROLLBACK;"
+        )
+
+        assert conn.in_transaction is False
+
+        raise sqlite3.OperationalError(
+            "interrupted"
+        )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning._delete_reference_safe_rows",
+        interrupted_delete,
+    )
+
+    with pytest.raises(
+        sqlite3.OperationalError,
+        match="interrupted",
+    ):
+        prune_research_session(
+            manifest.session_date,
+            db_path=db_path,
+            archive_dir=archive_dir,
+            confirm_session=(
+                manifest.session_date
+            ),
+        )
+
+    receipt_path = (
+        archive_dir
+        / manifest_path.name.replace(
+            ".manifest.json",
+            ".prune-receipt.json",
+        )
+    )
+
+    assert receipt_path.exists() is False
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        for (
+            table_name,
+            trigger_name,
+        ) in DELETE_TRIGGER_BY_TABLE.items():
+            row = conn.execute(
+                """
+                SELECT tbl_name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = ?;
+                """,
+                (trigger_name,),
+            ).fetchone()
+
+            assert row is not None
+            assert row[0] == table_name
+    finally:
+        conn.close()
