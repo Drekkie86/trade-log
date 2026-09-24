@@ -1463,6 +1463,8 @@ def find_archive_for_session(
 @contextmanager
 def open_verified_research_archive(
     manifest_path: str | Path,
+    *,
+    query_only: bool = True,
 ) -> Iterator[
     tuple[
         ResearchArchiveManifest,
@@ -1594,9 +1596,10 @@ def open_verified_research_archive(
                         f"{expected_count}."
                     )
 
-            conn.execute(
-                "PRAGMA query_only = ON;"
-            )
+            if query_only:
+                conn.execute(
+                    "PRAGMA query_only = ON;"
+                )
 
             yield (
                 manifest,
