@@ -180,6 +180,63 @@ def _write_local_archive(
     try:
         conn.execute(
             """
+            CREATE TABLE archive_metadata(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO archive_metadata(
+                key,
+                value
+            )
+            VALUES(?, ?);
+            """,
+            (
+                ("format_version", "1"),
+                (
+                    "coverage",
+                    "HIGH_VOLUME_RESEARCH_EVIDENCE_V1",
+                ),
+                (
+                    "session_date",
+                    "2026-09-01",
+                ),
+                (
+                    "run_ids_json",
+                    "[1]",
+                ),
+                (
+                    "source_schema_version",
+                    "33",
+                ),
+                (
+                    "created_at",
+                    "2026-09-21T20:00:00Z",
+                ),
+            ),
+        )
+        conn.execute(
+            """
+            CREATE TABLE archive_row_counts(
+                table_name TEXT PRIMARY KEY,
+                row_count INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO archive_row_counts(
+                table_name,
+                row_count
+            )
+            VALUES('research_runs', 1);
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE research_runs(
                 id INTEGER PRIMARY KEY,
                 status TEXT NOT NULL
