@@ -18,6 +18,7 @@ from src.operations.archive_analytics import (
     ARCHIVE_PARITY_STATE,
     parity_receipt_path,
     validate_archive_parity_receipt,
+    verify_archive_session_parity,
 )
 from src.operations.prune_schema import (
     audit_prune_foreign_key_indexes_connection,
@@ -1769,12 +1770,26 @@ def prune_research_session(
             f"session: {receipt_path}"
         )
 
+    _emit_progress(
+        progress,
+        "prune: fresh hot/cold content parity "
+        "revalidation started",
+    )
+
     parity = (
-        validate_archive_parity_receipt(
+        verify_archive_session_parity(
             session_date,
             db_path=database,
             archive_dir=directory,
+            persist=True,
+            progress=progress,
         )
+    )
+
+    _emit_progress(
+        progress,
+        "prune: fresh hot/cold content parity "
+        "revalidation complete",
     )
 
     parity_path = (
