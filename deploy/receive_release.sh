@@ -518,6 +518,15 @@ rollback() {
     done
   fi
 
+  if [[ "${SERVICES_QUIESCED}" -eq 1 || "${ACTIVATED}" -eq 1 ]]; then
+    for service in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+      if unit_is_busy_for_release "${service}"; then
+        echo "AUTOMATIC ROLLBACK REFUSED: busy one-shot service appeared after release quiescence: ${service}. Core services remain stopped; operator inspection is required before changing release/database state." >&2
+        exit "${original_exit}"
+      fi
+    done
+  fi
+
   if [[ "${APP_LINK_MUTATED}" -eq 1 ]]; then
     rm -f "${APP_LINK}"
     if [[ -n "${PREVIOUS_TARGET}" ]]; then
