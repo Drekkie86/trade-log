@@ -725,7 +725,9 @@ def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
         conn,
         *,
         progress=None,
+        batch_size=None,
     ):
+        del batch_size
         assert conn.in_transaction is True
 
         # Model SQLite SQLITE_INTERRUPT: the transaction has
@@ -930,6 +932,12 @@ def test_delete_table_batches_report_real_row_progress_and_complete_atomically(
             )
         ]
 
+        # Seed in one transaction. Autocommitting thousands of rows here
+        # would measure Windows filesystem commit latency rather than the
+        # bounded-delete algorithm this test is intended to exercise.
+        conn.execute(
+            "BEGIN;"
+        )
         conn.executemany(
             """
             INSERT INTO batch_target(id)
@@ -943,6 +951,9 @@ def test_delete_table_batches_report_real_row_progress_and_complete_atomically(
             VALUES(?);
             """,
             rows,
+        )
+        conn.execute(
+            "COMMIT;"
         )
 
         progress = []
