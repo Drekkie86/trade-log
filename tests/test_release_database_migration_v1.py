@@ -237,3 +237,271 @@ def test_keyboard_interrupt_during_migration_restores_v27(
     finally:
         conn.close()
     assert probe is None
+
+
+
+def test_release_migration_capacity_preflight_runs_before_rollback_copy(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+    pointer = (
+        tmp_path
+        / "rollback-pointer.txt"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    observed = []
+    original_copy = (
+        release_db._copy_sqlite_backup
+    )
+
+    def capacity(
+        *,
+        source,
+        target_dir,
+    ):
+        observed.append(
+            (
+                "capacity",
+                Path(source),
+                Path(target_dir),
+            )
+        )
+
+    def copy(
+        database,
+        temp_path,
+    ):
+        assert observed
+        assert (
+            observed[0][0]
+            == "capacity"
+        )
+        observed.append(
+            (
+                "copy",
+                Path(database),
+                Path(temp_path),
+            )
+        )
+        return original_copy(
+            database,
+            temp_path,
+        )
+
+    monkeypatch.setattr(
+        release_db,
+        "assert_backup_capacity",
+        capacity,
+    )
+    monkeypatch.setattr(
+        release_db,
+        "_copy_sqlite_backup",
+        copy,
+    )
+
+    result = (
+        prepare_release_database(
+            migrations_dir=MIGRATIONS,
+            rollback_pointer=pointer,
+        )
+    )
+
+    assert (
+        result.schema_after
+        == EXPECTED_SCHEMA_VERSION
+    )
+    assert (
+        observed[0][0]
+        == "capacity"
+    )
+    assert (
+        observed[1][0]
+        == "copy"
+    )
+
+
+def test_release_migration_capacity_failure_creates_no_rollback_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+    pointer = (
+        tmp_path
+        / "rollback-pointer.txt"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    def reject_capacity(
+        *,
+        source,
+        target_dir,
+    ):
+        del source
+        del target_dir
+        raise RuntimeError(
+            "synthetic insufficient headroom"
+        )
+
+    copy_called = False
+
+    def unexpected_copy(
+        database,
+        temp_path,
+    ):
+        nonlocal copy_called
+        del database
+        del temp_path
+        copy_called = True
+        raise AssertionError(
+            "copy must not run after "
+            "capacity failure"
+        )
+
+    monkeypatch.setattr(
+        release_db,
+        "assert_backup_capacity",
+        reject_capacity,
+    )
+    monkeypatch.setattr(
+        release_db,
+        "_copy_sqlite_backup",
+        unexpected_copy,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic insufficient headroom",
+    ):
+        prepare_release_database(
+            migrations_dir=MIGRATIONS,
+            rollback_pointer=pointer,
+        )
+
+    assert copy_called is False
+    assert pointer.exists() is False
+
+    if backups.exists():
+        assert list(
+            backups.iterdir()
+        ) == []
+
+    assert (
+        inspect_database(
+            db
+        ).schema_version
+        == 27
+    )
+
+
+def test_release_rollback_copy_failure_removes_partial_temp_file(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+    pointer = (
+        tmp_path
+        / "rollback-pointer.txt"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    monkeypatch.setattr(
+        release_db,
+        "assert_backup_capacity",
+        lambda **kwargs: None,
+    )
+
+    def failed_copy(
+        database,
+        temp_path,
+    ):
+        del database
+
+        Path(
+            temp_path
+        ).write_bytes(
+            b"partial rollback copy"
+        )
+
+        raise RuntimeError(
+            "synthetic backup copy failure"
+        )
+
+    monkeypatch.setattr(
+        release_db,
+        "_copy_sqlite_backup",
+        failed_copy,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic backup copy failure",
+    ):
+        prepare_release_database(
+            migrations_dir=MIGRATIONS,
+            rollback_pointer=pointer,
+        )
+
+    assert pointer.exists() is False
+
+    assert list(
+        backups.glob(
+            "*.tmp.db"
+        )
+    ) == []
+
+    assert list(
+        backups.glob(
+            "christiania_release_rollback_*.db"
+        )
+    ) == []
+
+    assert (
+        inspect_database(
+            db
+        ).schema_version
+        == 27
+    )
