@@ -19,6 +19,9 @@ from src.operations.remote_archive import (
     load_remote_archive_proof,
     verify_remote_archive_proof,
 )
+from src.operations.prune_fk_index_audit import (
+    audit_prune_parent_fk_indexes,
+)
 from src.operations.research_archive import (
     ResearchArchiveManifest,
     inventory_research_archives,
@@ -93,6 +96,8 @@ class PruneSessionPlan:
     remote_gate_state: str
     local_archive_fast_verified: bool
     run_lineage_verified: bool
+    foreign_key_index_state: str
+    missing_foreign_key_indexes: tuple[str, ...]
     tables: tuple[PruneTablePlan, ...]
     total_archived_rows: int
     total_deletable_rows: int
@@ -108,6 +113,9 @@ class PruneSessionPlan:
                 item.as_dict()
                 for item in self.tables
             ],
+            "missing_foreign_key_indexes": list(
+                self.missing_foreign_key_indexes
+            ),
             "blockers": list(self.blockers),
         }
 
@@ -1018,6 +1026,22 @@ def _build_plan_from_connection(
         conn,
         manifest=manifest,
     )
+    fk_index_audit = (
+        audit_prune_parent_fk_indexes(
+            conn
+        )
+    )
+
+    _emit_progress(
+        progress,
+        (
+            "planner: prune-parent FK index audit "
+            f"{fk_index_audit.state}; "
+            f"checks={len(fk_index_audit.checks)} "
+            f"missing={len(fk_index_audit.missing)}"
+        ),
+    )
+
     (
         candidates,
         deletable,
@@ -1090,6 +1114,27 @@ def _build_plan_from_connection(
             f"{schema_version}!="
             f"{EXPECTED_SCHEMA_VERSION}"
         )
+
+    if not fk_index_audit.passed:
+        missing_keys = tuple(
+            check.key
+            for check
+            in fk_index_audit.missing
+        )
+
+        if fk_index_audit.missing_parent_tables:
+            blockers.append(
+                "PRUNE_PARENT_TABLE_MISSING:"
+                + ",".join(
+                    fk_index_audit.missing_parent_tables
+                )
+            )
+
+        for key in missing_keys:
+            blockers.append(
+                "PRUNE_PARENT_FK_INDEX_MISSING:"
+                + key
+            )
     if not lineage_ok:
         blockers.append(
             "RUN_LINEAGE_MISMATCH"
@@ -1147,6 +1192,14 @@ def _build_plan_from_connection(
         local_archive_fast_verified=
             local_archive_fast_verified,
         run_lineage_verified=lineage_ok,
+        foreign_key_index_state=
+            fk_index_audit.state,
+        missing_foreign_key_indexes=
+            tuple(
+                check.key
+                for check
+                in fk_index_audit.missing
+            ),
         tables=tuple(table_plans),
         total_archived_rows=total_archived,
         total_deletable_rows=
