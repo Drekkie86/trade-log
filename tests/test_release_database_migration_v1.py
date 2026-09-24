@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -237,3 +238,177 @@ def test_keyboard_interrupt_during_migration_restores_v27(
     finally:
         conn.close()
     assert probe is None
+
+
+
+def test_release_migration_capacity_fails_before_rollback_copy(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    copied = False
+
+    def fail_capacity(
+        database,
+        backup_dir,
+    ):
+        del database, backup_dir
+        raise RuntimeError(
+            "capacity-test"
+        )
+
+    def forbidden_copy(
+        database,
+        backup_dir,
+        *,
+        schema_version,
+    ):
+        nonlocal copied
+        del database, backup_dir, schema_version
+        copied = True
+        raise AssertionError(
+            "rollback copy must not start"
+        )
+
+    monkeypatch.setattr(
+        release_db,
+        "_assert_release_migration_capacity",
+        fail_capacity,
+    )
+    monkeypatch.setattr(
+        release_db,
+        "_create_rollback_backup",
+        forbidden_copy,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="capacity-test",
+    ):
+        prepare_release_database(
+            migrations_dir=MIGRATIONS,
+        )
+
+    assert copied is False
+    assert not list(
+        backups.glob(
+            "christiania_release_rollback_*.db"
+        )
+    )
+
+
+def test_release_migration_capacity_same_filesystem_accounts_for_all_headroom(
+    monkeypatch,
+    tmp_path,
+):
+    db = tmp_path / "db.sqlite"
+    db.write_bytes(
+        b"x"
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+    backups.mkdir()
+
+    monkeypatch.setattr(
+        release_db,
+        "backup_logical_source_bytes",
+        lambda source: 1_000,
+    )
+    monkeypatch.setattr(
+        release_db,
+        "backup_required_free_bytes",
+        lambda *,
+        source_size_bytes,
+        filesystem_total_bytes: (
+            source_size_bytes
+            + 500
+        ),
+    )
+    monkeypatch.setattr(
+        release_db,
+        "_release_migration_extra_headroom_bytes",
+        lambda logical: 200,
+    )
+    monkeypatch.setattr(
+        release_db.os,
+        "stat",
+        lambda path: SimpleNamespace(
+            st_dev=7
+        ),
+    )
+
+    monkeypatch.setattr(
+        release_db.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(
+            total=10_000,
+            used=8_400,
+            free=1_600,
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Insufficient release-migration "
+            "filesystem headroom"
+        ),
+    ):
+        release_db._assert_release_migration_capacity(
+            db,
+            backups,
+        )
+
+    monkeypatch.setattr(
+        release_db.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(
+            total=10_000,
+            used=8_200,
+            free=1_800,
+        ),
+    )
+
+    result = (
+        release_db._assert_release_migration_capacity(
+            db,
+            backups,
+        )
+    )
+
+    assert (
+        result[
+            "same_filesystem"
+        ]
+        is True
+    )
+    assert (
+        result[
+            "required_database_free_bytes"
+        ]
+        == 1_700
+    )
+    assert (
+        result[
+            "required_backup_free_bytes"
+        ]
+        == 1_700
+    )
