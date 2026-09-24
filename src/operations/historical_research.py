@@ -90,6 +90,147 @@ _SCOPE_FROM: dict[
 }
 
 
+_ANALYTICAL_FINGERPRINT_COLUMNS: dict[
+    str,
+    tuple[str, ...],
+] = {
+    "research_runs": (
+        "id",
+        "status",
+        "started_at",
+        "ended_at",
+        "us_session_date",
+        "us_session_state",
+        "cohort_id",
+        "preregistration_hash",
+        "code_git_sha",
+    ),
+    "market_snapshots": (
+        "id",
+        "research_run_id",
+        "captured_at",
+        "underlying",
+        "provider",
+        "provider_snapshot_id",
+        "underlying_price",
+        "underlying_source",
+        "underlying_at",
+        "fx_to_eur",
+        "fx_source",
+        "fx_at",
+    ),
+    "option_quotes": (
+        "id",
+        "snapshot_id",
+        "provider_contract_id",
+        "option_symbol",
+        "right",
+        "strike",
+        "expiration",
+        "quote_at",
+        "bid",
+        "ask",
+        "last",
+        "implied_volatility",
+        "delta",
+        "gamma",
+        "theta",
+        "vega",
+        "volume",
+        "open_interest",
+    ),
+    "provider_model_observations": (
+        "id",
+        "option_quote_id",
+        "provider",
+        "ingested_at",
+        "observed_at",
+        "source",
+        "model_name",
+        "provider_request_id",
+        "implied_volatility",
+        "delta",
+        "gamma",
+        "theta",
+        "vega",
+    ),
+    "listing_reference_contracts": (
+        "id",
+        "research_run_id",
+        "provider",
+        "underlying",
+        "provider_contract_id",
+        "option_symbol",
+        "expiration",
+        "strike",
+        "right",
+        "exercise_style",
+        "shares_per_contract",
+        "primary_exchange",
+        "observed_at",
+        "ingested_at",
+    ),
+    "provider_observation_availability": (
+        "id",
+        "reference_contract_id",
+        "provider",
+        "evidence_family",
+        "state",
+        "provider_observation_id",
+        "reason_code",
+        "observed_at",
+        "raw_timestamp",
+        "ingested_at",
+    ),
+    "hypothesis_scanner_evaluations": (
+        "id",
+        "scanner_run_id",
+        "reference_contract_id",
+        "option_quote_id",
+        "underlying",
+        "expiration",
+        "strike",
+        "right",
+        "delta",
+        "implied_volatility",
+        "lower_strike",
+        "lower_iv",
+        "upper_strike",
+        "upper_iv",
+        "interpolated_iv",
+        "iv_residual",
+        "abs_iv_residual",
+        "residual_threshold",
+        "evaluation_state",
+        "reason_code",
+        "surfaced_direction",
+    ),
+    "local_surface_residual_v2_observations": (
+        "id",
+        "model_run_id",
+        "reference_contract_id",
+        "option_quote_id",
+        "underlying",
+        "expiration",
+        "strike",
+        "right",
+        "delta",
+        "implied_volatility",
+        "usable_strike_count",
+        "fit_point_count",
+        "fit_dof",
+        "fitted_iv",
+        "loo_residual",
+        "abs_loo_residual",
+        "fit_sse",
+        "fit_rmse",
+        "design_condition_number",
+        "observation_state",
+        "reason_code",
+    ),
+}
+
+
 @dataclass(frozen=True)
 class HistoricalSessionProfile:
     format_version: int
@@ -105,6 +246,7 @@ class HistoricalSessionProfile:
         str,
         dict[str, int | float | str | None],
     ]
+    analytical_fingerprints: dict[str, str]
     dimensions: dict[
         str,
         dict[str, int],
@@ -348,6 +490,134 @@ def _dimension_counts(
     )
 
 
+def _hash_value(
+    digest,
+    value: object,
+) -> None:
+    if value is None:
+        encoded = b"N"
+    elif isinstance(
+        value,
+        bool,
+    ):
+        encoded = (
+            b"B1"
+            if value
+            else b"B0"
+        )
+    elif isinstance(
+        value,
+        int,
+    ):
+        encoded = (
+            b"I"
+            + str(
+                value
+            ).encode(
+                "ascii"
+            )
+        )
+    elif isinstance(
+        value,
+        float,
+    ):
+        encoded = (
+            b"F"
+            + value.hex().encode(
+                "ascii"
+            )
+        )
+    elif isinstance(
+        value,
+        bytes,
+    ):
+        encoded = (
+            b"X"
+            + value
+        )
+    else:
+        encoded = (
+            b"S"
+            + str(
+                value
+            ).encode(
+                "utf-8"
+            )
+        )
+
+    digest.update(
+        str(
+            len(encoded)
+        ).encode(
+            "ascii"
+        )
+    )
+    digest.update(
+        b":"
+    )
+    digest.update(
+        encoded
+    )
+    digest.update(
+        b";"
+    )
+
+
+def _analytical_fingerprint(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    run_ids: tuple[int, ...],
+) -> str:
+    columns = (
+        _ANALYTICAL_FINGERPRINT_COLUMNS[
+            table_name
+        ]
+    )
+
+    select_columns = ", ".join(
+        f't."{column}"'
+        for column
+        in columns
+    )
+
+    sql = f"""
+        SELECT
+            {select_columns}
+        {_scope_from(
+            table_name,
+            run_ids,
+        )}
+        ORDER BY t.id;
+    """
+
+    digest = hashlib.sha256()
+
+    for column in columns:
+        _hash_value(
+            digest,
+            column,
+        )
+
+    cursor = conn.execute(
+        sql,
+        run_ids,
+    )
+
+    for row in cursor:
+        digest.update(
+            b"R"
+        )
+
+        for value in row:
+            _hash_value(
+                digest,
+                value,
+            )
+
+    return digest.hexdigest()
+
+
 def _profile_payload(
     *,
     session_date: str,
@@ -359,6 +629,10 @@ def _profile_payload(
     scalar_metrics: dict[
         str,
         dict[str, int | float | str | None],
+    ],
+    analytical_fingerprints: dict[
+        str,
+        str,
     ],
     dimensions: dict[
         str,
@@ -378,6 +652,8 @@ def _profile_payload(
             table_identity,
         "scalar_metrics":
             scalar_metrics,
+        "analytical_fingerprints":
+            analytical_fingerprints,
         "dimensions":
             dimensions,
     }
@@ -474,42 +750,10 @@ def profile_session_connection(
                         ) AS iv_rows,
                         SUM(t.delta IS NOT NULL)
                             AS delta_rows,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.bid,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS bid_sum,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.ask,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS ask_sum,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.implied_volatility,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS iv_sum,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.delta,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS delta_sum
+                        MIN(t.expiration)
+                            AS min_expiration,
+                        MAX(t.expiration)
+                            AS max_expiration
                     {_scope_from(
                         "option_quotes",
                         runs,
@@ -534,25 +778,7 @@ def profile_session_connection(
                         SUM(t.theta IS NOT NULL)
                             AS theta_rows,
                         SUM(t.vega IS NOT NULL)
-                            AS vega_rows,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.implied_volatility,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS iv_sum,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.delta,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS delta_sum
+                            AS vega_rows
                     {_scope_from(
                         "provider_model_observations",
                         runs,
@@ -569,25 +795,7 @@ def profile_session_connection(
                         SUM(
                             t.iv_residual
                             IS NOT NULL
-                        ) AS residual_rows,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.iv_residual,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS residual_sum,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.abs_iv_residual,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS abs_residual_sum
+                        ) AS residual_rows
                     {_scope_from(
                         "hypothesis_scanner_evaluations",
                         runs,
@@ -604,25 +812,7 @@ def profile_session_connection(
                         SUM(
                             t.loo_residual
                             IS NOT NULL
-                        ) AS residual_rows,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.loo_residual,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS residual_sum,
-                        ROUND(
-                            SUM(
-                                COALESCE(
-                                    t.abs_loo_residual,
-                                    0.0
-                                )
-                            ),
-                            12
-                        ) AS abs_residual_sum
+                        ) AS residual_rows
                     {_scope_from(
                         "local_surface_residual_v2_observations",
                         runs,
@@ -630,6 +820,18 @@ def profile_session_connection(
                 """,
                 params=params,
             ),
+    }
+
+    analytical_fingerprints = {
+        table_name:
+            _analytical_fingerprint(
+                conn,
+                table_name=
+                    table_name,
+                run_ids=runs,
+            )
+        for table_name
+        in _ANALYTICAL_FINGERPRINT_COLUMNS
     }
 
     dimensions = {
@@ -786,6 +988,8 @@ def profile_session_connection(
             table_identity,
         scalar_metrics=
             scalar_metrics,
+        analytical_fingerprints=
+            analytical_fingerprints,
         dimensions=
             dimensions,
     )
@@ -805,6 +1009,8 @@ def profile_session_connection(
             table_identity,
         scalar_metrics=
             scalar_metrics,
+        analytical_fingerprints=
+            analytical_fingerprints,
         dimensions=
             dimensions,
         analytical_sha256=
@@ -1058,6 +1264,14 @@ def compare_hot_archive_session(
     ):
         differing.append(
             "scalar_metrics"
+        )
+
+    if (
+        hot.analytical_fingerprints
+        != cold.analytical_fingerprints
+    ):
+        differing.append(
+            "analytical_fingerprints"
         )
 
     if (
