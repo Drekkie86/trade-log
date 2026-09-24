@@ -145,6 +145,39 @@ def _print_human(
         )
     )
 
+    print(
+        "public_edge="
+        + str(
+            payload[
+                "public_edge_state"
+            ]
+        )
+        + " expected="
+        + (
+            "YES"
+            if payload.get(
+                "public_edge_expected"
+            )
+            else "NO"
+        )
+    )
+
+    public_edge_services = payload.get(
+        "public_edge_services"
+    )
+
+    if isinstance(
+        public_edge_services,
+        dict,
+    ):
+        for (
+            unit,
+            state,
+        ) in public_edge_services.items():
+            print(
+                f"{unit}={state}"
+            )
+
     services = payload[
         "core_services"
     ]
