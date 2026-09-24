@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 from src.database.repository import (
     resolve_db_path,
@@ -576,6 +576,7 @@ def analyze_historical_connection(
     source: str,
     source_schema_version: int,
     archive_filename: str | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> HistoricalSessionAnalysis:
     _validate_analysis_schema(
         conn
@@ -596,17 +597,33 @@ def analyze_historical_connection(
         name,
         sql,
     ) in ANALYSIS_SQL:
+        if progress is not None:
+            progress(
+                f"{source.lower()} analysis "
+                f"{name} started"
+            )
+
         cursor = conn.execute(
             cte + sql,
             parameters,
         )
 
-        metrics.append(
-            _metric_result(
-                name=name,
-                cursor=cursor,
-            )
+        metric = _metric_result(
+            name=name,
+            cursor=cursor,
         )
+
+        metrics.append(
+            metric
+        )
+
+        if progress is not None:
+            progress(
+                f"{source.lower()} analysis "
+                f"{name} complete "
+                f"rows={len(metric.rows)} "
+                f"sha256={metric.sha256}"
+            )
 
     canonical_payload = {
         "analysis_version":
@@ -700,6 +717,7 @@ def analyze_archived_session(
                 manifest.source_schema_version,
             archive_filename=
                 manifest.archive_filename,
+            progress=progress,
         )
 
 
@@ -771,13 +789,15 @@ def compare_hot_connection_to_archive(
     hot_conn: sqlite3.Connection,
     *,
     manifest_path: str | Path,
+    progress: Callable[[str], None] | None = None,
 ) -> HistoricalParityReport:
     path = Path(
         manifest_path
     ).expanduser()
 
     with open_verified_research_archive(
-        path
+        path,
+        progress=progress,
     ) as (
         manifest,
         archive_conn,
@@ -789,6 +809,7 @@ def compare_hot_connection_to_archive(
             source="HOT",
             source_schema_version=
                 _schema_version(hot_conn),
+            progress=progress,
         )
 
         archive = analyze_historical_connection(
@@ -867,6 +888,7 @@ def compare_hot_archive_session(
     *,
     db_path: str | Path | None = None,
     archive_dir: str | Path | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> HistoricalParityReport:
     (
         manifest_path,
