@@ -116,3 +116,22 @@ def test_maintenance_keeps_theta_running():
         "systemctl stop christiania-theta.service"
         not in script
     )
+
+
+def test_maintenance_quiescence_fails_closed():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        'systemctl stop "${unit}" || true'
+        not in script
+    )
+    assert (
+        'systemctl stop "${SECURE_EDGE_SERVICE}" || true'
+        not in script
+    )
+    assert (
+        "remained active after maintenance quiescence"
+        in script
+    )
