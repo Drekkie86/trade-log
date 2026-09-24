@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -523,6 +526,131 @@ def test_hot_archive_parity_is_value_exact(
     )
 
 
+def _sha256_path(
+    path: Path,
+) -> str:
+    digest = hashlib.sha256()
+
+    with path.open(
+        "rb"
+    ) as handle:
+        while True:
+            chunk = handle.read(
+                1024 * 1024
+            )
+            if not chunk:
+                break
+            digest.update(
+                chunk
+            )
+
+    return digest.hexdigest()
+
+
+def _rewrite_archive_source_schema_version(
+    *,
+    archive_dir: Path,
+    manifest,
+    temp_dir: Path,
+    source_schema_version: int,
+) -> None:
+    manifest_path = (
+        archive_dir
+        / manifest.manifest_filename
+    )
+    archive_path = (
+        archive_dir
+        / manifest.archive_filename
+    )
+    restored = (
+        temp_dir
+        / "compat-archive.db"
+    )
+
+    with gzip.open(
+        archive_path,
+        "rb",
+    ) as src:
+        with restored.open(
+            "wb"
+        ) as dst:
+            shutil.copyfileobj(
+                src,
+                dst,
+            )
+
+    conn = sqlite3.connect(
+        restored
+    )
+    try:
+        conn.execute(
+            """
+            UPDATE archive_metadata
+            SET value = ?
+            WHERE key = 'source_schema_version';
+            """,
+            (
+                str(
+                    source_schema_version
+                ),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    uncompressed_sha = (
+        _sha256_path(
+            restored
+        )
+    )
+
+    with restored.open(
+        "rb"
+    ) as src:
+        with gzip.open(
+            archive_path,
+            "wb",
+        ) as dst:
+            shutil.copyfileobj(
+                src,
+                dst,
+            )
+
+    payload = json.loads(
+        manifest_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    payload[
+        "source_schema_version"
+    ] = source_schema_version
+    payload[
+        "uncompressed_size_bytes"
+    ] = restored.stat().st_size
+    payload[
+        "compressed_size_bytes"
+    ] = archive_path.stat().st_size
+    payload[
+        "uncompressed_sha256"
+    ] = uncompressed_sha
+    payload[
+        "compressed_sha256"
+    ] = _sha256_path(
+        archive_path
+    )
+
+    manifest_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_v33_archive_remains_readable_under_v34_runtime(
     db_path,
     tmp_path,
@@ -538,28 +666,11 @@ def test_v33_archive_remains_readable_under_v34_runtime(
         monkeypatch,
     )
 
-    manifest_path = (
-        archive_dir
-        / manifest.manifest_filename
-    )
-
-    payload = json.loads(
-        manifest_path.read_text(
-            encoding="utf-8"
-        )
-    )
-    payload[
-        "source_schema_version"
-    ] = 33
-
-    manifest_path.write_text(
-        json.dumps(
-            payload,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    _rewrite_archive_source_schema_version(
+        archive_dir=archive_dir,
+        manifest=manifest,
+        temp_dir=tmp_path,
+        source_schema_version=33,
     )
 
     profile = (
@@ -585,6 +696,56 @@ def test_v33_archive_remains_readable_under_v34_runtime(
         parity.archive_source_schema_version
         == 33
     )
+
+
+def test_cold_reader_rejects_manifest_internal_metadata_mismatch(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    (
+        _,
+        archive_dir,
+        manifest,
+    ) = _create_old_session_archive(
+        db_path,
+        tmp_path,
+        monkeypatch,
+    )
+
+    manifest_path = (
+        archive_dir
+        / manifest.manifest_filename
+    )
+    payload = json.loads(
+        manifest_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    payload[
+        "source_schema_version"
+    ] = 33
+    manifest_path.write_text(
+        json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "internal metadata mismatch "
+            "for source_schema_version"
+        ),
+    ):
+        read_historical_session_profile(
+            manifest.session_date,
+            archive_dir=archive_dir,
+        )
 
 
 
