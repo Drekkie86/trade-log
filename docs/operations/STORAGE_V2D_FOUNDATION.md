@@ -275,8 +275,13 @@ It does not kill an active backup or restore drill.
 
 ### Exit
 
-Exit restores only the services/timers recorded as active before entry and
-keeps the state file if restoration is incomplete.
+Exit first refuses restoration if any backup/audit/restore/health one-shot is
+currently busy. This prevents daemon/app/timers from being restored around
+manually started maintenance work; the maintenance state file is retained for a
+later retry.
+
+Once that guard is clear, exit restores only the services/timers recorded as
+active before entry and keeps the state file if restoration is incomplete.
 
 ### Rehearsal
 
@@ -367,7 +372,10 @@ the same WAL-aware capacity contract as normal verified backups. The receiver
 also follows the maintenance one-shot rule: after stopping scheduling timers it
 refuses deployment if a backup, restore drill, audit or other one-shot is
 `active`, `activating`, `reloading` or `deactivating`; rollback never
-kills that work.
+kills that work. If a new one-shot somehow appears after the quiescence
+boundary, automatic rollback refuses to change the application pointer or
+database underneath it and leaves core services stopped for explicit operator
+inspection.
 
 
 - logical source size is the greater of main-file bytes and
