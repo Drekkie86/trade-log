@@ -204,3 +204,52 @@ def test_v2c_fk_indexes_are_query_plan_usable(
 
     finally:
         conn.close()
+
+
+
+def test_v2c_fk_audit_rejects_partial_index(
+    db_path,
+):
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        conn.execute(
+            "DROP INDEX "
+            "idx_shadow_candidates_reference_contract;"
+        )
+        conn.execute(
+            """
+            CREATE INDEX idx_shadow_candidates_reference_partial
+            ON shadow_candidates(reference_contract_id)
+            WHERE id > 0;
+            """
+        )
+
+        checks = (
+            audit_prune_foreign_key_indexes(
+                conn
+            )
+        )
+
+        target = next(
+            check
+            for check in checks
+            if (
+                check.child_table
+                == "shadow_candidates"
+                and check.parent_table
+                == "listing_reference_contracts"
+                and check.child_columns
+                == ("reference_contract_id",)
+            )
+        )
+
+        assert target.supported is False
+        assert (
+            target.supporting_index
+            is None
+        )
+
+    finally:
+        conn.close()
