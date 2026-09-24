@@ -1273,6 +1273,7 @@ def _build_plan_from_connection(
             compare_hot_connection_to_archive(
                 conn,
                 manifest_path=manifest_path,
+                progress=progress,
             )
         )
     except Exception as exc:
