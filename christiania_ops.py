@@ -158,6 +158,10 @@ def main() -> int:
     prune_session = sub.add_parser("archive-prune-session")
     prune_session.add_argument("--session-date", required=True)
     prune_session.add_argument("--confirm-session", required=True)
+    prune_session.add_argument(
+        "--delete-batch-rows",
+        type=int,
+    )
     prune_session.add_argument("--json", action="store_true")
 
     copenhagen = sub.add_parser("copenhagen")
@@ -565,6 +569,8 @@ def main() -> int:
             args.session_date,
             confirm_session=args.confirm_session,
             progress=prune_progress,
+            delete_batch_rows=
+                args.delete_batch_rows,
         )
         if args.json:
             _print_json(receipt.as_dict())
@@ -578,6 +584,17 @@ def main() -> int:
                 print(
                     f"{table_name}: deleted={count} "
                     f"preserved={receipt.rows_preserved[table_name]}"
+                )
+            print(
+                "Delete batch rows: "
+                f"{receipt.delete_batch_rows}"
+            )
+            for (
+                table_name,
+                batch_count,
+            ) in receipt.delete_batches.items():
+                print(
+                    f"{table_name}: batches={batch_count}"
                 )
             print(
                 f"Freelist before: {receipt.freelist_bytes_before} bytes"
