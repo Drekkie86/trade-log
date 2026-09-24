@@ -13,16 +13,16 @@
 -- =====================================================================
 PRAGMA foreign_keys = ON;
 
-CREATE INDEX IF NOT EXISTS idx_shadow_candidates_reference_contract
+CREATE INDEX idx_shadow_candidates_reference_contract
 ON shadow_candidates(reference_contract_id);
 
-CREATE INDEX IF NOT EXISTS idx_hypothesis_scanner_evaluations_reference_contract
+CREATE INDEX idx_hypothesis_scanner_evaluations_reference_contract
 ON hypothesis_scanner_evaluations(reference_contract_id);
 
-CREATE INDEX IF NOT EXISTS idx_hypothesis_scanner_evaluations_option_quote
+CREATE INDEX idx_hypothesis_scanner_evaluations_option_quote
 ON hypothesis_scanner_evaluations(option_quote_id);
 
-CREATE INDEX IF NOT EXISTS idx_surface_v2_reference_contract
+CREATE INDEX idx_surface_v2_reference_contract
 ON local_surface_residual_v2_observations(reference_contract_id);
 
 INSERT INTO schema_version(version, applied_at)
