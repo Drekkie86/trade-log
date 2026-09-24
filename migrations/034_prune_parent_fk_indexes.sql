@@ -5,9 +5,9 @@
 --
 -- SQLite parent deletes probe every child foreign key. A child-side index
 -- must begin with the FK columns or a large parent delete can degrade into
--- repeated full scans. V2C deletes listing_reference_contracts and
--- option_quotes, so every FK into those parent tables is required to have a
--- leading support index before destructive pruning is eligible.
+-- repeated full scans. V2C deletes six high-volume parent families; the
+-- runtime audit requires every FK into every prune target to have a leading
+-- support index before destructive pruning is eligible.
 -- =====================================================================
 PRAGMA foreign_keys = ON;
 
