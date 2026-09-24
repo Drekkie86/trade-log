@@ -75,7 +75,7 @@ def test_maintenance_records_and_restores_public_edge():
         "record_state"
     )
     stop_edge = script.index(
-        'systemctl stop "${SECURE_EDGE_SERVICE}"'
+        'stop_optional_unit "${SECURE_EDGE_SERVICE}"'
     )
     restore = script.index(
         'Restoring ${SECURE_EDGE_SERVICE}'
