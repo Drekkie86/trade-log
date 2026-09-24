@@ -229,3 +229,56 @@ def test_maintenance_rehearsal_checks_theta_and_all_quiesced_classes():
         "christiania-theta.service"
         in rehearsal
     )
+
+
+
+def test_maintenance_entry_proves_zero_database_holders():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "assert_no_database_holders()"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_DB_HOLDERS=0"
+        in script
+    )
+    assert (
+        "fuser"
+        in script
+    )
+    assert (
+        "lsof"
+        in script
+    )
+
+    enter = script[
+        script.index(
+            "enter_maintenance()"
+        ):
+        script.index(
+            "exit_maintenance()"
+        )
+    ]
+
+    assert (
+        "assert_no_database_holders"
+        in enter
+    )
+
+    assert (
+        enter.index(
+            "assert_no_database_holders"
+        )
+        > enter.index(
+            'systemctl stop "${unit}"'
+        )
+    )
+
+    assert (
+        "neither fuser nor lsof "
+        "is installed"
+        in script
+    )
