@@ -1191,6 +1191,17 @@ def compare_hot_archive_session(
             resolved_manifest
         )
 
+    if (
+        manifest.session_date
+        != session_date
+    ):
+        raise RuntimeError(
+            "Historical parity manifest "
+            "session mismatch: "
+            f"{manifest.session_date} != "
+            f"{session_date}."
+        )
+
     runs = _run_ids(
         manifest.run_ids
     )
@@ -1236,6 +1247,19 @@ def compare_hot_archive_session(
         archive_conn,
         verified_manifest,
     ):
+        if (
+            verified_manifest.session_date
+            != session_date
+            or tuple(
+                verified_manifest.run_ids
+            )
+            != runs
+        ):
+            raise RuntimeError(
+                "Materialized archive lineage "
+                "does not match parity target."
+            )
+
         cold = (
             profile_session_connection(
                 archive_conn,
