@@ -154,3 +154,88 @@ def test_maintenance_state_acquisition_is_atomic():
         "maintenance state was claimed concurrently"
         in script
     )
+
+
+
+def test_maintenance_refuses_to_interrupt_active_one_shot_work():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "one-shot maintenance service is already active; "
+        "refusing to interrupt it"
+        in script
+    )
+
+    one_shot_loop = (
+        'for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do'
+    )
+
+    start = script.index(
+        one_shot_loop,
+        script.index(
+            "enter_maintenance()"
+        ),
+    )
+
+    end = script.index(
+        "# Stop the edge explicitly",
+        start,
+    )
+
+    block = script[
+        start:end
+    ]
+
+    assert (
+        'unit_is_active "${unit}"'
+        in block
+    )
+    assert (
+        'stop_optional_unit "${unit}"'
+        not in block
+    )
+
+
+def test_maintenance_rehearsal_is_non_sql_and_restores_exact_runtime_state():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    start = script.index(
+        "rehearse_maintenance()"
+    )
+    end = script.index(
+        "show_status()",
+        start,
+    )
+
+    block = script[
+        start:end
+    ]
+
+    assert (
+        "enter_maintenance"
+        in block
+    )
+    assert (
+        "exit_maintenance"
+        in block
+    )
+    assert (
+        'diff -u "${before}" "${after}"'
+        in block
+    )
+    assert (
+        "MAINTENANCE_REHEARSAL_PASS"
+        in block
+    )
+
+    for forbidden in (
+        "sqlite3",
+        "archive-prune",
+        "VACUUM",
+        "wal_checkpoint",
+    ):
+        assert forbidden not in block
