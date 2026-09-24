@@ -554,9 +554,17 @@ def main() -> int:
         return 0 if plan.apply_eligible else 2
 
     if args.command == "archive-prune-session":
+        def prune_progress(message: str) -> None:
+            print(
+                f"[prune] {message}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         receipt = prune_research_session(
             args.session_date,
             confirm_session=args.confirm_session,
+            progress=prune_progress,
         )
         if args.json:
             _print_json(receipt.as_dict())
