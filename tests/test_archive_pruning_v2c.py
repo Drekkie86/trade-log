@@ -502,12 +502,31 @@ def test_prune_apply_revalidates_archive_restores_triggers_and_fk(
         lambda path: proof,
     )
 
+    progress = []
+
     receipt = prune_research_session(
         manifest.session_date,
         db_path=db_path,
         archive_dir=archive_dir,
         confirm_session=
             manifest.session_date,
+        progress=progress.append,
+    )
+
+    assert any(
+        "delete option_quotes complete"
+        in message
+        for message in progress
+    )
+    assert any(
+        "transaction committed"
+        in message
+        for message in progress
+    )
+    assert any(
+        "receipt written"
+        in message
+        for message in progress
     )
 
     assert (
