@@ -378,3 +378,58 @@ def test_release_receiver_has_valid_bash_syntax():
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_release_receiver_pre_activation_gate_uses_current_release_policy():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    phase = receiver.index(
+        'phase_start "Validating current production deployment safety"'
+    )
+    phase_end = receiver.index(
+        "phase_done",
+        phase,
+    )
+
+    block = receiver[
+        phase:phase_end
+    ]
+
+    assert (
+        '"${PREVIOUS_TARGET}/.venv/bin/python"'
+        in block
+    )
+    assert (
+        '"${PREVIOUS_TARGET}/christiania_status.py"'
+        in block
+    )
+    assert (
+        '"${RELEASE_DIR}/christiania_status.py"'
+        not in block
+    )
+
+    activation = receiver.index(
+        'ln -s "${RELEASE_DIR}" "${APP_LINK}"'
+    )
+
+    target_policy_check = receiver.index(
+        '"${APP_LINK}/christiania_resource_policy.py" \\',
+        activation,
+    )
+
+    post_activation_status = receiver.index(
+        '"${LOCAL_BIN}/christiania-status" --json --deployment-safe',
+        target_policy_check,
+    )
+
+    assert (
+        phase
+        < phase_end
+        < activation
+        < target_policy_check
+        < post_activation_status
+    )
