@@ -20,6 +20,7 @@ from src.operations.research_archive import (
     ResearchArchiveManifest,
     inventory_research_archives,
     resolve_archive_dir,
+    verify_materialized_archive_contract,
     verify_research_archive,
 )
 
@@ -363,6 +364,11 @@ def open_verified_archive_session(
                     f"integrity_check failed: "
                     f"{integrity}"
                 )
+
+            verify_materialized_archive_contract(
+                conn,
+                manifest,
+            )
 
             _emit(
                 progress,
