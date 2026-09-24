@@ -234,6 +234,70 @@ exit_maintenance() {
   fi
 }
 
+rehearse_maintenance() {
+  require_root
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "cannot rehearse while maintenance state already exists at ${STATE_FILE}"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_START"
+
+  # enter_maintenance owns its own recovery trap until it returns
+  # successfully. Only then do we install the rehearsal recovery trap.
+  enter_maintenance
+
+  rehearsal_restore_on_failure() {
+    local rc=$?
+    trap - ERR INT TERM HUP
+
+    echo "Maintenance rehearsal failed; restoring recorded runtime." >&2
+
+    if [[ -f "${STATE_FILE}" ]]; then
+      if ! exit_maintenance; then
+        echo "Maintenance rehearsal restore failed; state retained at ${STATE_FILE}." >&2
+        exit 1
+      fi
+    fi
+
+    exit "${rc}"
+  }
+
+  trap rehearsal_restore_on_failure ERR INT TERM HUP
+
+  for unit in "${DB_CONSUMER_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "rehearsal expected ${unit} to be inactive"
+    fi
+  done
+
+  if unit_is_active "${SECURE_EDGE_SERVICE}"; then
+    fail "rehearsal expected ${SECURE_EDGE_SERVICE} to be inactive"
+  fi
+
+  for unit in "${QUIESCE_TIMER_UNITS[@]}" "${QUIESCE_ONESHOT_SERVICES[@]}"; do
+    if unit_is_active "${unit}"; then
+      fail "rehearsal expected ${unit} to be inactive"
+    fi
+  done
+
+  if ! unit_is_active christiania-theta.service; then
+    fail "rehearsal requires christiania-theta.service to remain active"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_QUIESCE_PASS"
+
+  exit_maintenance
+
+  trap - ERR INT TERM HUP
+
+  if [[ -e "${STATE_FILE}" ]]; then
+    fail "rehearsal completed but maintenance state was not cleared"
+  fi
+
+  echo "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+}
+
 show_status() {
   require_root
 
@@ -260,8 +324,11 @@ case "${1:-}" in
   status)
     show_status
     ;;
+  rehearse)
+    rehearse_maintenance
+    ;;
   *)
-    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status}" >&2
+    echo "Usage: sudo /opt/christiania/deploy/christiania-maintenance {enter|exit|status|rehearse}" >&2
     exit 2
     ;;
 esac
