@@ -2071,34 +2071,6 @@ def prune_research_session(
         proof=verified_proof,
     )
 
-    _emit_progress(
-        progress,
-        "prune: hot/archive exact parity verification started",
-    )
-    parity = verify_hot_archive_parity(
-        session_date,
-        db_path=database,
-        archive_dir=directory,
-        progress=progress,
-    )
-    if not parity.passed:
-        mismatches = [
-            item.table_name
-            for item in parity.tables
-            if not item.matches
-        ]
-        raise RuntimeError(
-            "Hot/archive evidence parity failed "
-            "before pruning: "
-            + ",".join(
-                mismatches
-            )
-        )
-    _emit_progress(
-        progress,
-        "prune: hot/archive exact parity verification PASS",
-    )
-
     db_size_before = (
         database.stat().st_size
     )
@@ -2135,6 +2107,38 @@ def prune_research_session(
             "prune: write transaction acquired",
         )
         try:
+            # Hold the SQLite write reservation while proving hot/cold
+            # equivalence. This closes the parity-to-delete TOCTOU window:
+            # other readers remain possible in WAL mode, but no other writer
+            # can change the hot evidence after this proof and before commit.
+            _emit_progress(
+                progress,
+                "prune: locked hot/archive exact parity verification started",
+            )
+            parity = verify_hot_archive_parity(
+                session_date,
+                db_path=database,
+                archive_dir=directory,
+                progress=progress,
+            )
+            if not parity.passed:
+                mismatches = [
+                    item.table_name
+                    for item in parity.tables
+                    if not item.matches
+                ]
+                raise RuntimeError(
+                    "Hot/archive evidence parity failed "
+                    "under write reservation: "
+                    + ",".join(
+                        mismatches
+                    )
+                )
+            _emit_progress(
+                progress,
+                "prune: locked hot/archive exact parity verification PASS",
+            )
+
             plan = _build_plan_from_connection(
                 conn,
                 database=database,
