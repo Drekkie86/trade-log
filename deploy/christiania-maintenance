@@ -52,6 +52,29 @@ unit_is_active() {
   systemctl is-active --quiet "$1"
 }
 
+unit_is_busy() {
+  local unit="$1"
+  local active_state
+
+  active_state="$(
+    systemctl show \
+      --property=ActiveState \
+      --value \
+      "${unit}" \
+      2>/dev/null \
+      || true
+  )"
+
+  case "${active_state}" in
+    active|activating|reloading|deactivating)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 unit_state() {
   local unit="$1"
   local load_state
@@ -231,8 +254,8 @@ enter_maintenance() {
   done
 
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    if unit_is_active "${unit}"; then
-      fail "one-shot maintenance service is already active; refusing to interrupt it: ${unit}"
+    if unit_is_busy "${unit}"; then
+      fail "one-shot maintenance service is already busy; refusing to interrupt it: ${unit}"
     fi
   done
 
@@ -260,8 +283,8 @@ enter_maintenance() {
   # manually started after scheduling timers were stopped but before the
   # maintenance window would otherwise be declared open.
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    if unit_is_active "${unit}"; then
-      fail "one-shot maintenance service became active while entering maintenance: ${unit}"
+    if unit_is_busy "${unit}"; then
+      fail "one-shot maintenance service became busy while entering maintenance: ${unit}"
     fi
   done
 
@@ -365,8 +388,8 @@ rehearse_maintenance() {
   done
 
   for unit in "${QUIESCE_ONESHOT_SERVICES[@]}"; do
-    if unit_is_active "${unit}"; then
-      fail "${unit} became active during rehearsal maintenance window"
+    if unit_is_busy "${unit}"; then
+      fail "${unit} became busy during rehearsal maintenance window"
     fi
   done
 
