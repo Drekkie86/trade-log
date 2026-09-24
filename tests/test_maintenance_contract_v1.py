@@ -154,3 +154,98 @@ def test_maintenance_state_acquisition_is_atomic():
         "maintenance state was claimed concurrently"
         in script
     )
+
+
+
+def test_maintenance_rehearsal_is_fail_safe_and_non_destructive():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "rehearse_maintenance()"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_START"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_QUIESCENCE_PASS"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+        in script
+    )
+
+    rehearsal_start = script.index(
+        "rehearse_maintenance()"
+    )
+    show_status = script.index(
+        "show_status()"
+    )
+    rehearsal = script[
+        rehearsal_start:
+        show_status
+    ]
+
+    assert (
+        "enter_maintenance"
+        in rehearsal
+    )
+    assert (
+        "exit_maintenance"
+        in rehearsal
+    )
+    assert (
+        "restore_rehearsal_on_failure"
+        in rehearsal
+    )
+    assert (
+        "christiania-status --deployment-safe"
+        in rehearsal
+    )
+
+    forbidden = (
+        "sqlite3 ",
+        "archive-prune",
+        "VACUUM",
+        "wal_checkpoint",
+        "DELETE FROM",
+    )
+
+    assert not any(
+        token in rehearsal
+        for token in forbidden
+    )
+
+
+def test_maintenance_rehearsal_checks_quiescence_and_theta():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    rehearsal_start = script.index(
+        "rehearse_maintenance()"
+    )
+    show_status = script.index(
+        "show_status()"
+    )
+    rehearsal = script[
+        rehearsal_start:
+        show_status
+    ]
+
+    assert (
+        "remained active during rehearsal"
+        in rehearsal
+    )
+    assert (
+        "christiania-theta.service stopped during rehearsal"
+        in rehearsal
+    )
+    assert (
+        'state_contains SERVICE "${SECURE_EDGE_SERVICE}"'
+        in rehearsal
+    )
