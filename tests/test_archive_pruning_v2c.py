@@ -12,6 +12,7 @@ from src.database.repository import (
 )
 from src.operations.archive_pruning import (
     DELETE_TRIGGER_BY_TABLE,
+    _delete_reference_safe_rows,
     plan_prune_session,
     prune_research_session,
 )
@@ -698,6 +699,7 @@ def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
         conn,
         *,
         progress=None,
+        batch_rows=None,
     ):
         assert conn.in_transaction is True
 
@@ -763,3 +765,240 @@ def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
             assert row[0] == table_name
     finally:
         conn.close()
+
+
+
+def test_chunked_delete_reports_exact_batches() -> None:
+    conn = sqlite3.connect(
+        ":memory:",
+        isolation_level=None,
+    )
+
+    target_to_temp = {
+        "local_surface_residual_v2_observations":
+            "_delete_surface_obs",
+        "hypothesis_scanner_evaluations":
+            "_delete_scanner_evals",
+        "provider_model_observations":
+            "_delete_provider_models",
+        "provider_observation_availability":
+            "_delete_provider_availability",
+        "listing_reference_contracts":
+            "_delete_listing_refs",
+        "option_quotes":
+            "_delete_option_quotes",
+    }
+
+    try:
+        for (
+            table_name,
+            temp_table,
+        ) in target_to_temp.items():
+            conn.execute(
+                f"""
+                CREATE TABLE {table_name}(
+                    id INTEGER PRIMARY KEY
+                );
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE TEMP TABLE {temp_table}(
+                    id INTEGER PRIMARY KEY
+                ) WITHOUT ROWID;
+                """
+            )
+
+            conn.executemany(
+                f"""
+                INSERT INTO {table_name}(id)
+                VALUES(?);
+                """,
+                (
+                    (value,)
+                    for value
+                    in range(
+                        1,
+                        6,
+                    )
+                ),
+            )
+
+            conn.executemany(
+                f"""
+                INSERT INTO {temp_table}(id)
+                VALUES(?);
+                """,
+                (
+                    (value,)
+                    for value
+                    in range(
+                        1,
+                        6,
+                    )
+                ),
+            )
+
+        conn.execute(
+            "BEGIN IMMEDIATE;"
+        )
+
+        progress = []
+
+        (
+            deleted,
+            batches,
+        ) = _delete_reference_safe_rows(
+            conn,
+            progress=progress.append,
+            batch_rows=2,
+        )
+
+        assert all(
+            value == 5
+            for value
+            in deleted.values()
+        )
+
+        assert all(
+            value == 3
+            for value
+            in batches.values()
+        )
+
+        assert conn.in_transaction is True
+
+        conn.execute(
+            "ROLLBACK;"
+        )
+
+        for table_name in target_to_temp:
+            remaining = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM {table_name};
+                    """
+                ).fetchone()[0]
+            )
+            assert remaining == 5
+
+        assert any(
+            "batch=3 rows=1 total=5/5"
+            in message
+            for message
+            in progress
+        )
+    finally:
+        conn.close()
+
+
+def test_prune_plan_blocks_missing_parent_fk_index(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _manifest_path,
+        _proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        conn.execute(
+            """
+            DROP INDEX
+            idx_shadow_candidates_reference_contract;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert plan.apply_eligible is False
+    assert (
+        plan.foreign_key_index_state
+        == "FAIL"
+    )
+    assert (
+        "shadow_candidates"
+        "(reference_contract_id)"
+        "->listing_reference_contracts(id)"
+        in plan.missing_foreign_key_indexes
+    )
+    assert any(
+        blocker.startswith(
+            "PRUNE_PARENT_FK_INDEX_MISSING:"
+        )
+        for blocker
+        in plan.blockers
+    )
+
+
+def test_prune_receipt_records_delete_batching(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _manifest_path,
+        proof_path,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    proof = load_remote_archive_proof(
+        proof_path
+    )
+
+    monkeypatch.setattr(
+        "src.operations.archive_pruning.verify_remote_archive_proof",
+        lambda path, **kwargs: proof,
+    )
+
+    receipt = prune_research_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+        confirm_session=
+            manifest.session_date,
+        delete_batch_rows=1,
+    )
+
+    assert (
+        receipt.delete_batch_rows
+        == 1
+    )
+
+    assert (
+        receipt.delete_batches[
+            "option_quotes"
+        ]
+        == 1
+    )
