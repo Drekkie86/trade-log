@@ -11,6 +11,10 @@ from src.database.repository import (
 
 
 PRUNE_PARENT_TABLES = (
+    "local_surface_residual_v2_observations",
+    "hypothesis_scanner_evaluations",
+    "provider_model_observations",
+    "provider_observation_availability",
     "listing_reference_contracts",
     "option_quotes",
 )
