@@ -154,3 +154,78 @@ def test_maintenance_state_acquisition_is_atomic():
         "maintenance state was claimed concurrently"
         in script
     )
+
+
+def test_maintenance_rehearsal_uses_canonical_enter_exit_and_recovery():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    assert (
+        "rehearse_maintenance()"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_START"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_QUIESCE_PASS"
+        in script
+    )
+    assert (
+        "CHRISTIANIA_MAINTENANCE_REHEARSAL_PASS"
+        in script
+    )
+
+    rehearsal = script[
+        script.index(
+            "rehearse_maintenance()"
+        ):
+        script.index(
+            "show_status()"
+        )
+    ]
+
+    assert "enter_maintenance" in rehearsal
+    assert "exit_maintenance" in rehearsal
+    assert (
+        "rehearsal_restore_on_failure"
+        in rehearsal
+    )
+    assert (
+        "trap rehearsal_restore_on_failure ERR INT TERM HUP"
+        in rehearsal
+    )
+
+
+def test_maintenance_rehearsal_checks_theta_and_all_quiesced_classes():
+    script = _read(
+        "deploy/christiania-maintenance"
+    )
+
+    rehearsal = script[
+        script.index(
+            "rehearse_maintenance()"
+        ):
+        script.index(
+            "show_status()"
+        )
+    ]
+
+    assert (
+        'for unit in "${DB_CONSUMER_SERVICES[@]}"; do'
+        in rehearsal
+    )
+    assert (
+        '"${QUIESCE_TIMER_UNITS[@]}" "${QUIESCE_ONESHOT_SERVICES[@]}"'
+        in rehearsal
+    )
+    assert (
+        'unit_is_active "${SECURE_EDGE_SERVICE}"'
+        in rehearsal
+    )
+    assert (
+        "christiania-theta.service"
+        in rehearsal
+    )
