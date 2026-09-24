@@ -10,8 +10,13 @@ import pytest
 from src.database.repository import (
     create_market_snapshot,
 )
+from src.operations.archive_analytics import (
+    parity_receipt_path,
+    verify_archive_session_parity,
+)
 from src.operations.archive_pruning import (
     DELETE_TRIGGER_BY_TABLE,
+    _delete_table_in_batches,
     plan_prune_session,
     prune_research_session,
 )
@@ -397,6 +402,13 @@ def _prepare_archive_and_proof(
     proof_path = _write_remote_proof(
         manifest_path
     )
+
+    verify_archive_session_parity(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
     return (
         manifest,
         manifest_path,
@@ -554,6 +566,21 @@ def test_prune_apply_revalidates_archive_restores_triggers_and_fk(
     assert (
         receipt.foreign_key_check
         == "ok"
+    )
+    assert (
+        receipt.parity_state
+        == "HOT_COLD_CONTENT_PARITY_VERIFIED"
+    )
+    assert (
+        receipt.prune_fk_index_state
+        == "PASS"
+    )
+    assert receipt.delete_batch_size > 0
+    assert (
+        len(
+            receipt.parity_receipt_sha256
+        )
+        == 64
     )
 
     conn = sqlite3.connect(
@@ -761,5 +788,230 @@ def test_prune_interrupt_after_sqlite_auto_rollback_preserves_original_error(
 
             assert row is not None
             assert row[0] == table_name
+    finally:
+        conn.close()
+
+
+
+def test_prune_plan_blocks_without_hot_cold_parity_receipt(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        manifest_path,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    receipt_path = (
+        parity_receipt_path(
+            manifest_path
+        )
+    )
+
+    receipt_path.unlink()
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert plan.parity_verified is False
+    assert plan.apply_eligible is False
+    assert any(
+        blocker.startswith(
+            "HOT_COLD_PARITY_NOT_VERIFIED:"
+        )
+        for blocker in plan.blockers
+    )
+
+
+def test_prune_plan_blocks_if_fk_support_index_regresses(
+    db_path,
+    tmp_path,
+    monkeypatch,
+):
+    archive_dir = (
+        tmp_path
+        / "archives"
+    )
+
+    (
+        manifest,
+        _,
+        _,
+    ) = _prepare_archive_and_proof(
+        db_path,
+        archive_dir,
+        monkeypatch,
+    )
+
+    conn = sqlite3.connect(
+        db_path
+    )
+    try:
+        conn.execute(
+            """
+            DROP INDEX
+            idx_surface_v2_reference_contract;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plan = plan_prune_session(
+        manifest.session_date,
+        db_path=db_path,
+        archive_dir=archive_dir,
+    )
+
+    assert (
+        plan.prune_fk_index_state
+        == "FAIL"
+    )
+    assert plan.apply_eligible is False
+    assert any(
+        blocker.startswith(
+            "PRUNE_FK_INDEX_MISSING:"
+        )
+        for blocker in plan.blockers
+    )
+
+
+def test_delete_table_batches_report_real_row_progress_and_complete_atomically(
+    tmp_path,
+):
+    path = (
+        tmp_path
+        / "batch-delete.db"
+    )
+
+    conn = sqlite3.connect(
+        path,
+        isolation_level=None,
+    )
+
+    try:
+        conn.execute(
+            """
+            CREATE TABLE batch_target(
+                id INTEGER PRIMARY KEY
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TEMP TABLE batch_ids(
+                id INTEGER PRIMARY KEY
+            ) WITHOUT ROWID;
+            """
+        )
+
+        rows = [
+            (
+                value,
+            )
+            for value
+            in range(
+                1,
+                2506,
+            )
+        ]
+
+        conn.executemany(
+            """
+            INSERT INTO batch_target(id)
+            VALUES(?);
+            """,
+            rows,
+        )
+        conn.executemany(
+            """
+            INSERT INTO batch_ids(id)
+            VALUES(?);
+            """,
+            rows,
+        )
+
+        progress = []
+
+        conn.execute(
+            "BEGIN IMMEDIATE;"
+        )
+
+        deleted = (
+            _delete_table_in_batches(
+                conn,
+                table_name="batch_target",
+                temp_table="batch_ids",
+                batch_size=1000,
+                progress=progress.append,
+            )
+        )
+
+        assert deleted == 2505
+
+        remaining_inside = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM batch_target;
+                """
+            ).fetchone()[0]
+        )
+
+        assert remaining_inside == 0
+
+        conn.execute(
+            "ROLLBACK;"
+        )
+
+        restored = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM batch_target;
+                """
+            ).fetchone()[0]
+        )
+
+        assert restored == 2505
+
+        assert any(
+            "rows=1000/2505"
+            in message
+            for message
+            in progress
+        )
+        assert any(
+            "rows=2000/2505"
+            in message
+            for message
+            in progress
+        )
+        assert any(
+            "rows=2505/2505"
+            in message
+            for message
+            in progress
+        )
+        assert any(
+            "batches=3"
+            in message
+            for message
+            in progress
+        )
     finally:
         conn.close()
