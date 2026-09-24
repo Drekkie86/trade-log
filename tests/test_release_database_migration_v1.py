@@ -404,3 +404,52 @@ def test_release_migration_capacity_same_filesystem_accounts_for_all_headroom(
         ]
         == 1_700
     )
+
+
+
+def test_release_migration_headroom_setting_cannot_weaken_default(
+    monkeypatch,
+):
+    logical = (
+        30
+        * 1024**3
+    )
+
+    built_in = max(
+        release_db.DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES,
+        int(
+            logical
+            * release_db.DEFAULT_RELEASE_MIGRATION_EXTRA_HEADROOM_FRACTION
+        ),
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES",
+        "0",
+    )
+
+    assert (
+        release_db._release_migration_extra_headroom_bytes(
+            logical
+        )
+        == built_in
+    )
+
+    raised = (
+        built_in
+        + 12345
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_RELEASE_MIGRATION_EXTRA_HEADROOM_BYTES",
+        str(
+            raised
+        ),
+    )
+
+    assert (
+        release_db._release_migration_extra_headroom_bytes(
+            logical
+        )
+        == raised
+    )
