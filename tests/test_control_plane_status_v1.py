@@ -481,6 +481,9 @@ def test_control_plane_status_fails_missing_release_identity(
             service_state=(
                 _active
             ),
+            service_enabled=(
+                lambda unit: "disabled"
+            ),
             now=NOW,
         )
     )
