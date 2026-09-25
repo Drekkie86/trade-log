@@ -15,7 +15,7 @@ UI_ENV_ROOT="/etc/christiania-ui"
 UI_ENV_FILE="${UI_ENV_ROOT}/christiania.env"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-for required in python3 rsync systemctl useradd usermod groupadd getent install git; do
+for required in python3 rsync systemctl useradd usermod groupadd getent grep install git; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     echo "Required command not found: ${required}" >&2
     exit 3
