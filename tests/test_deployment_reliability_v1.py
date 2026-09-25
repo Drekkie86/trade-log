@@ -478,29 +478,22 @@ def test_systemd_app_has_explicit_restart_limits():
     assert "StartLimitBurst=5" in unit
     assert "Restart=on-failure" in unit
 
-def test_streamlit_runs_as_separate_readonly_ui_identity():
+def test_streamlit_runs_under_proven_backend_identity():
     unit = (
         ROOT
         / "deploy/systemd/christiania-app.service"
     ).read_text(encoding="utf-8")
 
-    assert "User=christiania-ui" in unit
-    assert "Group=christiania-runtime" in unit
+    assert "User=christiania" in unit
+    assert "Group=christiania" in unit
     assert (
-        "EnvironmentFile=/etc/christiania-ui/christiania.env"
+        "EnvironmentFile=/etc/christiania/christiania.env"
         in unit
     )
-    assert (
-        "Environment=CHRISTIANIA_DISABLE_LOCAL_ENV_FALLBACK=1"
-        in unit
-    )
-    assert "ReadOnlyPaths=/var/lib/christiania" in unit
-    assert "ReadWritePaths=/var/lib/christiania" not in unit
-    assert "ProtectProc=invisible" in unit
-    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" in unit
-    assert "IPAddressDeny=any" in unit
-    assert "IPAddressAllow=localhost" in unit
-    assert "InaccessiblePaths=/etc/christiania" in unit
+    assert "ReadWritePaths=/var/lib/christiania/data" in unit
+    assert "User=christiania-ui" not in unit
+    assert "Group=christiania-runtime" not in unit
+    assert "IPAddressDeny=any" not in unit
 
 
 def test_runtime_identity_provisioning_shares_only_read_surfaces():
@@ -553,7 +546,7 @@ def test_clean_installer_uses_locked_runtime_and_checks_dependency_health():
     assert 'LC_ALL=C sort -f' in installer
 
 
-def test_quality_gate_verifies_lock_resolution_and_live_wal_ui_read():
+def test_quality_gate_verifies_runtime_lock_without_deferred_ui_rehearsal():
     workflow = (
         ROOT
         / ".github/workflows/quality-gate.yml"
@@ -563,8 +556,7 @@ def test_quality_gate_verifies_lock_resolution_and_live_wal_ui_read():
     assert "committed-runtime-lock-linux-py313.txt" in workflow
     assert "resolved-runtime-lock-linux-py313.txt" in workflow
     assert "diff -u" in workflow
-    assert "Prove real Christiania readonly helper under provisioned UI" in workflow
-    assert 'sudo -u "${ui_user}"' in workflow
+    assert "Prove real Christiania readonly helper under provisioned UI" not in workflow
 
 def test_clean_installer_prefers_python_313_without_replacing_system_python():
     installer = (
