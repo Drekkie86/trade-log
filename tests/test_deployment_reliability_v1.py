@@ -523,6 +523,8 @@ def test_runtime_identity_provisioning_shares_only_read_surfaces():
     assert '"${STATE_ROOT}/evidence-archives"' not in script
     assert "chgrp -R" in script
     assert "--groups \"\"" in script
+    assert "chmod u=rwx,g=rx,o=" in script
+    assert "chmod u=rw,g=r,o=" in script
     assert "g+s" in script
 
 
@@ -576,3 +578,14 @@ def test_clean_installer_prefers_python_313_without_replacing_system_python():
     assert '"${PYTHON_BIN}" -m venv "${APP_DIR}/.venv"' in installer
     assert "update-alternatives" not in installer
     assert "/usr/bin/python3" not in installer
+
+def test_runtime_identity_provisioning_removes_preexisting_group_write_bits():
+    script = (
+        ROOT
+        / "deploy/provision_runtime_identities.sh"
+    ).read_text(encoding="utf-8")
+
+    # The provisioning pass must converge existing files to group read-only,
+    # not merely add read permission and leave an old group-write bit intact.
+    assert "chmod u=rw,g=r,o=" in script
+    assert "chmod u+rw,g+r,o-rwx" not in script
