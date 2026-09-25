@@ -563,7 +563,7 @@ def test_quality_gate_verifies_lock_resolution_and_live_wal_ui_read():
     assert "committed-runtime-lock-linux-py313.txt" in workflow
     assert "resolved-runtime-lock-linux-py313.txt" in workflow
     assert "diff -u" in workflow
-    assert "Prove provisioned UI can read a live WAL database" in workflow
+    assert "Prove real Christiania readonly helper under provisioned UI" in workflow
     assert 'sudo -u "${ui_user}"' in workflow
 
 def test_clean_installer_prefers_python_313_without_replacing_system_python():
