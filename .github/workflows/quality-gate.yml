@@ -103,10 +103,14 @@ jobs:
           fi
           grep -vE '^[[:space:]]*(#|$)' \
             requirements-lock-linux-py313.txt \
+            | LC_ALL=C sort -f \
             > committed-runtime-lock-linux-py313.txt
+          LC_ALL=C sort -f \
+            runtime-lock-linux-py313.txt \
+            > resolved-runtime-lock-linux-py313.txt
           diff -u \
             committed-runtime-lock-linux-py313.txt \
-            runtime-lock-linux-py313.txt
+            resolved-runtime-lock-linux-py313.txt
 
       - name: Upload resolved Linux runtime
         uses: actions/upload-artifact@v4
@@ -124,6 +128,131 @@ jobs:
           bash -n deploy/provision_runtime_identities.sh
           test -x deploy/christiania-maintenance
           bash -n deploy/christiania-maintenance
+
+      - name: Prove read-only UI can read a live WAL database
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tmp="$(mktemp -d)"
+          runtime_group="christiania-runtime-ci"
+          ui_user="christiania-ui-ci"
+          writer_pid=""
+
+          cleanup() {
+            if [[ -n "${writer_pid}" ]]; then
+              kill "${writer_pid}" >/dev/null 2>&1 || true
+              wait "${writer_pid}" >/dev/null 2>&1 || true
+            fi
+            sudo userdel "${ui_user}" >/dev/null 2>&1 || true
+            sudo groupdel "${runtime_group}" >/dev/null 2>&1 || true
+            rm -rf "${tmp}"
+          }
+          trap cleanup EXIT
+
+          sudo groupadd --system "${runtime_group}"
+          sudo useradd \
+            --system \
+            --no-create-home \
+            --shell /usr/sbin/nologin \
+            --gid "${runtime_group}" \
+            "${ui_user}"
+
+          sudo chown "${USER}:${runtime_group}" "${tmp}"
+          sudo chmod 0750 "${tmp}"
+
+          db="${tmp}/live.db"
+
+          DB="${db}" READY="${tmp}/ready" python - <<'PY' &
+          import os
+          import sqlite3
+          import time
+          from pathlib import Path
+
+          database = Path(os.environ["DB"])
+          ready = Path(os.environ["READY"])
+
+          connection = sqlite3.connect(database)
+          connection.execute("PRAGMA journal_mode=WAL;")
+          connection.execute("PRAGMA wal_autocheckpoint=0;")
+          connection.execute(
+              "CREATE TABLE evidence(value INTEGER NOT NULL);"
+          )
+          connection.execute(
+              "INSERT INTO evidence(value) VALUES (42);"
+          )
+          connection.commit()
+          ready.write_text("ready", encoding="utf-8")
+
+          try:
+              time.sleep(60)
+          finally:
+              connection.close()
+          PY
+          writer_pid="$!"
+
+          for _ in $(seq 1 100); do
+            if [[ -f "${tmp}/ready" ]]; then
+              break
+            fi
+            sleep 0.1
+          done
+
+          test -f "${tmp}/ready"
+          test -f "${db}-wal"
+          test -f "${db}-shm"
+
+          sudo chgrp "${runtime_group}" \
+            "${db}" \
+            "${db}-wal" \
+            "${db}-shm"
+          sudo chmod 0640 \
+            "${db}" \
+            "${db}-wal" \
+            "${db}-shm"
+
+          sudo -u "${ui_user}" \
+            env DB="${db}" \
+            python - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          database = Path(os.environ["DB"])
+
+          if os.access(database, os.W_OK):
+              raise SystemExit(
+                  "UI identity unexpectedly has DB write access."
+              )
+          if os.access(database.parent, os.W_OK):
+              raise SystemExit(
+                  "UI identity unexpectedly has directory write access."
+              )
+
+          connection = sqlite3.connect(
+              database.resolve().as_uri() + "?mode=ro",
+              uri=True,
+              timeout=5.0,
+          )
+          try:
+              count = connection.execute(
+                  "SELECT COUNT(*) FROM evidence;"
+              ).fetchone()[0]
+              journal_mode = connection.execute(
+                  "PRAGMA journal_mode;"
+              ).fetchone()[0]
+          finally:
+              connection.close()
+
+          if count != 1:
+              raise SystemExit(
+                  f"Unexpected evidence row count: {count}"
+              )
+          if str(journal_mode).lower() != "wal":
+              raise SystemExit(
+                  f"Unexpected journal mode: {journal_mode}"
+              )
+          PY
 
       - name: Run release safety regressions
         shell: bash
