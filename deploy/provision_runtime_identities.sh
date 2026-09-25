@@ -62,11 +62,12 @@ do
 
   find "${directory}" \
     -type d \
-    -exec chmod u+rwx,g+rx,o-rwx,g+s {} +
+    -exec chmod u=rwx,g=rx,o= {} + \
+    -exec chmod g+s {} +
 
   find "${directory}" \
     -type f \
-    -exec chmod u+rw,g+r,o-rwx {} +
+    -exec chmod u=rw,g=r,o= {} +
 done
 
 echo "Christiania runtime identities provisioned."
