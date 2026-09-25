@@ -7,16 +7,16 @@ from src.research.decision_discipline_runtime_v1 import load_decision_discipline
 from src.research.decision_discipline_v1 import DecisionEvidence, evaluate_manual_review_eligibility
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def _cached_decision_discipline_runtime():
-    return load_decision_discipline_runtime()
-
 
 st.set_page_config(
     page_title="Christiania — Decision & Discipline",
     page_icon="🧭",
     layout="wide",
 )
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _cached_decision_discipline_runtime():
+    return load_decision_discipline_runtime()
 
 st.title("Christiania — Decision Engine & Discipline Leakage")
 st.caption(
