@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from src.database.repository import resolve_db_path
+from src.operations.market_calendar import advance_market_sessions
 from src.operations.sqlite_runtime import open_readonly_connection
 from src.quant.forecast_validation import tournament
 from src.quant.types import QuantInputError
@@ -205,9 +206,22 @@ def _matched_surface_iv(conn, *, underlying: str, horizon_days: int) -> tuple[st
 
     if not buckets:
         return None, None, None
+
+    target_session_date = advance_market_sessions(
+        session_date,
+        horizon_days,
+    )
     expiration = min(
         buckets,
-        key=lambda item: (abs((date.fromisoformat(item) - session_date).days - horizon_days), item),
+        key=lambda item: (
+            abs(
+                (
+                    date.fromisoformat(item)
+                    - target_session_date
+                ).days
+            ),
+            item,
+        ),
     )
     dte = (date.fromisoformat(expiration) - session_date).days
     return expiration, dte, float(median(buckets[expiration]))
@@ -359,8 +373,9 @@ def load_edge_risk_runtime(
                     underlying=underlying,
                     state="IV_FORECAST_RV_DIAGNOSTIC_AVAILABLE",
                     detail=(
-                        "Descriptive diagnostic only: near-spot median IV is matched to the closest available "
-                        "expiration, then compared with the historically best QLIKE forecast model."
+                        "Descriptive diagnostic only: near-spot median IV is matched to the expiration closest "
+                        "to the forecast target trading session, then compared with the historically best QLIKE "
+                        "forecast model."
                     ),
                     session_price_count=len(prices),
                     return_count=len(returns),
