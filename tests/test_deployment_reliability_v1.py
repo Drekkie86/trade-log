@@ -563,3 +563,16 @@ def test_quality_gate_verifies_lock_resolution_and_live_wal_ui_read():
     assert "diff -u" in workflow
     assert "Prove provisioned UI can read a live WAL database" in workflow
     assert 'sudo -u "${ui_user}"' in workflow
+
+def test_clean_installer_prefers_python_313_without_replacing_system_python():
+    installer = (
+        ROOT
+        / "deploy/install_one_vm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "resolve_python_313()" in installer
+    assert "for candidate in python3.13 python3; do" in installer
+    assert 'PYTHON_BIN="$(resolve_python_313)"' in installer
+    assert '"${PYTHON_BIN}" -m venv "${APP_DIR}/.venv"' in installer
+    assert "update-alternatives" not in installer
+    assert "/usr/bin/python3" not in installer
