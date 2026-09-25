@@ -97,7 +97,7 @@ def _create_database(path, *, normalized_view: bool) -> None:
         conn.close()
 
 
-def test_readonly_connection_normalizes_legacy_and_intrinsic_admission_rows(
+def test_readonly_connection_requires_explicit_normalized_admission_view(
     tmp_path,
 ):
     db = tmp_path / "normalized.db"
@@ -105,11 +105,17 @@ def test_readonly_connection_normalizes_legacy_and_intrinsic_admission_rows(
 
     conn = open_readonly_connection(db)
     try:
-        unqualified = conn.execute(
-            "SELECT id, bankroll_cap_eur_minor FROM shadow_admission_decisions ORDER BY id;"
+        historical_unqualified = conn.execute(
+            "SELECT id, bankroll_cap_eur_minor "
+            "FROM shadow_admission_decisions ORDER BY id;"
         ).fetchall()
-        historical_only = conn.execute(
+        historical_qualified = conn.execute(
             "SELECT id FROM main.shadow_admission_decisions ORDER BY id;"
+        ).fetchall()
+        normalized = conn.execute(
+            "SELECT decision_id, bankroll_cap_eur_minor "
+            "FROM v_shadow_admission_decisions_all "
+            "ORDER BY decision_id;"
         ).fetchall()
         temp_object = conn.execute(
             """
@@ -122,16 +128,19 @@ def test_readonly_connection_normalizes_legacy_and_intrinsic_admission_rows(
     finally:
         conn.close()
 
-    assert [(row[0], row[1]) for row in unqualified] == [
+    assert [(row[0], row[1]) for row in historical_unqualified] == [
+        (1, 50000),
+    ]
+    assert [row[0] for row in historical_qualified] == [1]
+    assert [(row[0], row[1]) for row in normalized] == [
         (1, 50000),
         (2, None),
     ]
-    assert [row[0] for row in historical_only] == [1]
-    assert temp_object[0] == "view"
+    assert temp_object is None
     assert query_only == 1
 
 
-def test_readonly_connection_is_noop_without_normalized_v29_view(tmp_path):
+def test_readonly_connection_keeps_legacy_table_historical_without_normalized_view(tmp_path):
     db = tmp_path / "legacy.db"
     _create_database(db, normalized_view=False)
 
@@ -154,14 +163,14 @@ def test_readonly_connection_is_noop_without_normalized_v29_view(tmp_path):
     assert temp_object is None
 
 
-def test_database_health_still_operates_with_readonly_compatibility_view(tmp_path):
+def test_database_health_operates_with_persistent_normalized_view(tmp_path):
     db = tmp_path / "health.db"
     _create_database(db, normalized_view=True)
 
     health = inspect_database(db)
 
-    # This fixture intentionally models a v29 database to prove the v29
-    # compatibility view remains readable even after later repository schemas.
+    # This fixture intentionally models a v29 database to prove health checks
+    # remain read-only while the persistent normalized view is present.
     assert health.exists is True
     assert health.schema_version == 29
     assert health.expected_schema_version == EXPECTED_SCHEMA_VERSION

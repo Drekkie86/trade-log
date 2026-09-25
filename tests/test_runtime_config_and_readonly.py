@@ -514,3 +514,47 @@ def test_explicit_process_setting_still_wins_when_fallback_disabled(
         )
         == "from-process.db"
     )
+
+def test_readonly_connection_uses_persistent_normalized_view_without_temp_schema(
+    db_path,
+):
+    conn = open_readonly_connection(
+        db_path
+    )
+
+    try:
+        temp_compat = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sqlite_temp_master
+            WHERE type = 'view'
+              AND name = 'shadow_admission_decisions';
+            """
+        ).fetchone()[0]
+
+        normalized_exists = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM main.sqlite_master
+            WHERE type = 'view'
+              AND name = 'v_shadow_admission_decisions_all';
+            """
+        ).fetchone()[0]
+
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM v_shadow_admission_decisions_all;
+            """
+        ).fetchone()
+
+        assert temp_compat == 0
+        assert normalized_exists == 1
+        assert (
+            conn.execute(
+                "PRAGMA query_only;"
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()

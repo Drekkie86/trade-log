@@ -326,12 +326,12 @@ def load_command_deck(
                 ) AS proposals_blocked,
                 (
                     SELECT COUNT(*)
-                    FROM shadow_admission_decisions
+                    FROM v_shadow_admission_decisions_all
                     WHERE decision = 'ADMITTED'
                 ) AS admitted_total,
                 (
                     SELECT COUNT(*)
-                    FROM shadow_admission_decisions
+                    FROM v_shadow_admission_decisions_all
                     WHERE decision = 'BLOCKED'
                 ) AS admission_blocked,
                 (
@@ -805,7 +805,7 @@ def load_command_deck(
                     rm.estimated_net_pnl_eur_minor
                         AS latest_estimated_net_pnl_eur_minor
                 FROM shadow_candidates AS sc
-                LEFT JOIN shadow_admission_decisions AS sad
+                LEFT JOIN v_shadow_admission_decisions_all AS sad
                   ON sad.candidate_id = sc.id
                  AND sad.decision = 'ADMITTED'
                 LEFT JOIN shadow_structure_proposals AS ssp
@@ -1112,7 +1112,7 @@ def load_command_deck(
                         ELSE 'FLAT'
                     END AS validated_trade_result
                 FROM shadow_candidates AS sc
-                LEFT JOIN shadow_admission_decisions AS sad
+                LEFT JOIN v_shadow_admission_decisions_all AS sad
                   ON sad.candidate_id = sc.id
                  AND sad.decision = 'ADMITTED'
                 LEFT JOIN shadow_structure_proposals AS ssp
@@ -1267,7 +1267,7 @@ def load_command_deck(
                     decision,
                     reason_code,
                     COUNT(*) AS decisions
-                FROM shadow_admission_decisions
+                FROM v_shadow_admission_decisions_all
                 GROUP BY decision, reason_code
                 ORDER BY decisions DESC, decision, reason_code;
                 '''

@@ -129,7 +129,7 @@ jobs:
           test -x deploy/christiania-maintenance
           bash -n deploy/christiania-maintenance
 
-      - name: Prove provisioned UI can read a live WAL database
+      - name: Prove real Christiania readonly helper under provisioned UI
         shell: bash
         run: |
           set -euo pipefail
@@ -235,6 +235,27 @@ jobs:
           connection.execute(
               "INSERT INTO evidence(value) VALUES (42);"
           )
+          connection.execute(
+              "CREATE TABLE schema_version(version INTEGER NOT NULL);"
+          )
+          connection.execute(
+              "INSERT INTO schema_version(version) VALUES (34);"
+          )
+          connection.execute(
+              "CREATE TABLE shadow_admission_decisions("
+              "id INTEGER PRIMARY KEY, "
+              "decision TEXT NOT NULL"
+              ");"
+          )
+          connection.execute(
+              "INSERT INTO shadow_admission_decisions(id, decision) "
+              "VALUES (1, 'ADMITTED');"
+          )
+          connection.execute(
+              "CREATE VIEW v_shadow_admission_decisions_all AS "
+              "SELECT id AS decision_id, decision "
+              "FROM shadow_admission_decisions;"
+          )
           connection.commit()
           ready.write_text("ready", encoding="utf-8")
 
@@ -256,12 +277,29 @@ jobs:
           sudo test -f "${db}-wal"
           sudo test -f "${db}-shm"
 
+          readonly_repo="${tmp}/readonly-release"
+          sudo mkdir -p "${readonly_repo}"
+          sudo cp -a src "${readonly_repo}/src"
+          sudo chmod -R a+rX "${readonly_repo}"
+          python_bin="$(command -v python)"
+
           sudo -u "${ui_user}" \
-            env DB="${db}" \
-            python - <<'PY'
+            env \
+              DB="${db}" \
+              REPO="${readonly_repo}" \
+            "${python_bin}" - <<'PY'
           import os
-          import sqlite3
+          import sys
           from pathlib import Path
+
+          sys.path.insert(
+              0,
+              os.environ["REPO"],
+          )
+
+          from src.operations.sqlite_runtime import (
+              open_readonly_connection,
+          )
 
           database = Path(os.environ["DB"])
 
@@ -274,17 +312,28 @@ jobs:
                   "UI identity unexpectedly has directory write access."
               )
 
-          connection = sqlite3.connect(
-              database.resolve().as_uri() + "?mode=ro",
-              uri=True,
-              timeout=5.0,
+          connection = open_readonly_connection(
+              database
           )
           try:
               count = connection.execute(
                   "SELECT COUNT(*) FROM evidence;"
               ).fetchone()[0]
+              normalized = connection.execute(
+                  "SELECT COUNT(*) "
+                  "FROM v_shadow_admission_decisions_all;"
+              ).fetchone()[0]
+              temp_compat = connection.execute(
+                  "SELECT COUNT(*) "
+                  "FROM sqlite_temp_master "
+                  "WHERE type = 'view' "
+                  "AND name = 'shadow_admission_decisions';"
+              ).fetchone()[0]
               journal_mode = connection.execute(
                   "PRAGMA journal_mode;"
+              ).fetchone()[0]
+              query_only = connection.execute(
+                  "PRAGMA query_only;"
               ).fetchone()[0]
           finally:
               connection.close()
@@ -293,9 +342,21 @@ jobs:
               raise SystemExit(
                   f"Unexpected evidence row count: {count}"
               )
+          if normalized != 1:
+              raise SystemExit(
+                  f"Normalized admission view returned {normalized} rows."
+              )
+          if temp_compat != 0:
+              raise SystemExit(
+                  "Read-only helper created a TEMP compatibility view."
+              )
           if str(journal_mode).lower() != "wal":
               raise SystemExit(
                   f"Unexpected journal mode: {journal_mode}"
+              )
+          if query_only != 1:
+              raise SystemExit(
+                  f"Read-only helper did not enable query_only: {query_only}"
               )
           PY
 
