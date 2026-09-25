@@ -41,6 +41,23 @@ class DatabaseHealth:
 
 
 @dataclass(frozen=True)
+class BackupCapacityPlan:
+    filesystem_total_bytes: int
+    filesystem_free_bytes: int
+    logical_source_bytes: int
+    required_free_bytes: int
+    retention: int
+    preprune_keep: int
+    current_backup_count: int
+    reclaimable_bytes: int
+    projected_free_bytes: int
+    feasible_after_safe_prune: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class BackupResult:
     source_path: str
     backup_path: str
@@ -347,6 +364,88 @@ def backup_required_free_bytes(
     return int(source_size_bytes) + reserve
 
 
+def plan_backup_capacity(
+    *,
+    source: Path,
+    target_dir: Path,
+    retention: int | None = None,
+) -> BackupCapacityPlan:
+    """Describe whether the next full backup fits after safe retention pruning."""
+    keep = (
+        retention
+        if retention is not None
+        else backup_retention_count()
+    )
+    if keep < 1:
+        raise ValueError(
+            "Backup retention must be >= 1."
+        )
+
+    usage = shutil.disk_usage(
+        target_dir
+    )
+    logical_source = (
+        backup_logical_source_bytes(
+            source
+        )
+    )
+    required = backup_required_free_bytes(
+        source_size_bytes=logical_source,
+        filesystem_total_bytes=int(
+            usage.total
+        ),
+    )
+
+    backups = sorted(
+        backup_data_files(
+            target_dir
+        ),
+        key=lambda path: (
+            path.stat().st_mtime,
+            path.name,
+        ),
+        reverse=True,
+    )
+    preprune_keep = max(
+        1,
+        keep - 1,
+    )
+    reclaimable = sum(
+        path.stat().st_size
+        for path in backups[
+            preprune_keep:
+        ]
+    )
+    projected_free = (
+        int(usage.free)
+        + reclaimable
+    )
+
+    return BackupCapacityPlan(
+        filesystem_total_bytes=int(
+            usage.total
+        ),
+        filesystem_free_bytes=int(
+            usage.free
+        ),
+        logical_source_bytes=logical_source,
+        required_free_bytes=required,
+        retention=keep,
+        preprune_keep=preprune_keep,
+        current_backup_count=len(
+            backups
+        ),
+        reclaimable_bytes=reclaimable,
+        projected_free_bytes=(
+            projected_free
+        ),
+        feasible_after_safe_prune=(
+            projected_free
+            >= required
+        ),
+    )
+
+
 def assert_backup_capacity(
     *,
     source: Path,
@@ -488,23 +587,21 @@ def create_verified_backup(
         exist_ok=True,
     )
 
-    keep = (
-        retention
-        if retention is not None
-        else backup_retention_count()
+    capacity_plan = plan_backup_capacity(
+        source=source,
+        target_dir=target_dir,
+        retention=retention,
     )
-
-    if keep < 1:
-        raise ValueError(
-            "Backup retention must be >= 1."
-        )
+    keep = capacity_plan.retention
 
     # A new full backup temporarily coexists with retained recovery points.
     # If retention is already full, waiting until after the copy to prune can
     # deadlock on disk headroom even though the oldest backup is outside the
     # intended post-create retention window. Preserve at least one known-good
     # recovery point, and otherwise make one slot before the capacity check.
-    preprune_keep = max(1, keep - 1)
+    preprune_keep = (
+        capacity_plan.preprune_keep
+    )
     prepruned = _prune_backups(
         target_dir,
         keep=preprune_keep,
