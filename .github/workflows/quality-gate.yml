@@ -87,6 +87,19 @@ jobs:
           test -x .venv/bin/python
           .venv/bin/python -m pip check
 
+      - name: Capture resolved Linux runtime
+        shell: bash
+        run: |
+          .venv/bin/python -m pip freeze > runtime-lock-linux-py313.txt
+
+      - name: Upload resolved Linux runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-lock-linux-py313
+          path: runtime-lock-linux-py313.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Validate release and maintenance shell syntax
         shell: bash
         run: |
