@@ -665,13 +665,61 @@ def load_command_deck(
                     admitted_count,
                     blocked_count,
                     outcome_mark_count,
-                    error_type
+                    error_type,
+                    evidence_json
                 FROM research_daemon_iterations
                 ORDER BY id DESC
                 LIMIT 25;
                 '''
             ).fetchall()
         )
+
+        universe_symbols: set[str] = set()
+        universe_profile = None
+        universe_size = 0
+        batch_count = 0
+        latest_batch_index = None
+        latest_batch_size = 0
+
+        for index, iteration in enumerate(recent_iterations):
+            raw_evidence = iteration.pop("evidence_json", None)
+            if not raw_evidence:
+                continue
+            try:
+                evidence = json.loads(raw_evidence)
+            except (TypeError, ValueError):
+                continue
+
+            for symbol in evidence.get("symbols") or []:
+                value = str(symbol).strip().upper()
+                if value:
+                    universe_symbols.add(value)
+
+            context = evidence.get("universe")
+            if not isinstance(context, dict):
+                continue
+
+            if index == 0:
+                universe_profile = context.get("profile")
+                universe_size = int(context.get("universe_size") or 0)
+                batch_count = int(context.get("batch_count") or 0)
+                latest_batch_index = context.get("batch_index")
+                latest_batch_size = int(context.get("batch_size") or 0)
+
+        universe_coverage = {
+            "profile": universe_profile,
+            "configured_symbols": universe_size,
+            "covered_symbols": len(universe_symbols),
+            "coverage_pct": (
+                0.0
+                if universe_size <= 0
+                else min(100.0, 100.0 * len(universe_symbols) / universe_size)
+            ),
+            "batch_count": batch_count,
+            "latest_batch_index": latest_batch_index,
+            "latest_batch_size": latest_batch_size,
+            "recent_window_iterations": len(recent_iterations),
+        }
 
         recent_anomalies = _rows_to_dicts(
             conn.execute(
@@ -1328,6 +1376,7 @@ def load_command_deck(
         "replay_outcome_recovery": replay_outcome_recovery,
         "lifecycle_health": lifecycle_health,
         "recent_iterations": recent_iterations,
+        "universe_coverage": universe_coverage,
         "recent_anomalies": recent_anomalies,
         "recent_proposals": recent_proposals,
         "recent_candidates": recent_candidates,
