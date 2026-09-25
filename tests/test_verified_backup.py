@@ -5,6 +5,7 @@ from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import (
     backup_logical_source_bytes,
     create_verified_backup,
+    plan_backup_capacity,
 )
 
 
@@ -434,3 +435,65 @@ def test_backup_retention_one_preserves_last_good_before_new_copy(
         )
 
     assert previous.read_bytes() == b"known-good"
+
+def test_backup_capacity_plan_counts_only_policy_prunable_backups(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    sizes = [
+        100,
+        200,
+        300,
+        400,
+    ]
+    for index, size in enumerate(
+        sizes
+    ):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026020{index + 1}T000000Z.db"
+        )
+        path.write_bytes(
+            b"x" * size
+        )
+        os.utime(
+            path,
+            (
+                1_700_000_000 + index,
+                1_700_000_000 + index,
+            ),
+        )
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 60 * 1024**3
+        free = 40 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    plan = plan_backup_capacity(
+        source=source,
+        target_dir=backup_dir,
+        retention=3,
+    )
+
+    # Retention 3 makes one slot by preserving the two newest files.
+    assert plan.preprune_keep == 2
+    assert plan.current_backup_count == 4
+    assert plan.reclaimable_bytes == 300
+    assert (
+        plan.projected_free_bytes
+        == Usage.free + 300
+    )
