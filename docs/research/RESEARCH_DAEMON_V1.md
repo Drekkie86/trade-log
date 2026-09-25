@@ -90,19 +90,28 @@ sampling.
 series while the older outcome table remains available for later derived
 milestones such as MFE, MAE and terminal expiry.
 
-## Data-volume perspective
+## Universe Expansion V1
 
-At the current AAPL/JPM/XOM universe, one full cycle has roughly 1,900 option
-rows.
+Christiania can now use the governed `LIQUID_US_RESEARCH_V1` profile: 48
+liquid US equity/ETF underlyings split into four deterministic 12-symbol
+batches.
 
-At 25 samples/day this is roughly 47,500 contract observations per normal
-trading day before adding model/evidence rows.
+At the normal 15-minute cadence the daemon rotates one batch per slot, so the
+full profile is covered once per hour while each individual research cycle
+remains bounded. Existing option-quality, listing completeness, spread and
+scientific filters remain unchanged; universe breadth does not grant a symbol
+or hypothesis decision authority.
 
-That is enough to begin building a serious longitudinal dataset without
-pretending that adjacent 15-minute observations are independent samples.
+Each daemon iteration records the profile, total universe size, batch index,
+batch count and sampled symbols in its append-only evidence JSON. The Research
+Command Deck reports recent universe coverage directly from that evidence.
 
-The next scale lever should primarily be **more liquid underlyings and more
-market regimes**, not blindly moving to per-second polling.
+Explicit `CHRISTIANIA_SYMBOLS` remains supported for rehearsals or deliberately
+small research runs. It is mutually exclusive with
+`CHRISTIANIA_UNIVERSE_PROFILE`.
+
+This is the preferred scale lever: **more liquid underlyings and more market
+regimes**, not blindly moving to higher-frequency polling.
 
 ## Running
 
