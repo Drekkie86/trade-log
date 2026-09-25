@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
 from src.operations.sqlite_runtime import (
     assert_backup_capacity,
     backup_logical_source_bytes,
+    backup_required_free_bytes,
     inspect_database,
     resolve_backup_dir,
 )
@@ -152,16 +154,61 @@ def _prune_release_rollback_backups(
 def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version: int) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
 
-    # Capacity must be checked against the space that will actually exist when
-    # the next rollback copy is created. Keeping all three historical rollback
-    # snapshots until after the copy can deadlock deployment once the database
-    # grows: the new copy cannot fit even though the oldest snapshot is already
-    # outside the intended post-create retention window. Preserve two existing
-    # generations, then let the newly verified snapshot become the third.
+    # Plan before deleting any recovery point. Release rollback history is
+    # stricter than normal backup retention: always preserve the newest two
+    # existing rollback snapshots, and fail without pruning anything if those
+    # protected copies still leave insufficient room for the new snapshot.
+    existing_backups = sorted(
+        backup_dir.glob(
+            "christiania_release_rollback_*.db"
+        ),
+        key=lambda path: (
+            path.stat().st_mtime,
+            path.name,
+        ),
+        reverse=True,
+    )
     preprune_keep = max(
         1,
         DEFAULT_RELEASE_ROLLBACK_RETENTION - 1,
     )
+    stale = existing_backups[
+        preprune_keep:
+    ]
+    reclaimable = sum(
+        path.stat().st_size
+        for path in stale
+    )
+    usage = shutil.disk_usage(
+        backup_dir
+    )
+    logical_source = (
+        backup_logical_source_bytes(
+            database
+        )
+    )
+    required = backup_required_free_bytes(
+        source_size_bytes=logical_source,
+        filesystem_total_bytes=int(
+            usage.total
+        ),
+    )
+    projected_free = (
+        int(usage.free)
+        + reclaimable
+    )
+
+    if projected_free < required:
+        raise RuntimeError(
+            "Insufficient release rollback headroom after all "
+            "policy-permitted pruning: "
+            f"free={int(usage.free)} bytes, "
+            f"safe_prune_reclaimable={reclaimable} bytes, "
+            f"projected_free={projected_free} bytes, "
+            f"required={required} bytes. "
+            "Existing release rollback snapshots were left untouched."
+        )
+
     prepruned = _prune_release_rollback_backups(
         backup_dir,
         keep=preprune_keep,
