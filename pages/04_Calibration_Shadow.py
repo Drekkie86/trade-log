@@ -6,16 +6,16 @@ import streamlit as st
 from src.research.prospective_shadow_runtime_v1 import load_calibration_shadow_runtime
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def _cached_calibration_shadow_runtime():
-    return load_calibration_shadow_runtime()
-
 
 st.set_page_config(
     page_title="Christiania — Calibration & Prospective Shadow",
     page_icon="🧪",
     layout="wide",
 )
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _cached_calibration_shadow_runtime():
+    return load_calibration_shadow_runtime()
 
 st.title("Christiania — Calibration & Prospective Shadow")
 st.caption(
