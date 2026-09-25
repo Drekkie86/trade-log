@@ -381,3 +381,72 @@ def test_release_rollback_capacity_is_proven_before_copy(
         "capacity",
         "copy",
     ]
+
+def test_release_rollback_preprunes_before_capacity_check(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+    backups.mkdir()
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    for index in range(3):
+        (
+            backups
+            / (
+                "christiania_release_rollback_"
+                f"2026091{index}T000000000000Z_v26.db"
+            )
+        ).write_bytes(
+            b"historical"
+        )
+
+    observed_counts: list[int] = []
+
+    def capacity(**kwargs):
+        del kwargs
+        committed = list(
+            backups.glob(
+                "christiania_release_rollback_*.db"
+            )
+        )
+        observed_counts.append(
+            len(committed)
+        )
+        assert len(committed) == 2
+
+    monkeypatch.setattr(
+        release_db,
+        "assert_backup_capacity",
+        capacity,
+    )
+
+    result = prepare_release_database(
+        migrations_dir=MIGRATIONS,
+    )
+
+    assert observed_counts == [2]
+
+    committed = list(
+        backups.glob(
+            "christiania_release_rollback_*.db"
+        )
+    )
+
+    assert len(committed) == 3
+    assert Path(result.backup_path) in committed
+
