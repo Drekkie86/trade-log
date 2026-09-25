@@ -9,6 +9,10 @@ EDGE_ENV="/etc/christiania/secure-edge.env"
 SYSTEMD_ROOT="/etc/systemd/system"
 LOCAL_BIN="/usr/local/bin"
 SERVICE_USER="christiania"
+RUNTIME_GROUP="christiania-runtime"
+UI_USER="christiania-ui"
+UI_ENV_ROOT="/etc/christiania-ui"
+UI_ENV_FILE="${UI_ENV_ROOT}/christiania.env"
 SECURE_EDGE_SERVICE="christiania-oauth2-proxy.service"
 
 CORE_SERVICES=(
@@ -364,6 +368,8 @@ for required in \
   curl \
   date \
   find \
+  getent \
+  groupadd \
   id \
   install \
   ln \
@@ -378,7 +384,9 @@ for required in \
   sudo \
   systemctl \
   tar \
-  tr; do
+  tr \
+  useradd \
+  usermod; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     fail "required command not found: ${required}"
   fi
@@ -467,6 +475,7 @@ DATABASE_PREPARED=0
 ROLLBACK_DB_VERSION=""
 ROLLBACK_DB_BACKUP=""
 TEMP_SYSTEMD_ROOT=""
+UI_ENV_TEMP=""
 ACTIVE_QUIESCE_TIMERS=()
 
 rollback() {
@@ -545,6 +554,9 @@ rollback() {
   if [[ -n "${TEMP_SYSTEMD_ROOT}" && -d "${TEMP_SYSTEMD_ROOT}" ]]; then
     rm -rf "${TEMP_SYSTEMD_ROOT}" || true
   fi
+  if [[ -n "${UI_ENV_TEMP}" && -e "${UI_ENV_TEMP}" ]]; then
+    rm -f "${UI_ENV_TEMP}" || true
+  fi
 
   systemctl daemon-reload || true
 
@@ -600,8 +612,34 @@ python3 -m venv "${RELEASE_DIR}/.venv"
 "${RELEASE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check   --no-compile   -r "${RELEASE_DIR}/requirements.txt"
 phase_done
 
-chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
+bash "${RELEASE_DIR}/deploy/provision_runtime_identities.sh"
+
+# The UI gets read-only access to application code through a dedicated runtime
+# group. Vendor assets remain on the secret-bearing backend group because a
+# legacy Theta creds.txt may live beside the JAR.
+chown -R root:"${RUNTIME_GROUP}" "${RELEASE_DIR}"
 chmod -R g+rX,o-rwx "${RELEASE_DIR}"
+if [[ -d "${RELEASE_DIR}/vendor" ]]; then
+  chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}/vendor"
+  chmod -R g+rX,o-rwx "${RELEASE_DIR}/vendor"
+fi
+
+chown root:"${RUNTIME_GROUP}" "${RELEASE_ROOT}"
+chmod 0750 "${RELEASE_ROOT}"
+
+UI_ENV_TEMP="$(mktemp)"
+"${RELEASE_DIR}/.venv/bin/python" \
+  "${RELEASE_DIR}/christiania_ui_env.py" \
+  --source "${ENV_FILE}" \
+  --output "${UI_ENV_TEMP}"
+install \
+  -m 0640 \
+  -o root \
+  -g "${RUNTIME_GROUP}" \
+  "${UI_ENV_TEMP}" \
+  "${UI_ENV_FILE}"
+rm -f "${UI_ENV_TEMP}"
+UI_ENV_TEMP=""
 
 phase_start "Validating current production deployment safety"
 if [[ "${RECOVERY_NO_SCHEMA_CHANGE}" -eq 1 ]]; then
