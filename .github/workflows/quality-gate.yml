@@ -114,6 +114,8 @@ jobs:
         shell: bash
         run: |
           bash -n deploy/receive_release.sh
+          bash -n deploy/install_one_vm.sh
+          bash -n deploy/provision_runtime_identities.sh
           test -x deploy/christiania-maintenance
           bash -n deploy/christiania-maintenance
 
