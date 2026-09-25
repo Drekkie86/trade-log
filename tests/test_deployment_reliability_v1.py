@@ -493,6 +493,9 @@ def test_streamlit_runs_as_separate_readonly_ui_identity():
     assert "ReadOnlyPaths=/var/lib/christiania" in unit
     assert "ReadWritePaths=/var/lib/christiania" not in unit
     assert "ProtectProc=invisible" in unit
+    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" in unit
+    assert "IPAddressDeny=any" in unit
+    assert "IPAddressAllow=localhost" in unit
     assert "InaccessiblePaths=/etc/christiania" in unit
 
 
@@ -515,6 +518,7 @@ def test_runtime_identity_provisioning_shares_only_read_surfaces():
     assert '"${STATE_ROOT}/release-rollbacks"' not in script
     assert '"${STATE_ROOT}/evidence-archives"' not in script
     assert "chgrp -R" in script
+    assert "--groups \"\"" in script
     assert "g+s" in script
 
 
