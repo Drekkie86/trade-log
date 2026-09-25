@@ -490,6 +490,7 @@ for required in \
   rm \
   seq \
   sha256sum \
+  sort \
   sleep \
   sudo \
   systemctl \
@@ -726,11 +727,13 @@ python3 -m venv "${RELEASE_DIR}/.venv"
   -r "${RELEASE_DIR}/requirements-lock-linux-py313.txt"
 "${RELEASE_DIR}/.venv/bin/python" -m pip check
 LOCK_ACTUAL="$(
-  "${RELEASE_DIR}/.venv/bin/python" -m pip freeze
+  "${RELEASE_DIR}/.venv/bin/python" -m pip freeze \
+    | LC_ALL=C sort -f
 )"
 LOCK_EXPECTED="$(
   grep -vE '^[[:space:]]*(#|$)' \
-    "${RELEASE_DIR}/requirements-lock-linux-py313.txt"
+    "${RELEASE_DIR}/requirements-lock-linux-py313.txt" \
+    | LC_ALL=C sort -f
 )"
 if [[ "${LOCK_ACTUAL}" != "${LOCK_EXPECTED}" ]]; then
   fail "installed Python runtime does not match requirements-lock-linux-py313.txt"
