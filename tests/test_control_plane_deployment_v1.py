@@ -411,3 +411,21 @@ def test_receiver_validates_ui_runtime_before_current_control_plane_gate():
     assert "validate_ui_readonly_runtime" in script[ui_gate:control_plane]
     assert 'sudo -u "${UI_USER}"' in script
     assert "UI runtime unexpectedly has write access" in script
+
+def test_receiver_does_not_lock_current_backend_out_of_release_root():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    assert 'chown root:"${SERVICE_USER}" "${RELEASE_ROOT}"' in script
+    assert 'chmod 0751 "${RELEASE_ROOT}"' in script
+    assert 'chown root:"${RUNTIME_GROUP}" "${RELEASE_ROOT}"' not in script
+
+    root_permission = script.index(
+        'chmod 0751 "${RELEASE_ROOT}"'
+    )
+    quiesce = script.index(
+        'phase_start "Validating current production deployment safety"'
+    )
+
+    assert root_permission < quiesce
