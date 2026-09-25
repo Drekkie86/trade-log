@@ -15,7 +15,7 @@ UI_ENV_ROOT="/etc/christiania-ui"
 UI_ENV_FILE="${UI_ENV_ROOT}/christiania.env"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-for required in python3 rsync systemctl useradd usermod groupadd getent grep install git; do
+for required in python3 rsync systemctl useradd usermod groupadd getent grep sort install git; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     echo "Required command not found: ${required}" >&2
     exit 3
@@ -58,11 +58,13 @@ python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/python" -m pip check
 
 LOCK_ACTUAL="$(
-  "${APP_DIR}/.venv/bin/python" -m pip freeze
+  "${APP_DIR}/.venv/bin/python" -m pip freeze \
+    | LC_ALL=C sort -f
 )"
 LOCK_EXPECTED="$(
   grep -vE '^[[:space:]]*(#|$)' \
-    "${APP_DIR}/requirements-lock-linux-py313.txt"
+    "${APP_DIR}/requirements-lock-linux-py313.txt" \
+    | LC_ALL=C sort -f
 )"
 if [[ "${LOCK_ACTUAL}" != "${LOCK_EXPECTED}" ]]; then
   echo "Installed Python runtime does not match requirements-lock-linux-py313.txt." >&2
