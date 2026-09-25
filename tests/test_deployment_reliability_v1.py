@@ -490,6 +490,10 @@ def test_streamlit_runs_as_separate_readonly_ui_identity():
         "EnvironmentFile=/etc/christiania-ui/christiania.env"
         in unit
     )
+    assert (
+        "Environment=CHRISTIANIA_DISABLE_LOCAL_ENV_FALLBACK=1"
+        in unit
+    )
     assert "ReadOnlyPaths=/var/lib/christiania" in unit
     assert "ReadWritePaths=/var/lib/christiania" not in unit
     assert "ProtectProc=invisible" in unit
