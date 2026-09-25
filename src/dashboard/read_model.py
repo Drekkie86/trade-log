@@ -680,8 +680,9 @@ def load_command_deck(
         batch_count = 0
         latest_batch_index = None
         latest_batch_size = 0
+        parsed_iteration_evidence: list[dict[str, Any]] = []
 
-        for index, iteration in enumerate(recent_iterations):
+        for iteration in recent_iterations:
             raw_evidence = iteration.pop("evidence_json", None)
             if not raw_evidence:
                 continue
@@ -689,22 +690,33 @@ def load_command_deck(
                 evidence = json.loads(raw_evidence)
             except (TypeError, ValueError):
                 continue
+            if isinstance(evidence, dict):
+                parsed_iteration_evidence.append(evidence)
+
+        for evidence in parsed_iteration_evidence:
+            context = evidence.get("universe")
+            if not isinstance(context, dict):
+                continue
+            universe_profile = context.get("profile")
+            universe_size = int(context.get("universe_size") or 0)
+            batch_count = int(context.get("batch_count") or 0)
+            latest_batch_index = context.get("batch_index")
+            latest_batch_size = int(context.get("batch_size") or 0)
+            break
+
+        for evidence in parsed_iteration_evidence:
+            context = evidence.get("universe")
+            if not isinstance(context, dict):
+                continue
+            if context.get("profile") != universe_profile:
+                continue
+            if int(context.get("universe_size") or 0) != universe_size:
+                continue
 
             for symbol in evidence.get("symbols") or []:
                 value = str(symbol).strip().upper()
                 if value:
                     universe_symbols.add(value)
-
-            context = evidence.get("universe")
-            if not isinstance(context, dict):
-                continue
-
-            if index == 0:
-                universe_profile = context.get("profile")
-                universe_size = int(context.get("universe_size") or 0)
-                batch_count = int(context.get("batch_count") or 0)
-                latest_batch_index = context.get("batch_index")
-                latest_batch_size = int(context.get("batch_size") or 0)
 
         universe_coverage = {
             "profile": universe_profile,
