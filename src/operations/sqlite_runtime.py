@@ -107,62 +107,6 @@ def backup_retention_count() -> int:
     return value
 
 
-def _install_readonly_compatibility_views(
-    connection: sqlite3.Connection,
-) -> None:
-    """Install connection-local compatibility views for reporting readers.
-
-    Schema v29 keeps the legacy admission table immutable for historical
-    evidence and adds a normalized view that UNIONs legacy and intrinsic-risk
-    decisions. Older dashboard/read-model SQL still refers to the historical
-    table name. A TEMP view with the same unqualified name lets those readonly
-    consumers see the normalized decision surface without changing write
-    semantics or rewriting historical rows.
-
-    Explicit ``main.shadow_admission_decisions`` continues to address the
-    historical table. Databases older than v29 do not contain the normalized
-    source view, so this helper is a no-op for release rollback/preflight use.
-    """
-    normalized = connection.execute(
-        """
-        SELECT 1
-        FROM main.sqlite_master
-        WHERE type = 'view'
-          AND name = 'v_shadow_admission_decisions_all'
-        LIMIT 1;
-        """
-    ).fetchone()
-
-    if normalized is None:
-        return
-
-    connection.execute(
-        """
-        CREATE TEMP VIEW shadow_admission_decisions AS
-        SELECT
-            decision_id AS id,
-            proposal_id,
-            fx_observation_id,
-            candidate_id,
-            sizing_policy_version,
-            cost_model_version,
-            cost_provenance,
-            proposal_max_loss_usd_minor,
-            estimated_cost_usd_minor,
-            reserved_risk_usd_minor,
-            converted_max_loss_eur_minor,
-            estimated_cost_eur_minor,
-            reserved_risk_eur_minor,
-            bankroll_cap_eur_minor,
-            decision,
-            reason_code,
-            decided_at,
-            evidence_json
-        FROM main.v_shadow_admission_decisions_all;
-        """
-    )
-
-
 def open_readonly_connection(
     db_path: str | Path | None = None,
 ) -> sqlite3.Connection:
@@ -182,12 +126,9 @@ def open_readonly_connection(
     )
     connection.row_factory = sqlite3.Row
 
-    # TEMP compatibility objects must be installed before query_only is set.
-    # They are connection-local and never alter the persistent database.
-    _install_readonly_compatibility_views(
-        connection
-    )
-
+    # Read-only means no schema mutation at all, including TEMP objects.
+    # Read models must target persistent compatibility/normalized views
+    # explicitly rather than relying on connection-local shims.
     connection.execute(
         "PRAGMA query_only = ON;"
     )
