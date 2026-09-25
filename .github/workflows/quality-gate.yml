@@ -280,10 +280,16 @@ jobs:
           sudo -u "${ui_user}" \
             env \
               DB="${db}" \
-              PYTHONPATH="${GITHUB_WORKSPACE}" \
-            .venv/bin/python - <<'PY'
+              REPO="${GITHUB_WORKSPACE}" \
+            "${GITHUB_WORKSPACE}/.venv/bin/python" - <<'PY'
           import os
+          import sys
           from pathlib import Path
+
+          sys.path.insert(
+              0,
+              os.environ["REPO"],
+          )
 
           from src.operations.sqlite_runtime import (
               open_readonly_connection,
