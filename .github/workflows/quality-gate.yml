@@ -87,10 +87,20 @@ jobs:
           test -x .venv/bin/python
           .venv/bin/python -m pip check
 
-      - name: Capture resolved Linux runtime
+      - name: Resolve clean Linux production runtime
         shell: bash
         run: |
-          .venv/bin/python -m pip freeze > runtime-lock-linux-py313.txt
+          python -m venv .runtime-lock-venv
+          .runtime-lock-venv/bin/python -m pip install \
+            --disable-pip-version-check \
+            --no-compile \
+            -r requirements.txt
+          .runtime-lock-venv/bin/python -m pip check
+          .runtime-lock-venv/bin/python -m pip freeze > runtime-lock-linux-py313.txt
+          if grep -Eiq '^(pytest|pluggy|iniconfig)==' runtime-lock-linux-py313.txt; then
+            echo "Production runtime lock unexpectedly contains CI-only dependencies." >&2
+            exit 1
+          fi
 
       - name: Upload resolved Linux runtime
         uses: actions/upload-artifact@v4
