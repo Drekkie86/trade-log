@@ -609,7 +609,22 @@ if [[ "${PYTHON_VERSION}" != "3.13" ]]; then
   fail "production python3 must be Python 3.13; found ${PYTHON_VERSION}"
 fi
 python3 -m venv "${RELEASE_DIR}/.venv"
-"${RELEASE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check   --no-compile   -r "${RELEASE_DIR}/requirements.txt"
+"${RELEASE_DIR}/.venv/bin/python" -m pip install \
+  --disable-pip-version-check \
+  --no-compile \
+  --no-deps \
+  -r "${RELEASE_DIR}/requirements-lock-linux-py313.txt"
+"${RELEASE_DIR}/.venv/bin/python" -m pip check
+LOCK_ACTUAL="$(
+  "${RELEASE_DIR}/.venv/bin/python" -m pip freeze
+)"
+LOCK_EXPECTED="$(
+  grep -vE '^[[:space:]]*(#|$)' \
+    "${RELEASE_DIR}/requirements-lock-linux-py313.txt"
+)"
+if [[ "${LOCK_ACTUAL}" != "${LOCK_EXPECTED}" ]]; then
+  fail "installed Python runtime does not match requirements-lock-linux-py313.txt"
+fi
 phase_done
 
 bash "${RELEASE_DIR}/deploy/provision_runtime_identities.sh"
