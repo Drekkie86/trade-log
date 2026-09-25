@@ -140,3 +140,52 @@ def test_spectacular_win_probability_does_not_override_bad_liquidity() -> None:
     assert result.probability_of_profit_net == pytest.approx(0.99)
     assert result.state == CASINO_NO_TRADE
     assert "LIQUIDITY_REJECT" in result.reasons
+
+def test_scenario_loss_cannot_exceed_declared_defined_max_loss() -> None:
+    result = evaluate_casino_experiment(
+        [
+            ScenarioOutcome(0.90, 10.0),
+            ScenarioOutcome(0.10, -100.0),
+        ],
+        risk_policy=CasinoRiskPolicy(
+            bankroll=500.0,
+            casino_cap=500.0,
+            max_loss_fraction=0.05,
+        ),
+        defined_risk=True,
+        max_loss=20.0,
+        transaction_costs=0.0,
+        slippage=0.0,
+        liquidity_state="LIQUIDITY_ACCEPTABLE_FOR_RESEARCH",
+    )
+
+    assert result.state == CASINO_NO_TRADE
+    assert (
+        "SCENARIO_LOSS_EXCEEDS_DECLARED_MAX_LOSS"
+        in result.reasons
+    )
+
+
+def test_scenario_loss_equal_to_declared_max_loss_remains_consistent() -> None:
+    result = evaluate_casino_experiment(
+        [
+            ScenarioOutcome(0.60, 18.0),
+            ScenarioOutcome(0.30, -10.0),
+            ScenarioOutcome(0.10, -20.0),
+        ],
+        risk_policy=CasinoRiskPolicy(
+            bankroll=500.0,
+            casino_cap=500.0,
+            max_loss_fraction=0.05,
+        ),
+        defined_risk=True,
+        max_loss=20.0,
+        transaction_costs=0.0,
+        slippage=0.0,
+        liquidity_state="LIQUIDITY_ACCEPTABLE_FOR_RESEARCH",
+    )
+
+    assert (
+        "SCENARIO_LOSS_EXCEEDS_DECLARED_MAX_LOSS"
+        not in result.reasons
+    )
