@@ -1,6 +1,8 @@
 import sqlite3
 import time
 
+import pytest
+
 from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import (
     backup_logical_source_bytes,
