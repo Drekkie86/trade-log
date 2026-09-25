@@ -361,3 +361,36 @@ def test_status_wrapper_passes_cli_arguments_through():
     )
 
     assert '"$@"' in script
+
+def test_receiver_provisions_ui_identity_and_minimal_environment():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    assert 'RUNTIME_GROUP="christiania-runtime"' in script
+    assert 'UI_USER="christiania-ui"' in script
+    assert 'UI_ENV_ROOT="/etc/christiania-ui"' in script
+    assert "provision_runtime_identities.sh" in script
+    assert "christiania_ui_env.py" in script
+    assert 'chown -R root:"${RUNTIME_GROUP}" "${RELEASE_DIR}"' in script
+    assert 'chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}/vendor"' in script
+
+
+def test_receiver_vendor_remains_outside_ui_read_group():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    runtime_chown = script.index(
+        'chown -R root:"${RUNTIME_GROUP}" "${RELEASE_DIR}"'
+    )
+    vendor_chown = script.index(
+        'chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}/vendor"',
+        runtime_chown,
+    )
+    target_preflight = script.index(
+        'phase_start "Validating current production deployment safety"',
+        vendor_chown,
+    )
+
+    assert runtime_chown < vendor_chown < target_preflight
