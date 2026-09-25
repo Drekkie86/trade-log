@@ -477,3 +477,54 @@ def test_systemd_app_has_explicit_restart_limits():
     assert "StartLimitIntervalSec=300" in unit
     assert "StartLimitBurst=5" in unit
     assert "Restart=on-failure" in unit
+
+def test_streamlit_runs_as_separate_readonly_ui_identity():
+    unit = (
+        ROOT
+        / "deploy/systemd/christiania-app.service"
+    ).read_text(encoding="utf-8")
+
+    assert "User=christiania-ui" in unit
+    assert "Group=christiania-runtime" in unit
+    assert (
+        "EnvironmentFile=/etc/christiania-ui/christiania.env"
+        in unit
+    )
+    assert "ReadOnlyPaths=/var/lib/christiania" in unit
+    assert "ReadWritePaths=/var/lib/christiania" not in unit
+    assert "InaccessiblePaths=/etc/christiania" in unit
+
+
+def test_runtime_identity_provisioning_shares_only_read_surfaces():
+    script = (
+        ROOT
+        / "deploy/provision_runtime_identities.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'RUNTIME_GROUP="${CHRISTIANIA_RUNTIME_GROUP:-christiania-runtime}"' in script
+    assert 'UI_USER="${CHRISTIANIA_UI_USER:-christiania-ui}"' in script
+
+    for directory in (
+        '"${STATE_ROOT}/data"',
+        '"${STATE_ROOT}/backups"',
+        '"${STATE_ROOT}/audit"',
+    ):
+        assert directory in script
+
+    assert '"${STATE_ROOT}/release-rollbacks"' not in script
+    assert '"${STATE_ROOT}/evidence-archives"' not in script
+    assert "chgrp -R" in script
+    assert "g+s" in script
+
+
+def test_legacy_installer_renders_nonsecret_ui_environment():
+    script = (
+        ROOT
+        / "deploy/install_one_vm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "provision_runtime_identities.sh" in script
+    assert "christiania_ui_env.py" in script
+    assert 'UI_ENV_ROOT="/etc/christiania-ui"' in script
+    assert 'chown -R root:"${RUNTIME_GROUP}" "${APP_DIR}"' in script
+    assert 'chown -R root:"${SERVICE_USER}" "${APP_DIR}/vendor"' in script
