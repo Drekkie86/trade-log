@@ -492,6 +492,7 @@ def test_streamlit_runs_as_separate_readonly_ui_identity():
     )
     assert "ReadOnlyPaths=/var/lib/christiania" in unit
     assert "ReadWritePaths=/var/lib/christiania" not in unit
+    assert "ProtectProc=invisible" in unit
     assert "InaccessiblePaths=/etc/christiania" in unit
 
 
