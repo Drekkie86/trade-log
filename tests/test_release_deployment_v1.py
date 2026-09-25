@@ -433,3 +433,19 @@ def test_release_receiver_pre_activation_gate_uses_current_release_policy():
         < target_policy_check
         < post_activation_status
     )
+
+def test_release_receiver_pins_python_313_and_does_not_upgrade_pip():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        'if [[ "${PYTHON_VERSION}" != "3.13" ]]; then'
+        in receiver
+    )
+    assert (
+        "production python3 must be Python 3.13"
+        in receiver
+    )
+    assert "pip install --upgrade pip" not in receiver
+    assert "--disable-pip-version-check" in receiver
