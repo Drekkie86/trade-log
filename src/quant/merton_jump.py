@@ -51,8 +51,47 @@ def price(
     if lam_t == 0.0:
         n_max = 0
     else:
-        quantile = poisson.ppf(1.0 - tail_probability, lam_t)
-        n_max = int(min(max_terms - 1, max(0, math.ceil(float(quantile)))))
+        quantile = float(
+            poisson.ppf(
+                1.0 - tail_probability,
+                lam_t,
+            )
+        )
+        if not math.isfinite(
+            quantile
+        ):
+            raise QuantInputError(
+                "Merton Poisson truncation quantile is not finite."
+            )
+        n_max = int(
+            min(
+                max_terms - 1,
+                max(
+                    0,
+                    math.ceil(
+                        quantile
+                    ),
+                ),
+            )
+        )
+        omitted_mass = float(
+            poisson.sf(
+                n_max,
+                lam_t,
+            )
+        )
+        allowed_tail = (
+            tail_probability
+            * (1.0 + 1e-9)
+            + 1e-15
+        )
+        if omitted_mass > allowed_tail:
+            raise QuantInputError(
+                "Merton Poisson series max_terms truncates "
+                f"probability mass {omitted_mass:.3e}, above "
+                f"tail_probability={tail_probability:.3e}; "
+                "increase max_terms."
+            )
 
     total = 0.0
     call = option.normalized_right() == "CALL"
