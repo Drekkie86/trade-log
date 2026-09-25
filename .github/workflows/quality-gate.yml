@@ -189,7 +189,7 @@ jobs:
           provision
 
           legacy_mode="$(
-            stat -c '%a' "${legacy_file}"
+            sudo stat -c '%a' "${legacy_file}"
           )"
           if [[ "${legacy_mode}" != "640" ]]; then
             echo "Legacy file permissions did not converge to 640: ${legacy_mode}" >&2
