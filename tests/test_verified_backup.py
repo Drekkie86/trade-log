@@ -497,3 +497,100 @@ def test_backup_capacity_plan_counts_only_policy_prunable_backups(
         plan.projected_free_bytes
         == Usage.free + 300
     )
+
+def test_capacity_plan_reduces_retention_when_configured_target_cannot_fit(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    one_gib = 1024**3
+
+    # Sparse files model large verified backups without consuming test disk.
+    for index in range(4):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026030{index + 1}T000000Z.db"
+        )
+        with path.open("wb") as handle:
+            handle.truncate(
+                one_gib
+            )
+        os.utime(
+            path,
+            (
+                1_700_000_000 + index,
+                1_700_000_000 + index,
+            ),
+        )
+
+    class Usage:
+        total = 100 * one_gib
+        used = 86 * one_gib
+        free = 14 * one_gib
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    plan = plan_backup_capacity(
+        source=source,
+        target_dir=backup_dir,
+        retention=14,
+    )
+
+    # Four existing copies cannot be kept just because the configured maximum
+    # is fourteen. Two oldest copies must be reclaimable to preserve the hard
+    # reserve for a new full backup.
+    assert plan.preprune_keep == 2
+    assert plan.reclaimable_bytes == 2 * one_gib
+    assert plan.feasible_after_safe_prune is True
+
+
+def test_capacity_plan_never_predeletes_last_known_good_backup(
+    tmp_path,
+    monkeypatch,
+):
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    previous = (
+        backup_dir
+        / "christiania_backup_20260401T000000Z.db"
+    )
+    previous.write_bytes(
+        b"known-good"
+    )
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 99 * 1024**3
+        free = 1 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    plan = plan_backup_capacity(
+        source=source,
+        target_dir=backup_dir,
+        retention=14,
+    )
+
+    assert plan.preprune_keep == 1
+    assert plan.reclaimable_bytes == 0
+    assert plan.feasible_after_safe_prune is False
