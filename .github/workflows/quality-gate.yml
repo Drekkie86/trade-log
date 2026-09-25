@@ -101,6 +101,12 @@ jobs:
             echo "Production runtime lock unexpectedly contains CI-only dependencies." >&2
             exit 1
           fi
+          grep -vE '^[[:space:]]*(#|$)' \
+            requirements-lock-linux-py313.txt \
+            > committed-runtime-lock-linux-py313.txt
+          diff -u \
+            committed-runtime-lock-linux-py313.txt \
+            runtime-lock-linux-py313.txt
 
       - name: Upload resolved Linux runtime
         uses: actions/upload-artifact@v4
