@@ -4,7 +4,11 @@ from src.research.cash_settled_market_contract import write_probe_evidence
 
 import pytest
 
-from run_christiania_daemon import LOCAL_FALLBACK_SYMBOLS, configured_symbols
+from run_christiania_daemon import (
+    LOCAL_FALLBACK_SYMBOLS,
+    configured_batch_size,
+    configured_symbols,
+)
 from src.research.research_daemon import ResearchDaemonError
 
 
@@ -64,3 +68,36 @@ def test_cash_settled_symbol_can_run_only_after_opt_in_and_integrity_checked_liv
     monkeypatch.setenv("CHRISTIANIA_ENABLE_CASH_SETTLED_RESEARCH", "1")
     monkeypatch.setenv("CHRISTIANIA_CASH_SETTLED_EVIDENCE_PATH", str(path))
     assert configured_symbols() == ["XSP"]
+
+
+def test_configured_profile_loads_expanded_universe(monkeypatch):
+    monkeypatch.delenv("CHRISTIANIA_SYMBOLS", raising=False)
+    monkeypatch.setenv(
+        "CHRISTIANIA_UNIVERSE_PROFILE",
+        "LIQUID_US_RESEARCH_V1",
+    )
+    symbols = configured_symbols()
+    assert len(symbols) == 48
+    assert symbols[:4] == ["SPY", "QQQ", "IWM", "DIA"]
+    assert configured_batch_size(
+        symbol_count=len(symbols),
+        profile="LIQUID_US_RESEARCH_V1",
+    ) == 12
+
+
+def test_symbols_and_profile_are_mutually_exclusive(monkeypatch):
+    monkeypatch.setenv("CHRISTIANIA_SYMBOLS", "AAPL,MSFT")
+    monkeypatch.setenv(
+        "CHRISTIANIA_UNIVERSE_PROFILE",
+        "LIQUID_US_RESEARCH_V1",
+    )
+    with pytest.raises(ResearchDaemonError, match="either"):
+        configured_symbols()
+
+
+def test_explicit_symbols_default_to_full_batch(monkeypatch):
+    monkeypatch.delenv("CHRISTIANIA_UNIVERSE_BATCH_SIZE", raising=False)
+    assert configured_batch_size(
+        symbol_count=3,
+        profile=None,
+    ) == 3
