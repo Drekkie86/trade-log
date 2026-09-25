@@ -5,6 +5,13 @@ import streamlit as st
 from src.research.forecast_surface_runtime_v1 import load_forecast_surface_runtime
 
 
+
+st.set_page_config(
+    page_title="Christiania — Forecasting & Surface Intelligence",
+    page_icon="📐",
+    layout="wide",
+)
+
 @st.cache_data(ttl=180, show_spinner=False)
 def _cached_forecast_surface_runtime(
     train_window: int,
@@ -18,13 +25,6 @@ def _cached_forecast_surface_runtime(
         limit_underlyings=limit_underlyings,
         bootstrap_samples=bootstrap_samples,
     )
-
-
-st.set_page_config(
-    page_title="Christiania — Forecasting & Surface Intelligence",
-    page_icon="📐",
-    layout="wide",
-)
 
 st.title("Christiania — Forecasting & Surface Intelligence")
 st.caption(
