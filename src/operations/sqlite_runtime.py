@@ -406,20 +406,54 @@ def plan_backup_capacity(
         ),
         reverse=True,
     )
-    preprune_keep = max(
-        1,
-        keep - 1,
-    )
-    reclaimable = sum(
-        path.stat().st_size
-        for path in backups[
-            preprune_keep:
-        ]
+
+    # Retention is the desired maximum, not a guarantee that may consume the
+    # production reserve. Make one normal retention slot when needed, then
+    # continue dropping only the oldest backups until the next full verified
+    # copy fits. Never pre-delete the newest known-good recovery point.
+    if not backups:
+        preprune_keep = 0
+    else:
+        preprune_keep = min(
+            len(backups),
+            max(
+                1,
+                keep - 1,
+            ),
+        )
+
+    def reclaimable_bytes(
+        retained_count: int,
+    ) -> int:
+        return sum(
+            path.stat().st_size
+            for path in backups[
+                retained_count:
+            ]
+        )
+
+    reclaimable = reclaimable_bytes(
+        preprune_keep
     )
     projected_free = (
         int(usage.free)
         + reclaimable
     )
+
+    while (
+        projected_free < required
+        and preprune_keep > 1
+    ):
+        preprune_keep -= 1
+        reclaimable = (
+            reclaimable_bytes(
+                preprune_keep
+            )
+        )
+        projected_free = (
+            int(usage.free)
+            + reclaimable
+        )
 
     return BackupCapacityPlan(
         filesystem_total_bytes=int(
@@ -595,10 +629,9 @@ def create_verified_backup(
     keep = capacity_plan.retention
 
     # A new full backup temporarily coexists with retained recovery points.
-    # If retention is already full, waiting until after the copy to prune can
-    # deadlock on disk headroom even though the oldest backup is outside the
-    # intended post-create retention window. Preserve at least one known-good
-    # recovery point, and otherwise make one slot before the capacity check.
+    # Capacity planning treats configured retention as a maximum target and
+    # may safely retain fewer old copies when disk headroom requires it.
+    # The newest known-good normal recovery point is never pre-deleted.
     preprune_keep = (
         capacity_plan.preprune_keep
     )
