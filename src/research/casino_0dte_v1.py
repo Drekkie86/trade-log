@@ -215,11 +215,25 @@ def evaluate_casino_experiment(
     cvar95 = float(tail_loss_sum / 0.05)
 
     budget = risk_policy.experiment_loss_budget
+    scenario_max_loss = max(
+        0.0,
+        -min(net_pnls),
+    )
+
     reasons: list[str] = []
     if not defined_risk or effective_max_loss is None:
         reasons.append("UNBOUNDED_OR_UNKNOWN_MAX_LOSS")
-    elif effective_max_loss > budget:
-        reasons.append("EXCEEDS_CASINO_EXPERIMENT_LOSS_BUDGET")
+    else:
+        tolerance = max(
+            1e-9,
+            abs(effective_max_loss) * 1e-9,
+        )
+        if scenario_max_loss > effective_max_loss + tolerance:
+            reasons.append(
+                "SCENARIO_LOSS_EXCEEDS_DECLARED_MAX_LOSS"
+            )
+        if effective_max_loss > budget:
+            reasons.append("EXCEEDS_CASINO_EXPERIMENT_LOSS_BUDGET")
     if liquidity_state in {"LIQUIDITY_UNKNOWN", "LIQUIDITY_POOR", "LIQUIDITY_REJECT"}:
         reasons.append(liquidity_state)
     if expected <= 0:
