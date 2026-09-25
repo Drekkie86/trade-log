@@ -528,3 +528,29 @@ def test_legacy_installer_renders_nonsecret_ui_environment():
     assert 'UI_ENV_ROOT="/etc/christiania-ui"' in script
     assert 'chown -R root:"${RUNTIME_GROUP}" "${APP_DIR}"' in script
     assert 'chown -R root:"${SERVICE_USER}" "${APP_DIR}/vendor"' in script
+
+def test_clean_installer_uses_locked_runtime_and_checks_dependency_health():
+    installer = (
+        ROOT
+        / "deploy/install_one_vm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "requirements-lock-linux-py313.txt" in installer
+    assert "--no-deps" in installer
+    assert "-m pip check" in installer
+    assert 'grep -vE' in installer
+    assert 'LC_ALL=C sort -f' in installer
+
+
+def test_quality_gate_verifies_lock_resolution_and_live_wal_ui_read():
+    workflow = (
+        ROOT
+        / ".github/workflows/quality-gate.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Resolve clean Linux production runtime" in workflow
+    assert "committed-runtime-lock-linux-py313.txt" in workflow
+    assert "resolved-runtime-lock-linux-py313.txt" in workflow
+    assert "diff -u" in workflow
+    assert "Prove read-only UI can read a live WAL database" in workflow
+    assert 'sudo -u "${ui_user}"' in workflow
