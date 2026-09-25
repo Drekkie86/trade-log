@@ -13,6 +13,13 @@ from src.quant.risk_selection import (
 from src.research.edge_risk_runtime_v1 import load_edge_risk_runtime
 
 
+
+st.set_page_config(
+    page_title="Christiania — Edge Library & Risk Lab",
+    page_icon="⚖️",
+    layout="wide",
+)
+
 @st.cache_data(ttl=180, show_spinner=False)
 def _cached_edge_risk_runtime(
     train_window: int,
@@ -26,13 +33,6 @@ def _cached_edge_risk_runtime(
         limit_underlyings=limit_underlyings,
         bootstrap_samples=bootstrap_samples,
     )
-
-
-st.set_page_config(
-    page_title="Christiania — Edge Library & Risk Lab",
-    page_icon="⚖️",
-    layout="wide",
-)
 
 st.title("Christiania — Edge Library & Risk Lab")
 st.caption(
