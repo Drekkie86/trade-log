@@ -589,3 +589,32 @@ def test_runtime_identity_provisioning_removes_preexisting_group_write_bits():
     # not merely add read permission and leave an old group-write bit intact.
     assert "chmod u=rw,g=r,o=" in script
     assert "chmod u+rw,g+r,o-rwx" not in script
+
+def test_dashboard_reads_normalized_admission_view_without_temp_compatibility():
+    read_model = (
+        ROOT
+        / "src/dashboard/read_model.py"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        read_model.count(
+            "v_shadow_admission_decisions_all"
+        )
+        == 5
+    )
+    assert (
+        "FROM shadow_admission_decisions"
+        not in read_model
+    )
+    assert (
+        "JOIN shadow_admission_decisions AS sad"
+        not in read_model
+    )
+
+    sqlite_runtime = (
+        ROOT
+        / "src/operations/sqlite_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert "CREATE TEMP VIEW shadow_admission_decisions" not in sqlite_runtime
+    assert "_install_readonly_compatibility_views" not in sqlite_runtime
