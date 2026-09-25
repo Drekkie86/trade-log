@@ -175,6 +175,106 @@ def test_deploy_preflight_passes_for_complete_runtime(
     )
 
 
+def test_deploy_preflight_accepts_governed_universe_profile(
+    monkeypatch,
+    db_path,
+    tmp_path,
+):
+    import christiania_deploy_preflight as preflight
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir()
+    create_verified_backup(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        retention=3,
+    )
+    theta = tmp_path / "ThetaTerminalv3.jar"
+    theta.write_bytes(b"jar")
+
+    monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db_path.resolve()))
+    monkeypatch.setenv("CHRISTIANIA_BACKUP_DIR", str(backup_dir.resolve()))
+    monkeypatch.setenv("CHRISTIANIA_AUDIT_DIR", str(audit_dir.resolve()))
+    monkeypatch.setenv("CHRISTIANIA_THETA_JAR", str(theta.resolve()))
+    monkeypatch.setenv("MASSIVE_API_KEY", "test-secret")
+    monkeypatch.setenv("THETADATA_API_KEY", "theta-test-secret")
+    monkeypatch.delenv("CHRISTIANIA_SYMBOLS", raising=False)
+    monkeypatch.setenv(
+        "CHRISTIANIA_UNIVERSE_PROFILE",
+        "LIQUID_US_RESEARCH_V1",
+    )
+    monkeypatch.setattr(
+        preflight.shutil,
+        "which",
+        lambda name: "/usr/bin/java" if name == "java" else None,
+    )
+    monkeypatch.setattr(
+        preflight.importlib.metadata,
+        "version",
+        lambda name: "1.50.0" if name == "streamlit" else "0",
+    )
+
+    checks = {
+        check.name: check
+        for check in preflight.run_preflight()
+    }
+
+    assert checks["research-universe"].state == "PASS"
+    assert "LIQUID_US_RESEARCH_V1" in checks["research-universe"].detail
+
+
+def test_deploy_preflight_rejects_two_universe_sources(
+    monkeypatch,
+    db_path,
+    tmp_path,
+):
+    import christiania_deploy_preflight as preflight
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir()
+    create_verified_backup(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        retention=3,
+    )
+    theta = tmp_path / "ThetaTerminalv3.jar"
+    theta.write_bytes(b"jar")
+
+    monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db_path.resolve()))
+    monkeypatch.setenv("CHRISTIANIA_BACKUP_DIR", str(backup_dir.resolve()))
+    monkeypatch.setenv("CHRISTIANIA_AUDIT_DIR", str(audit_dir.resolve()))
+    monkeypatch.setenv("CHRISTIANIA_THETA_JAR", str(theta.resolve()))
+    monkeypatch.setenv("MASSIVE_API_KEY", "test-secret")
+    monkeypatch.setenv("THETADATA_API_KEY", "theta-test-secret")
+    monkeypatch.setenv("CHRISTIANIA_SYMBOLS", "AAPL,SPY")
+    monkeypatch.setenv(
+        "CHRISTIANIA_UNIVERSE_PROFILE",
+        "LIQUID_US_RESEARCH_V1",
+    )
+    monkeypatch.setattr(
+        preflight.shutil,
+        "which",
+        lambda name: "/usr/bin/java" if name == "java" else None,
+    )
+    monkeypatch.setattr(
+        preflight.importlib.metadata,
+        "version",
+        lambda name: "1.50.0" if name == "streamlit" else "0",
+    )
+
+    checks = {
+        check.name: check
+        for check in preflight.run_preflight()
+    }
+
+    assert checks["research-universe"].state == "FAIL"
+    assert "exactly one" in checks["research-universe"].detail
+
+
 def test_deploy_preflight_uses_fast_backup_inventory_by_default(
     monkeypatch,
     db_path,
