@@ -371,13 +371,51 @@ def run_preflight(
     symbols = get_runtime_setting(
         "CHRISTIANIA_SYMBOLS"
     )
+    universe_profile = get_runtime_setting(
+        "CHRISTIANIA_UNIVERSE_PROFILE"
+    )
+
+    symbols_configured = bool(
+        symbols and symbols.strip()
+    )
+    profile_configured = bool(
+        universe_profile and universe_profile.strip()
+    )
+    universe_ok = (
+        symbols_configured
+        != profile_configured
+    )
+
+    if symbols_configured and profile_configured:
+        universe_success = ""
+        universe_failure = (
+            "Configure exactly one research-universe source: "
+            "CHRISTIANIA_SYMBOLS or CHRISTIANIA_UNIVERSE_PROFILE."
+        )
+    elif symbols_configured:
+        universe_success = (
+            "Explicit CHRISTIANIA_SYMBOLS universe is configured."
+        )
+        universe_failure = ""
+    elif profile_configured:
+        universe_success = (
+            "Governed CHRISTIANIA_UNIVERSE_PROFILE is configured: "
+            f"{universe_profile.strip()}."
+        )
+        universe_failure = ""
+    else:
+        universe_success = ""
+        universe_failure = (
+            "Research universe is missing. Configure exactly one of "
+            "CHRISTIANIA_SYMBOLS or CHRISTIANIA_UNIVERSE_PROFILE."
+        )
 
     checks.append(
         _check(
             "research-universe",
-            bool(symbols and symbols.strip()),
-            "CHRISTIANIA_SYMBOLS is configured.",
-            "CHRISTIANIA_SYMBOLS is missing for service deployment.",
+            universe_ok,
+            universe_success,
+            universe_failure,
         )
     )
 
