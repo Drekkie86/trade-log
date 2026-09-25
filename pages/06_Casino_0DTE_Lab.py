@@ -13,18 +13,23 @@ from src.research.casino_0dte_v1 import (
 )
 
 
+
 st.set_page_config(
     page_title="Christiania — Casino 0DTE Lab",
     page_icon="🎲",
     layout="wide",
 )
 
+@st.cache_data(ttl=180, show_spinner=False)
+def _cached_casino_0dte_runtime():
+    return load_casino_0dte_runtime()
+
 st.title("Christiania — Casino 0DTE Lab")
 st.caption(
     "Casino in spirit, quant in discipline. Separate research namespace; no Main Engine authority and no broker execution."
 )
 
-runtime = load_casino_0dte_runtime()
+runtime = _cached_casino_0dte_runtime()
 if runtime.state == "ZERO_DTE_RESEARCH_EVIDENCE_AVAILABLE":
     st.success(runtime.state)
 elif runtime.state == "DATABASE_UNAVAILABLE":

@@ -361,3 +361,71 @@ def test_status_wrapper_passes_cli_arguments_through():
     )
 
     assert '"$@"' in script
+
+def test_receiver_provisions_ui_identity_and_minimal_environment():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    assert 'RUNTIME_GROUP="christiania-runtime"' in script
+    assert 'UI_USER="christiania-ui"' in script
+    assert 'UI_ENV_ROOT="/etc/christiania-ui"' in script
+    assert "provision_runtime_identities.sh" in script
+    assert "christiania_ui_env.py" in script
+    assert 'chown -R root:"${RUNTIME_GROUP}" "${RELEASE_DIR}"' in script
+    assert 'chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}/vendor"' in script
+
+
+def test_receiver_vendor_remains_outside_ui_read_group():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    runtime_chown = script.index(
+        'chown -R root:"${RUNTIME_GROUP}" "${RELEASE_DIR}"'
+    )
+    vendor_chown = script.index(
+        'chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}/vendor"',
+        runtime_chown,
+    )
+    target_preflight = script.index(
+        'phase_start "Validating current production deployment safety"',
+        vendor_chown,
+    )
+
+    assert runtime_chown < vendor_chown < target_preflight
+
+def test_receiver_validates_ui_runtime_before_current_control_plane_gate():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    ui_gate = script.index(
+        'phase_start "Validating least-privilege UI runtime"'
+    )
+    control_plane = script.index(
+        'phase_start "Validating current production deployment safety"'
+    )
+
+    assert ui_gate < control_plane
+    assert "validate_ui_readonly_runtime" in script[ui_gate:control_plane]
+    assert 'sudo -u "${UI_USER}"' in script
+    assert "UI runtime unexpectedly has write access" in script
+
+def test_receiver_does_not_lock_current_backend_out_of_release_root():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    assert 'chown root:"${SERVICE_USER}" "${RELEASE_ROOT}"' in script
+    assert 'chmod 0751 "${RELEASE_ROOT}"' in script
+    assert 'chown root:"${RUNTIME_GROUP}" "${RELEASE_ROOT}"' not in script
+
+    root_permission = script.index(
+        'chmod 0751 "${RELEASE_ROOT}"'
+    )
+    quiesce = script.index(
+        'phase_start "Validating current production deployment safety"'
+    )
+
+    assert root_permission < quiesce

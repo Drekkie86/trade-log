@@ -7,11 +7,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=christiania
-Group=christiania
+User=christiania-ui
+Group=christiania-runtime
 WorkingDirectory=/opt/christiania
 Environment=HOME=/tmp
-EnvironmentFile=/etc/christiania/christiania.env
+Environment=CHRISTIANIA_DISABLE_LOCAL_ENV_FALLBACK=1
+EnvironmentFile=/etc/christiania-ui/christiania.env
 ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_christiania_app.py --host 127.0.0.1 --port 8501
 Restart=on-failure
 RestartSec=15
@@ -19,11 +20,16 @@ NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
+ProtectProc=invisible
 ProtectSystem=strict
-ReadWritePaths=/var/lib/christiania/data
+ReadOnlyPaths=/var/lib/christiania
+InaccessiblePaths=/etc/christiania
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
 RestrictSUIDSGID=true
 LockPersonality=true
 

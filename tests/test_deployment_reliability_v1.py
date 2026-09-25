@@ -477,3 +477,89 @@ def test_systemd_app_has_explicit_restart_limits():
     assert "StartLimitIntervalSec=300" in unit
     assert "StartLimitBurst=5" in unit
     assert "Restart=on-failure" in unit
+
+def test_streamlit_runs_as_separate_readonly_ui_identity():
+    unit = (
+        ROOT
+        / "deploy/systemd/christiania-app.service"
+    ).read_text(encoding="utf-8")
+
+    assert "User=christiania-ui" in unit
+    assert "Group=christiania-runtime" in unit
+    assert (
+        "EnvironmentFile=/etc/christiania-ui/christiania.env"
+        in unit
+    )
+    assert (
+        "Environment=CHRISTIANIA_DISABLE_LOCAL_ENV_FALLBACK=1"
+        in unit
+    )
+    assert "ReadOnlyPaths=/var/lib/christiania" in unit
+    assert "ReadWritePaths=/var/lib/christiania" not in unit
+    assert "ProtectProc=invisible" in unit
+    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" in unit
+    assert "IPAddressDeny=any" in unit
+    assert "IPAddressAllow=localhost" in unit
+    assert "InaccessiblePaths=/etc/christiania" in unit
+
+
+def test_runtime_identity_provisioning_shares_only_read_surfaces():
+    script = (
+        ROOT
+        / "deploy/provision_runtime_identities.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'RUNTIME_GROUP="${CHRISTIANIA_RUNTIME_GROUP:-christiania-runtime}"' in script
+    assert 'UI_USER="${CHRISTIANIA_UI_USER:-christiania-ui}"' in script
+
+    for directory in (
+        '"${STATE_ROOT}/data"',
+        '"${STATE_ROOT}/backups"',
+        '"${STATE_ROOT}/audit"',
+    ):
+        assert directory in script
+
+    assert '"${STATE_ROOT}/release-rollbacks"' not in script
+    assert '"${STATE_ROOT}/evidence-archives"' not in script
+    assert "chgrp -R" in script
+    assert "--groups \"\"" in script
+    assert "g+s" in script
+
+
+def test_legacy_installer_renders_nonsecret_ui_environment():
+    script = (
+        ROOT
+        / "deploy/install_one_vm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "provision_runtime_identities.sh" in script
+    assert "christiania_ui_env.py" in script
+    assert 'UI_ENV_ROOT="/etc/christiania-ui"' in script
+    assert 'chown -R root:"${RUNTIME_GROUP}" "${APP_DIR}"' in script
+    assert 'chown -R root:"${SERVICE_USER}" "${APP_DIR}/vendor"' in script
+
+def test_clean_installer_uses_locked_runtime_and_checks_dependency_health():
+    installer = (
+        ROOT
+        / "deploy/install_one_vm.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "requirements-lock-linux-py313.txt" in installer
+    assert "--no-deps" in installer
+    assert "-m pip check" in installer
+    assert 'grep -vE' in installer
+    assert 'LC_ALL=C sort -f' in installer
+
+
+def test_quality_gate_verifies_lock_resolution_and_live_wal_ui_read():
+    workflow = (
+        ROOT
+        / ".github/workflows/quality-gate.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Resolve clean Linux production runtime" in workflow
+    assert "committed-runtime-lock-linux-py313.txt" in workflow
+    assert "resolved-runtime-lock-linux-py313.txt" in workflow
+    assert "diff -u" in workflow
+    assert "Prove provisioned UI can read a live WAL database" in workflow
+    assert 'sudo -u "${ui_user}"' in workflow

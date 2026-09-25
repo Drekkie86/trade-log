@@ -54,6 +54,44 @@ def get_xnys_calendar():
     )
 
 
+def advance_market_sessions(
+    session_date: date,
+    sessions: int,
+    *,
+    calendar=None,
+) -> date:
+    """Advance by XNYS trading sessions, excluding the starting session."""
+    if sessions < 0:
+        raise ValueError(
+            "sessions cannot be negative."
+        )
+
+    market_calendar = (
+        get_xnys_calendar()
+        if calendar is None
+        else calendar
+    )
+
+    if not market_calendar.is_session(
+        session_date.isoformat()
+    ):
+        raise ValueError(
+            f"{session_date.isoformat()} is not an XNYS session."
+        )
+
+    current = session_date
+    remaining = sessions
+
+    while remaining:
+        current += timedelta(days=1)
+        if market_calendar.is_session(
+            current.isoformat()
+        ):
+            remaining -= 1
+
+    return current
+
+
 def _iso(moment: datetime) -> str:
     return moment.isoformat(
         timespec="seconds"

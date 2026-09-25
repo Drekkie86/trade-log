@@ -194,61 +194,6 @@ class SaxoOptionQuote:
         )
 
     @property
-    def is_stale(
-        self,
-    ) -> bool:
-        return _is_provider_stale(
-            self.price_type_bid,
-            self.price_type_ask,
-        )
-
-    @property
-    def is_indicative(
-        self,
-    ) -> bool:
-        return _is_indicative(
-            price_source_type=(
-                self.price_source_type
-            ),
-            price_type_bid=(
-                self.price_type_bid
-            ),
-            price_type_ask=(
-                self.price_type_ask
-            ),
-        )
-
-    @property
-    def is_delayed(
-        self,
-    ) -> bool:
-        return (
-            self.delayed_by_minutes
-            is not None
-            and self.delayed_by_minutes > 0
-        )
-
-    @property
-    def is_locked(
-        self,
-    ) -> bool:
-        return (
-            self.bid is not None
-            and self.ask is not None
-            and self.bid == self.ask
-        )
-
-    @property
-    def is_crossed(
-        self,
-    ) -> bool:
-        return (
-            self.bid is not None
-            and self.ask is not None
-            and self.bid > self.ask
-        )
-
-    @property
     def quality(
         self,
     ) -> QuoteQuality:

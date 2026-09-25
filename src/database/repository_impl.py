@@ -1102,6 +1102,8 @@ def create_market_snapshot(
 
         snapshot_id = cursor.lastrowid
 
+        quote_rows: list[dict[str, Any]] = []
+
         for quote in quotes:
             quote_data = {
                 "snapshot_id":
@@ -1279,7 +1281,12 @@ def create_market_snapshot(
                     ),
             }
 
-            connection.execute(
+            quote_rows.append(
+                quote_data
+            )
+
+        if quote_rows:
+            connection.executemany(
                 """
                 INSERT INTO option_quotes (
                     snapshot_id,
@@ -1388,7 +1395,7 @@ def create_market_snapshot(
                     :shares_per_contract
                 );
                 """,
-                quote_data,
+                quote_rows,
             )
 
         return snapshot_id

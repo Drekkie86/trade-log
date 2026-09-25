@@ -6,7 +6,7 @@ Christiania has completed the core collection, persistence, shadow, quantitative
 
 Historical V1 package continuity remains explicit: **Package 7: advanced quantitative model library/research bench** is complete and supplies the pricing, volatility, simulation, scenario and model-disagreement foundations used by the current roadmap. Its non-primary models remain **research-only challengers/diagnostics** unless prospective governance explicitly grants a later role. The newer A–F package sequence describes the next intelligence-development pipeline rather than replacing completed package history.
 
-Package A — Research Command Deck + programme-family governance — is deployed in production at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`. Package B — Forecasting + Surface Intelligence — is the active development package.
+The A–F intelligence sequence is implemented as research-only functionality: Research Command Deck / governance, forecasting and surface intelligence, Edge Library / risk mathematics, calibration and prospective shadow, decision / discipline leakage, and the separate Casino / 0DTE Lab. The latest deployed production baseline at the time of this review is `418aa760fe75080fb2999de4a3d185cea1c1d4eb`. Live readiness is authoritative only through `christiania-status`; this document does not cache a HEALTHY/READY claim.
 
 ## Operational state
 
@@ -21,7 +21,7 @@ Package A — Research Command Deck + programme-family governance — is deploye
 - Frequent deep-health/burn-in/readiness timers remain intentionally disabled until redesigned.
 - oauth2-proxy is deliberately disabled. It is resource-governed for future use but is not currently treated as an exposed production edge.
 
-The latest verified operator status after Package A deployment is `READY`: deployed commit `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, release identity PASS, supervisor HEALTHY/fresh, research progress PASS, resource policy PASS 14/14, and Theta/daemon/app active.
+Operational state is intentionally not frozen into this document. Use `christiania-status --json` for the current deployed commit, release identity, supervisor freshness, research progress, public-edge state and resource-policy result.
 
 ## Quantitative state
 

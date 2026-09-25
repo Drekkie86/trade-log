@@ -5,11 +5,26 @@ import streamlit as st
 from src.research.forecast_surface_runtime_v1 import load_forecast_surface_runtime
 
 
+
 st.set_page_config(
     page_title="Christiania — Forecasting & Surface Intelligence",
     page_icon="📐",
     layout="wide",
 )
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _cached_forecast_surface_runtime(
+    train_window: int,
+    horizon_days: int,
+    limit_underlyings: int,
+    bootstrap_samples: int,
+):
+    return load_forecast_surface_runtime(
+        train_window=train_window,
+        horizon_days=horizon_days,
+        limit_underlyings=limit_underlyings,
+        bootstrap_samples=bootstrap_samples,
+    )
 
 st.title("Christiania — Forecasting & Surface Intelligence")
 st.caption(
@@ -25,13 +40,14 @@ with st.sidebar:
     bootstrap_samples = st.number_input("Bootstrap samples", min_value=50, max_value=5000, value=500, step=50)
 
 if st.button("Refresh intelligence", type="primary"):
+    _cached_forecast_surface_runtime.clear()
     st.rerun()
 
-state = load_forecast_surface_runtime(
-    train_window=int(train_window),
-    horizon_days=int(horizon_days),
-    limit_underlyings=int(limit_underlyings),
-    bootstrap_samples=int(bootstrap_samples),
+state = _cached_forecast_surface_runtime(
+    int(train_window),
+    int(horizon_days),
+    int(limit_underlyings),
+    int(bootstrap_samples),
 )
 
 if state.state == "RESEARCH_COMPARISONS_AVAILABLE":

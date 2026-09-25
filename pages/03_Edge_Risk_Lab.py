@@ -13,11 +13,26 @@ from src.quant.risk_selection import (
 from src.research.edge_risk_runtime_v1 import load_edge_risk_runtime
 
 
+
 st.set_page_config(
     page_title="Christiania — Edge Library & Risk Lab",
     page_icon="⚖️",
     layout="wide",
 )
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _cached_edge_risk_runtime(
+    train_window: int,
+    horizon_days: int,
+    limit_underlyings: int,
+    bootstrap_samples: int,
+):
+    return load_edge_risk_runtime(
+        train_window=train_window,
+        horizon_days=horizon_days,
+        limit_underlyings=limit_underlyings,
+        bootstrap_samples=bootstrap_samples,
+    )
 
 st.title("Christiania — Edge Library & Risk Lab")
 st.caption(
@@ -32,11 +47,11 @@ with st.sidebar:
     limit_underlyings = st.number_input("Underlying limit", min_value=1, max_value=26, value=8, step=1)
     bootstrap_samples = st.number_input("Bootstrap samples", min_value=50, max_value=5000, value=500, step=50)
 
-runtime = load_edge_risk_runtime(
-    train_window=int(train_window),
-    horizon_days=int(horizon_days),
-    limit_underlyings=int(limit_underlyings),
-    bootstrap_samples=int(bootstrap_samples),
+runtime = _cached_edge_risk_runtime(
+    int(train_window),
+    int(horizon_days),
+    int(limit_underlyings),
+    int(bootstrap_samples),
 )
 
 if runtime.state == "RESEARCH_DIAGNOSTICS_AVAILABLE":

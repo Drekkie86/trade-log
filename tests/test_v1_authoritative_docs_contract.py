@@ -26,3 +26,22 @@ def test_v1_status_records_quant_library_before_release_candidate():
     assert "research-only challengers/diagnostics" in status
     assert "Quantitative-library boundary" in architecture
     assert "does not import the database repository" in architecture
+
+def test_authoritative_status_no_longer_claims_package_b_is_active_build():
+    status = (
+        ROOT / "docs/V1_STATUS.md"
+    ).read_text(
+        encoding="utf-8"
+    )
+    roadmap = (
+        ROOT / "docs/ROADMAP.md"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert "A–F intelligence sequence is implemented" in status
+    assert "Package B — Forecasting + Surface Intelligence — is the active development package." not in status
+    assert "Package D — Calibration + Model Tournament + Prospective Shadow — COMPLETE / DEPLOYED" in roadmap
+    assert "Package E — Decision Engine + Discipline Leakage — COMPLETE / DEPLOYED" in roadmap
+    assert "Package F — Casino + 0DTE Lab V1 — COMPLETE / DEPLOYED" in roadmap
+    assert "current operational readiness is read from" in roadmap.lower()

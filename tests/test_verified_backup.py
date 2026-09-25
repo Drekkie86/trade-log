@@ -1,10 +1,13 @@
 import sqlite3
 import time
 
+import pytest
+
 from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations.sqlite_runtime import (
     backup_logical_source_bytes,
     create_verified_backup,
+    plan_backup_capacity,
 )
 
 
@@ -322,3 +325,329 @@ def test_backup_capacity_counts_committed_wal_growth(
         assert logical > main_after
     finally:
         conn.close()
+
+def test_backup_preprunes_before_capacity_check(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import shutil
+    import src.operations.sqlite_runtime as sqlite_runtime
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for index in range(3):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026010{index + 1}T000000Z.db"
+        )
+        path.write_bytes(b"historical")
+        os.utime(path, (1_700_000_000 + index, 1_700_000_000 + index))
+
+    observed_counts = []
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 50 * 1024**3
+        free = 50 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    original_assert = sqlite_runtime.assert_backup_capacity
+
+    def assert_after_preprune(*, source, target_dir):
+        observed_counts.append(
+            len(
+                sqlite_runtime.backup_data_files(
+                    target_dir
+                )
+            )
+        )
+        return original_assert(
+            source=source,
+            target_dir=target_dir,
+        )
+
+    monkeypatch.setattr(
+        sqlite_runtime,
+        "assert_backup_capacity",
+        assert_after_preprune,
+    )
+
+    result = create_verified_backup(
+        db_path=source,
+        backup_dir=backup_dir,
+        retention=3,
+    )
+
+    assert observed_counts == [2]
+    assert result.pruned_count == 1
+    assert len(
+        sqlite_runtime.backup_data_files(
+            backup_dir
+        )
+    ) == 3
+
+
+def test_backup_retention_one_preserves_last_good_before_new_copy(
+    tmp_path,
+    monkeypatch,
+):
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    previous = (
+        backup_dir
+        / "christiania_backup_20260101T000000Z.db"
+    )
+    previous.write_bytes(b"known-good")
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 95 * 1024**3
+        free = 5 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    import pytest
+
+    with pytest.raises(
+        RuntimeError,
+        match="Insufficient backup filesystem headroom",
+    ):
+        create_verified_backup(
+            db_path=source,
+            backup_dir=backup_dir,
+            retention=1,
+        )
+
+    assert previous.read_bytes() == b"known-good"
+
+def test_backup_capacity_plan_counts_only_policy_prunable_backups(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    sizes = [
+        100,
+        200,
+        300,
+        400,
+    ]
+    for index, size in enumerate(
+        sizes
+    ):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026020{index + 1}T000000Z.db"
+        )
+        path.write_bytes(
+            b"x" * size
+        )
+        os.utime(
+            path,
+            (
+                1_700_000_000 + index,
+                1_700_000_000 + index,
+            ),
+        )
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 60 * 1024**3
+        free = 40 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    plan = plan_backup_capacity(
+        source=source,
+        target_dir=backup_dir,
+        retention=3,
+    )
+
+    # Retention 3 makes one slot by preserving the two newest files.
+    assert plan.preprune_keep == 2
+    assert plan.current_backup_count == 4
+    assert plan.reclaimable_bytes == 300
+    assert (
+        plan.projected_free_bytes
+        == Usage.free + 300
+    )
+
+def test_capacity_plan_reduces_retention_when_configured_target_cannot_fit(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    one_gib = 1024**3
+
+    # Sparse files model large verified backups without consuming test disk.
+    for index in range(4):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026030{index + 1}T000000Z.db"
+        )
+        with path.open("wb") as handle:
+            handle.truncate(
+                one_gib
+            )
+        os.utime(
+            path,
+            (
+                1_700_000_000 + index,
+                1_700_000_000 + index,
+            ),
+        )
+
+    class Usage:
+        total = 100 * one_gib
+        used = 86 * one_gib
+        free = 14 * one_gib
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    plan = plan_backup_capacity(
+        source=source,
+        target_dir=backup_dir,
+        retention=14,
+    )
+
+    # Four existing copies cannot be kept just because the configured maximum
+    # is fourteen. Two oldest copies must be reclaimable to preserve the hard
+    # reserve for a new full backup.
+    assert plan.preprune_keep == 2
+    assert plan.reclaimable_bytes == 2 * one_gib
+    assert plan.feasible_after_safe_prune is True
+
+
+def test_capacity_plan_never_predeletes_last_known_good_backup(
+    tmp_path,
+    monkeypatch,
+):
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    previous = (
+        backup_dir
+        / "christiania_backup_20260401T000000Z.db"
+    )
+    previous.write_bytes(
+        b"known-good"
+    )
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 99 * 1024**3
+        free = 1 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    plan = plan_backup_capacity(
+        source=source,
+        target_dir=backup_dir,
+        retention=14,
+    )
+
+    assert plan.preprune_keep == 1
+    assert plan.reclaimable_bytes == 0
+    assert plan.feasible_after_safe_prune is False
+
+def test_infeasible_capacity_plan_preserves_all_existing_backups(
+    tmp_path,
+    monkeypatch,
+):
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    existing = []
+    for index in range(3):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026050{index + 1}T000000Z.db"
+        )
+        path.write_bytes(
+            b"known-good"
+        )
+        existing.append(path)
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 99 * 1024**3
+        free = 1 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Existing verified backups were left untouched",
+    ):
+        create_verified_backup(
+            db_path=source,
+            backup_dir=backup_dir,
+            retention=14,
+        )
+
+    assert all(
+        path.is_file()
+        for path in existing
+    )
+    assert len(
+        list(
+            backup_dir.glob(
+                "christiania_backup_*.db"
+            )
+        )
+    ) == 3

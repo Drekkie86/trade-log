@@ -87,12 +87,197 @@ jobs:
           test -x .venv/bin/python
           .venv/bin/python -m pip check
 
+      - name: Resolve clean Linux production runtime
+        shell: bash
+        run: |
+          python -m venv .runtime-lock-venv
+          .runtime-lock-venv/bin/python -m pip install \
+            --disable-pip-version-check \
+            --no-compile \
+            -r requirements.txt
+          .runtime-lock-venv/bin/python -m pip check
+          .runtime-lock-venv/bin/python -m pip freeze > runtime-lock-linux-py313.txt
+          if grep -Eiq '^(pytest|pluggy|iniconfig)==' runtime-lock-linux-py313.txt; then
+            echo "Production runtime lock unexpectedly contains CI-only dependencies." >&2
+            exit 1
+          fi
+          grep -vE '^[[:space:]]*(#|$)' \
+            requirements-lock-linux-py313.txt \
+            | LC_ALL=C sort -f \
+            > committed-runtime-lock-linux-py313.txt
+          LC_ALL=C sort -f \
+            runtime-lock-linux-py313.txt \
+            > resolved-runtime-lock-linux-py313.txt
+          diff -u \
+            committed-runtime-lock-linux-py313.txt \
+            resolved-runtime-lock-linux-py313.txt
+
+      - name: Upload resolved Linux runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-lock-linux-py313
+          path: runtime-lock-linux-py313.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Validate release and maintenance shell syntax
         shell: bash
         run: |
           bash -n deploy/receive_release.sh
+          bash -n deploy/install_one_vm.sh
+          bash -n deploy/provision_runtime_identities.sh
           test -x deploy/christiania-maintenance
           bash -n deploy/christiania-maintenance
+
+      - name: Prove provisioned UI can read a live WAL database
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tmp="$(mktemp -d)"
+          backend_user="christiania-backend-ci"
+          runtime_group="christiania-runtime-ci"
+          ui_user="christiania-ui-ci"
+          extra_group="christiania-ui-extra-ci"
+          state_root="${tmp}/state"
+          ui_env_root="${tmp}/ui-env"
+          writer_pid=""
+
+          cleanup() {
+            if [[ -n "${writer_pid}" ]]; then
+              kill "${writer_pid}" >/dev/null 2>&1 || true
+              wait "${writer_pid}" >/dev/null 2>&1 || true
+            fi
+            sudo userdel "${ui_user}" >/dev/null 2>&1 || true
+            sudo userdel "${backend_user}" >/dev/null 2>&1 || true
+            sudo groupdel "${extra_group}" >/dev/null 2>&1 || true
+            sudo groupdel "${runtime_group}" >/dev/null 2>&1 || true
+            sudo rm -rf "${tmp}"
+          }
+          trap cleanup EXIT
+
+          sudo chmod 0755 "${tmp}"
+          sudo useradd \
+            --system \
+            --no-create-home \
+            --shell /usr/sbin/nologin \
+            "${backend_user}"
+
+          provision() {
+            sudo env \
+              CHRISTIANIA_SERVICE_USER="${backend_user}" \
+              CHRISTIANIA_RUNTIME_GROUP="${runtime_group}" \
+              CHRISTIANIA_UI_USER="${ui_user}" \
+              CHRISTIANIA_STATE_ROOT="${state_root}" \
+              CHRISTIANIA_UI_ENV_ROOT="${ui_env_root}" \
+              bash deploy/provision_runtime_identities.sh
+          }
+
+          provision
+
+          # Prove an idempotent provisioning pass strips accidental
+          # supplementary groups from the browser-facing identity.
+          sudo groupadd --system "${extra_group}"
+          sudo usermod -a -G "${extra_group}" "${ui_user}"
+          provision
+
+          ui_groups="$(
+            id -nG "${ui_user}" \
+              | tr ' ' '\n' \
+              | LC_ALL=C sort -u \
+              | paste -sd ' ' -
+          )"
+          if [[ "${ui_groups}" != "${runtime_group}" ]]; then
+            echo "Unexpected UI groups after reprovision: ${ui_groups}" >&2
+            exit 1
+          fi
+
+          db="${state_root}/data/live.db"
+          ready="${state_root}/data/ready"
+
+          sudo -u "${backend_user}" \
+            env DB="${db}" READY="${ready}" \
+            python - <<'PY' &
+          import os
+          import sqlite3
+          import time
+          from pathlib import Path
+
+          database = Path(os.environ["DB"])
+          ready = Path(os.environ["READY"])
+
+          connection = sqlite3.connect(database)
+          connection.execute("PRAGMA journal_mode=WAL;")
+          connection.execute("PRAGMA wal_autocheckpoint=0;")
+          connection.execute(
+              "CREATE TABLE evidence(value INTEGER NOT NULL);"
+          )
+          connection.execute(
+              "INSERT INTO evidence(value) VALUES (42);"
+          )
+          connection.commit()
+          ready.write_text("ready", encoding="utf-8")
+
+          try:
+              time.sleep(60)
+          finally:
+              connection.close()
+          PY
+          writer_pid="$!"
+
+          for _ in $(seq 1 100); do
+            if sudo test -f "${ready}"; then
+              break
+            fi
+            sleep 0.1
+          done
+
+          sudo test -f "${ready}"
+          sudo test -f "${db}-wal"
+          sudo test -f "${db}-shm"
+
+          sudo -u "${ui_user}" \
+            env DB="${db}" \
+            python - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          database = Path(os.environ["DB"])
+
+          if os.access(database, os.W_OK):
+              raise SystemExit(
+                  "UI identity unexpectedly has DB write access."
+              )
+          if os.access(database.parent, os.W_OK):
+              raise SystemExit(
+                  "UI identity unexpectedly has directory write access."
+              )
+
+          connection = sqlite3.connect(
+              database.resolve().as_uri() + "?mode=ro",
+              uri=True,
+              timeout=5.0,
+          )
+          try:
+              count = connection.execute(
+                  "SELECT COUNT(*) FROM evidence;"
+              ).fetchone()[0]
+              journal_mode = connection.execute(
+                  "PRAGMA journal_mode;"
+              ).fetchone()[0]
+          finally:
+              connection.close()
+
+          if count != 1:
+              raise SystemExit(
+                  f"Unexpected evidence row count: {count}"
+              )
+          if str(journal_mode).lower() != "wal":
+              raise SystemExit(
+                  f"Unexpected journal mode: {journal_mode}"
+              )
+          PY
 
       - name: Run release safety regressions
         shell: bash

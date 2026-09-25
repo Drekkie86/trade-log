@@ -11,6 +11,21 @@ PROJECT_ROOT = (
 ENV_FILE = PROJECT_ROOT / ".env"
 
 
+def _local_env_fallback_disabled() -> bool:
+    raw = str(
+        os.environ.get(
+            "CHRISTIANIA_DISABLE_LOCAL_ENV_FALLBACK",
+            "",
+        )
+    ).strip().lower()
+    return raw in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def read_env_file(path: str | Path) -> dict[str, str]:
     """Parse Christiania KEY=VALUE configuration without shell evaluation."""
 
@@ -84,6 +99,9 @@ def load_local_env() -> None:
     in the current PowerShell environment.
     """
 
+    if _local_env_fallback_disabled():
+        return
+
     for key, value in (
         _read_local_settings().items()
     ):
@@ -130,6 +148,9 @@ def get_runtime_setting(
 
     if value:
         return value
+
+    if _local_env_fallback_disabled():
+        return None
 
     return _read_local_settings().get(name)
 

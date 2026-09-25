@@ -1,6 +1,6 @@
 # Christiania Roadmap — authoritative current plan
 
-Status baseline: the Control Plane Reset is complete in production. Windows/GitHub is the source-of-truth workshop; Hetzner is an appliance-style artifact deployment target. Package A is deployed at `afc87be0d09202ba09f8c644c5942e5cfdd7850a`, with control-plane status `READY`, release identity PASS, research progress PASS and resource policy PASS 14/14. Packages B and C are merged to `main`; Package C merged at `3ffd7b09d59625dda7581f85cf963043af98c927`. The newer merged code awaits the next deployment cycle.
+Status baseline: the Control Plane Reset is complete and the A–F intelligence sequence is implemented. Windows/GitHub remains the source-of-truth workshop; Hetzner remains an appliance-style artifact deployment target. The deployed production baseline at the time of this engineering review is `418aa760fe75080fb2999de4a3d185cea1c1d4eb`. Current operational readiness is read from `christiania-status`, not cached in this roadmap.
 
 This document supersedes earlier package numbering where it conflicts with the current plan. Historical package documents remain evidence of what was built, not instructions for what comes next.
 
@@ -120,7 +120,7 @@ A high win rate is not an edge if the tail dominates. A trade with meaningful lo
 
 Package C's expected-P&L outputs are explicitly assumption-conditioned. They are not labelled alpha, forecast truth or trade recommendations.
 
-## Package D — Calibration + Model Tournament + Prospective Shadow — ACTIVE BUILD
+## Package D — Calibration + Model Tournament + Prospective Shadow — COMPLETE / DEPLOYED
 
 Goal: make models earn trust prospectively.
 
@@ -142,7 +142,7 @@ Package D builds on the existing prospective-freeze and shadow infrastructure an
 
 Existing p-value/FDR/admission/decision firewalls remain off unless separately governed.
 
-## Package E — Decision Engine + Discipline Leakage
+## Package E — Decision Engine + Discipline Leakage — COMPLETE / DEPLOYED
 
 Goal: distinguish model quality from operator behaviour.
 
@@ -155,7 +155,7 @@ Goal: distinguish model quality from operator behaviour.
 - track discipline leakage after winning periods;
 - rank opportunities by risk compensation, evidence quality, robustness and calibration rather than win rate alone.
 
-## Package F — Casino + 0DTE Lab V1
+## Package F — Casino + 0DTE Lab V1 — COMPLETE / DEPLOYED
 
 Goal: permit deliberately high-variance research without contaminating Main Engine standards.
 
@@ -187,6 +187,6 @@ Keep this lane separate from intelligence work unless operational evidence makes
 
 ## Near-term execution order
 
-**Package A deployed → Package B merged → Package C merged → Package D Calibration / Model Tournament / Shadow → Package E Decision / Discipline → Package F Casino / 0DTE.**
+**A–F intelligence build complete → production hardening and storage sustainability → continued prospective evidence accumulation → only then consider any later expansion of authority.**
 
 The target is to deploy these as large coherent packages over days while prospective calibration continues in parallel.

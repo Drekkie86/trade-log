@@ -9,6 +9,10 @@ EDGE_ENV="/etc/christiania/secure-edge.env"
 SYSTEMD_ROOT="/etc/systemd/system"
 LOCAL_BIN="/usr/local/bin"
 SERVICE_USER="christiania"
+RUNTIME_GROUP="christiania-runtime"
+UI_USER="christiania-ui"
+UI_ENV_ROOT="/etc/christiania-ui"
+UI_ENV_FILE="${UI_ENV_ROOT}/christiania.env"
 SECURE_EDGE_SERVICE="christiania-oauth2-proxy.service"
 
 CORE_SERVICES=(
@@ -110,6 +114,115 @@ if health.journal_mode != "wal":
 print(
     f"Current DB metadata: schema v{health.schema_version}; WAL; "
     "deep integrity is required only when a release migration mutates the database."
+)
+PY
+  )
+}
+
+validate_ui_readonly_runtime() {
+  (
+    cd "${RELEASE_DIR}"
+    sudo -u "${UI_USER}" \
+      "${RELEASE_DIR}/.venv/bin/python" \
+      - "${UI_ENV_FILE}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from src.config import (
+    load_runtime_env_file,
+    read_env_file,
+)
+from src.database.repository import (
+    EXPECTED_SCHEMA_VERSION,
+    resolve_db_path,
+)
+from src.operations.sqlite_runtime import (
+    open_readonly_connection,
+)
+from src.operations.ui_runtime_env import (
+    select_ui_runtime_settings,
+)
+
+env_path = Path(sys.argv[1])
+values = read_env_file(env_path)
+selected = select_ui_runtime_settings(values)
+
+if values != selected:
+    raise SystemExit(
+        "UI runtime environment contains settings outside the approved allowlist."
+    )
+
+load_runtime_env_file(
+    env_path,
+    overwrite=True,
+)
+
+database = resolve_db_path()
+backup_dir = Path(
+    selected["CHRISTIANIA_BACKUP_DIR"]
+).expanduser()
+
+if not database.is_file():
+    raise SystemExit(
+        f"UI runtime database is missing: {database}"
+    )
+
+if not backup_dir.is_dir():
+    raise SystemExit(
+        f"UI runtime backup directory is missing: {backup_dir}"
+    )
+
+if os.access(database, os.W_OK):
+    raise SystemExit(
+        "UI runtime unexpectedly has write access to the database file."
+    )
+
+if os.access(database.parent, os.W_OK):
+    raise SystemExit(
+        "UI runtime unexpectedly has write access to the database directory."
+    )
+
+if os.access(backup_dir, os.W_OK):
+    raise SystemExit(
+        "UI runtime unexpectedly has write access to the backup directory."
+    )
+
+connection = open_readonly_connection(
+    database
+)
+try:
+    row = connection.execute(
+        "SELECT MAX(version) FROM schema_version;"
+    ).fetchone()
+    version = (
+        int(row[0])
+        if row is not None
+        and row[0] is not None
+        else None
+    )
+    journal_mode = str(
+        connection.execute(
+            "PRAGMA journal_mode;"
+        ).fetchone()[0]
+    ).lower()
+finally:
+    connection.close()
+
+if version != EXPECTED_SCHEMA_VERSION:
+    raise SystemExit(
+        "UI runtime schema mismatch: "
+        f"found v{version}, expected v{EXPECTED_SCHEMA_VERSION}."
+    )
+
+if journal_mode != "wal":
+    raise SystemExit(
+        "UI runtime database is not readable in WAL mode."
+    )
+
+print(
+    "Least-privilege UI runtime validation passed: "
+    f"schema v{version}; WAL readable; DB and backup paths non-writable."
 )
 PY
   )
@@ -364,6 +477,9 @@ for required in \
   curl \
   date \
   find \
+  getent \
+  groupadd \
+  grep \
   id \
   install \
   ln \
@@ -374,11 +490,14 @@ for required in \
   rm \
   seq \
   sha256sum \
+  sort \
   sleep \
   sudo \
   systemctl \
   tar \
-  tr; do
+  tr \
+  useradd \
+  usermod; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     fail "required command not found: ${required}"
   fi
@@ -467,6 +586,7 @@ DATABASE_PREPARED=0
 ROLLBACK_DB_VERSION=""
 ROLLBACK_DB_BACKUP=""
 TEMP_SYSTEMD_ROOT=""
+UI_ENV_TEMP=""
 ACTIVE_QUIESCE_TIMERS=()
 
 rollback() {
@@ -545,6 +665,9 @@ rollback() {
   if [[ -n "${TEMP_SYSTEMD_ROOT}" && -d "${TEMP_SYSTEMD_ROOT}" ]]; then
     rm -rf "${TEMP_SYSTEMD_ROOT}" || true
   fi
+  if [[ -n "${UI_ENV_TEMP}" && -e "${UI_ENV_TEMP}" ]]; then
+    rm -f "${UI_ENV_TEMP}" || true
+  fi
 
   systemctl daemon-reload || true
 
@@ -590,13 +713,69 @@ else
 fi
 
 phase_start "Building isolated target runtime"
+PYTHON_VERSION="$(
+  python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+)"
+if [[ "${PYTHON_VERSION}" != "3.13" ]]; then
+  fail "production python3 must be Python 3.13; found ${PYTHON_VERSION}"
+fi
 python3 -m venv "${RELEASE_DIR}/.venv"
-"${RELEASE_DIR}/.venv/bin/pip" install --upgrade pip
-"${RELEASE_DIR}/.venv/bin/pip" install -r "${RELEASE_DIR}/requirements.txt"
+"${RELEASE_DIR}/.venv/bin/python" -m pip install \
+  --disable-pip-version-check \
+  --no-compile \
+  --no-deps \
+  -r "${RELEASE_DIR}/requirements-lock-linux-py313.txt"
+"${RELEASE_DIR}/.venv/bin/python" -m pip check
+LOCK_ACTUAL="$(
+  "${RELEASE_DIR}/.venv/bin/python" -m pip freeze \
+    | LC_ALL=C sort -f
+)"
+LOCK_EXPECTED="$(
+  grep -vE '^[[:space:]]*(#|$)' \
+    "${RELEASE_DIR}/requirements-lock-linux-py313.txt" \
+    | LC_ALL=C sort -f
+)"
+if [[ "${LOCK_ACTUAL}" != "${LOCK_EXPECTED}" ]]; then
+  fail "installed Python runtime does not match requirements-lock-linux-py313.txt"
+fi
 phase_done
 
-chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
+bash "${RELEASE_DIR}/deploy/provision_runtime_identities.sh"
+
+# The UI gets read-only access to application code through a dedicated runtime
+# group. Vendor assets remain on the secret-bearing backend group because a
+# legacy Theta creds.txt may live beside the JAR.
+chown -R root:"${RUNTIME_GROUP}" "${RELEASE_DIR}"
 chmod -R g+rX,o-rwx "${RELEASE_DIR}"
+if [[ -d "${RELEASE_DIR}/vendor" ]]; then
+  chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}/vendor"
+  chmod -R g+rX,o-rwx "${RELEASE_DIR}/vendor"
+fi
+
+# Keep the release-root group on the backend identity so already-running
+# pre-release processes retain traversal before quiescence. Other users get
+# execute-only traversal; the active release directory itself is group-readable
+# only by christiania-runtime, while failed/rollback children remain protected.
+chown root:"${SERVICE_USER}" "${RELEASE_ROOT}"
+chmod 0751 "${RELEASE_ROOT}"
+
+UI_ENV_TEMP="$(mktemp)"
+"${RELEASE_DIR}/.venv/bin/python" \
+  "${RELEASE_DIR}/christiania_ui_env.py" \
+  --source "${ENV_FILE}" \
+  --output "${UI_ENV_TEMP}"
+install \
+  -m 0640 \
+  -o root \
+  -g "${RUNTIME_GROUP}" \
+  "${UI_ENV_TEMP}" \
+  "${UI_ENV_FILE}"
+rm -f "${UI_ENV_TEMP}"
+UI_ENV_TEMP=""
+
+phase_start "Validating least-privilege UI runtime"
+validate_ui_readonly_runtime
+phase_done
 
 phase_start "Validating current production deployment safety"
 if [[ "${RECOVERY_NO_SCHEMA_CHANGE}" -eq 1 ]]; then

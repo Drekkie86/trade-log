@@ -1,6 +1,7 @@
 from datetime import date
 
 from src.operations.market_calendar import (
+    advance_market_sessions,
     get_market_session,
 )
 
@@ -33,3 +34,9 @@ def test_thanksgiving_friday_early_close_stops_at_1245():
     assert session.close_at.endswith("13:00:00-05:00")
     assert session.sample_window_end.endswith("12:45:00-05:00")
     assert session.is_early_close is True
+
+def test_advance_market_sessions_skips_weekend_and_labor_day():
+    assert advance_market_sessions(
+        date(2026, 9, 4),
+        5,
+    ) == date(2026, 9, 14)

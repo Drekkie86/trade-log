@@ -445,3 +445,72 @@ def test_health_cli_strict_backup_uses_deep_backup_inventory(monkeypatch):
         sys.argv = old
 
     assert calls == {"fast": 0, "deep": 1}
+
+def test_runtime_setting_can_disable_local_env_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MASSIVE_API_KEY=must-not-leak\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        config,
+        "ENV_FILE",
+        env_file,
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_DISABLE_LOCAL_ENV_FALLBACK",
+        "1",
+    )
+    monkeypatch.delenv(
+        "MASSIVE_API_KEY",
+        raising=False,
+    )
+
+    assert (
+        config.get_runtime_setting(
+            "MASSIVE_API_KEY"
+        )
+        is None
+    )
+    assert (
+        config.get_optional_setting(
+            "MASSIVE_API_KEY"
+        )
+        is None
+    )
+
+
+def test_explicit_process_setting_still_wins_when_fallback_disabled(
+    monkeypatch,
+    tmp_path,
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "CHRISTIANIA_DB_PATH=from-file.db\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        config,
+        "ENV_FILE",
+        env_file,
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_DISABLE_LOCAL_ENV_FALLBACK",
+        "1",
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        "from-process.db",
+    )
+
+    assert (
+        config.get_runtime_setting(
+            "CHRISTIANIA_DB_PATH"
+        )
+        == "from-process.db"
+    )

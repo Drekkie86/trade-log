@@ -4,11 +4,17 @@ import streamlit as st
 
 from src.dashboard.research_command_deck_v1 import load_research_command_deck
 
+
+
 st.set_page_config(
     page_title="Christiania — Research Command Deck",
     page_icon="⚓",
     layout="wide",
 )
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _cached_research_command_deck():
+    return load_research_command_deck()
 
 st.title("Christiania — Research Command Deck")
 st.caption(
@@ -16,9 +22,10 @@ st.caption(
 )
 
 if st.button("Refresh research state", type="primary"):
+    _cached_research_command_deck.clear()
     st.rerun()
 
-state = load_research_command_deck()
+state = _cached_research_command_deck()
 runtime = state.runtime
 governance = state.governance
 
