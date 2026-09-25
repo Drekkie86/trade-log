@@ -453,6 +453,19 @@ def _deployment_supervisor_state(
         ):
             continue
 
+        # A successful schema migration necessarily leaves the latest normal
+        # recovery-point backup on the previous schema until the scheduled
+        # backup path captures the new schema. The release database step has
+        # already committed and verified a dedicated pre-migration rollback
+        # snapshot before migration SQL can run, so this specific mismatch is
+        # operational backup debt rather than a reason to roll back an
+        # otherwise healthy deployment. All other backup failures still block.
+        if (
+            name == "backup-recovery-point"
+            and "reason=LATEST_BACKUP_SCHEMA_MISMATCH" in detail
+        ):
+            continue
+
         return "FAIL"
 
     return "PASS" if saw_check else "FAIL"
