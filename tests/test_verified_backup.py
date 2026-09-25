@@ -594,3 +594,58 @@ def test_capacity_plan_never_predeletes_last_known_good_backup(
     assert plan.preprune_keep == 1
     assert plan.reclaimable_bytes == 0
     assert plan.feasible_after_safe_prune is False
+
+def test_infeasible_capacity_plan_preserves_all_existing_backups(
+    tmp_path,
+    monkeypatch,
+):
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True)
+
+    existing = []
+    for index in range(3):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026050{index + 1}T000000Z.db"
+        )
+        path.write_bytes(
+            b"known-good"
+        )
+        existing.append(path)
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 99 * 1024**3
+        free = 1 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Existing verified backups were left untouched",
+    ):
+        create_verified_backup(
+            db_path=source,
+            backup_dir=backup_dir,
+            retention=14,
+        )
+
+    assert all(
+        path.is_file()
+        for path in existing
+    )
+    assert len(
+        list(
+            backup_dir.glob(
+                "christiania_backup_*.db"
+            )
+        )
+    ) == 3
