@@ -590,9 +590,14 @@ else
 fi
 
 phase_start "Building isolated target runtime"
+PYTHON_VERSION="$(
+  python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+)"
+if [[ "${PYTHON_VERSION}" != "3.13" ]]; then
+  fail "production python3 must be Python 3.13; found ${PYTHON_VERSION}"
+fi
 python3 -m venv "${RELEASE_DIR}/.venv"
-"${RELEASE_DIR}/.venv/bin/pip" install --upgrade pip
-"${RELEASE_DIR}/.venv/bin/pip" install -r "${RELEASE_DIR}/requirements.txt"
+"${RELEASE_DIR}/.venv/bin/python" -m pip install   --disable-pip-version-check   --no-compile   -r "${RELEASE_DIR}/requirements.txt"
 phase_done
 
 chown -R root:"${SERVICE_USER}" "${RELEASE_DIR}"
