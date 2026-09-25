@@ -33,6 +33,7 @@ if ! id "${UI_USER}" >/dev/null 2>&1; then
 else
   usermod \
     --gid "${RUNTIME_GROUP}" \
+    --groups "" \
     "${UI_USER}"
 fi
 
