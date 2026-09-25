@@ -152,6 +152,27 @@ def _prune_release_rollback_backups(
 def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version: int) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
 
+    # Capacity must be checked against the space that will actually exist when
+    # the next rollback copy is created. Keeping all three historical rollback
+    # snapshots until after the copy can deadlock deployment once the database
+    # grows: the new copy cannot fit even though the oldest snapshot is already
+    # outside the intended post-create retention window. Preserve two existing
+    # generations, then let the newly verified snapshot become the third.
+    preprune_keep = max(
+        1,
+        DEFAULT_RELEASE_ROLLBACK_RETENTION - 1,
+    )
+    prepruned = _prune_release_rollback_backups(
+        backup_dir,
+        keep=preprune_keep,
+    )
+    if prepruned:
+        _progress(
+            "Database preparation: pre-pruned "
+            f"{prepruned} stale release rollback backup(s) "
+            "before capacity check."
+        )
+
     assert_backup_capacity(
         source=database,
         target_dir=backup_dir,
