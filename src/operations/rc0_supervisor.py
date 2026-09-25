@@ -35,6 +35,8 @@ from src.operations.runtime_health import (
 from src.operations.sqlite_runtime import (
     inspect_database,
     open_readonly_connection,
+    plan_backup_capacity,
+    resolve_backup_dir,
 )
 from src.providers.thetadata_control import (
     probe_theta_terminal,
@@ -1976,6 +1978,58 @@ def collect_snapshot(
             ),
         )
     )
+
+    try:
+        backup_capacity = (
+            plan_backup_capacity(
+                source=db_path,
+                target_dir=(
+                    resolve_backup_dir()
+                ),
+            )
+        )
+    except Exception as exc:
+        checks.append(
+            SupervisorCheck(
+                "backup-capacity",
+                "INFO",
+                (
+                    "Unable to project next verified "
+                    "backup capacity: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                blocking=False,
+            )
+        )
+    else:
+        checks.append(
+            SupervisorCheck(
+                "backup-capacity",
+                (
+                    "PASS"
+                    if (
+                        backup_capacity
+                        .feasible_after_safe_prune
+                    )
+                    else "INFO"
+                ),
+                (
+                    "Current free="
+                    f"{backup_capacity.filesystem_free_bytes}; "
+                    "safe-prune reclaimable="
+                    f"{backup_capacity.reclaimable_bytes}; "
+                    "projected free="
+                    f"{backup_capacity.projected_free_bytes}; "
+                    "required for next verified backup="
+                    f"{backup_capacity.required_free_bytes}; "
+                    "normal backups="
+                    f"{backup_capacity.current_backup_count}; "
+                    "retention="
+                    f"{backup_capacity.retention}."
+                ),
+                blocking=False,
+            )
+        )
 
     blockers = [
         check
