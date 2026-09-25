@@ -561,5 +561,5 @@ def test_quality_gate_verifies_lock_resolution_and_live_wal_ui_read():
     assert "committed-runtime-lock-linux-py313.txt" in workflow
     assert "resolved-runtime-lock-linux-py313.txt" in workflow
     assert "diff -u" in workflow
-    assert "Prove read-only UI can read a live WAL database" in workflow
+    assert "Prove provisioned UI can read a live WAL database" in workflow
     assert 'sudo -u "${ui_user}"' in workflow
