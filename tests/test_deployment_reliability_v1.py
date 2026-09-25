@@ -56,22 +56,24 @@ def test_health_timer_uses_strict_daemon_health():
     assert "--json" in service
 
 
-def test_deployment_env_contains_current_26_symbol_universe():
+def test_deployment_env_uses_governed_rotating_universe_profile():
     env = (
         ROOT
         / "deploy/christiania.env.example"
     ).read_text(encoding="utf-8")
 
-    line = next(
+    assert (
+        "CHRISTIANIA_UNIVERSE_PROFILE=LIQUID_US_RESEARCH_V1"
+        in env
+    )
+    assert "CHRISTIANIA_UNIVERSE_BATCH_SIZE=12" in env
+
+    active_symbol_lines = [
         value
         for value in env.splitlines()
         if value.startswith("CHRISTIANIA_SYMBOLS=")
-    )
-    symbols = line.split("=", 1)[1].split(",")
-
-    assert len(symbols) == 26
-    assert len(symbols) == len(set(symbols))
-    assert {"AAPL", "SPY", "IBIT"}.issubset(symbols)
+    ]
+    assert active_symbol_lines == []
 
 
 def test_theta_command_uses_only_java_jar(monkeypatch, tmp_path):
