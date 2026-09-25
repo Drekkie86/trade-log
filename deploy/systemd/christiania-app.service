@@ -19,6 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
+ProtectProc=invisible
 ProtectSystem=strict
 ReadOnlyPaths=/var/lib/christiania
 InaccessiblePaths=/etc/christiania
