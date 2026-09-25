@@ -394,3 +394,20 @@ def test_receiver_vendor_remains_outside_ui_read_group():
     )
 
     assert runtime_chown < vendor_chown < target_preflight
+
+def test_receiver_validates_ui_runtime_before_current_control_plane_gate():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    ui_gate = script.index(
+        'phase_start "Validating least-privilege UI runtime"'
+    )
+    control_plane = script.index(
+        'phase_start "Validating current production deployment safety"'
+    )
+
+    assert ui_gate < control_plane
+    assert "validate_ui_readonly_runtime" in script[ui_gate:control_plane]
+    assert 'sudo -u "${UI_USER}"' in script
+    assert "UI runtime unexpectedly has write access" in script
