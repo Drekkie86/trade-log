@@ -434,19 +434,16 @@ def test_release_receiver_pre_activation_gate_uses_current_release_policy():
         < post_activation_status
     )
 
-def test_release_receiver_pins_python_313_and_does_not_upgrade_pip():
+def test_release_receiver_prefers_side_by_side_python_313():
     receiver = (
         ROOT / "deploy/receive_release.sh"
     ).read_text(encoding="utf-8")
 
-    assert (
-        'if [[ "${PYTHON_VERSION}" != "3.13" ]]; then'
-        in receiver
-    )
-    assert (
-        "production python3 must be Python 3.13"
-        in receiver
-    )
+    assert "resolve_python_313()" in receiver
+    assert "for candidate in python3.13 python3; do" in receiver
+    assert 'PYTHON_BIN="$(resolve_python_313)"' in receiver
+    assert '"${PYTHON_BIN}" -m venv "${RELEASE_DIR}/.venv"' in receiver
+    assert "install python3.13 and python3.13-venv side-by-side" in receiver
     assert "pip install --upgrade pip" not in receiver
     assert "--disable-pip-version-check" in receiver
 
