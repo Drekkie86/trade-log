@@ -277,11 +277,17 @@ jobs:
           sudo test -f "${db}-wal"
           sudo test -f "${db}-shm"
 
+          readonly_repo="${tmp}/readonly-release"
+          sudo mkdir -p "${readonly_repo}"
+          sudo cp -a src "${readonly_repo}/src"
+          sudo chmod -R a+rX "${readonly_repo}"
+          python_bin="$(command -v python)"
+
           sudo -u "${ui_user}" \
             env \
               DB="${db}" \
-              REPO="${GITHUB_WORKSPACE}" \
-            "${GITHUB_WORKSPACE}/.venv/bin/python" - <<'PY'
+              REPO="${readonly_repo}" \
+            "${python_bin}" - <<'PY'
           import os
           import sys
           from pathlib import Path
