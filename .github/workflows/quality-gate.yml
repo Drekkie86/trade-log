@@ -175,11 +175,31 @@ jobs:
 
           provision
 
+          # Simulate legacy permissions from the pre-hardening runtime. The
+          # next provisioning pass must remove group write access, not merely
+          # add group read permission.
+          legacy_file="${state_root}/data/legacy.db"
+          sudo -u "${backend_user}" touch "${legacy_file}"
+          sudo chmod 0660 "${legacy_file}"
+
           # Prove an idempotent provisioning pass strips accidental
           # supplementary groups from the browser-facing identity.
           sudo groupadd --system "${extra_group}"
           sudo usermod -a -G "${extra_group}" "${ui_user}"
           provision
+
+          legacy_mode="$(
+            sudo stat -c '%a' "${legacy_file}"
+          )"
+          if [[ "${legacy_mode}" != "640" ]]; then
+            echo "Legacy file permissions did not converge to 640: ${legacy_mode}" >&2
+            exit 1
+          fi
+
+          if sudo -u "${ui_user}" test -w "${legacy_file}"; then
+            echo "UI identity still has write access after reprovision." >&2
+            exit 1
+          fi
 
           ui_groups="$(
             id -nG "${ui_user}" \
