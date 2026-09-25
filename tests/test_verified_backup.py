@@ -322,3 +322,115 @@ def test_backup_capacity_counts_committed_wal_growth(
         assert logical > main_after
     finally:
         conn.close()
+
+def test_backup_preprunes_before_capacity_check(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import shutil
+    import src.operations.sqlite_runtime as sqlite_runtime
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for index in range(3):
+        path = (
+            backup_dir
+            / f"christiania_backup_2026010{index + 1}T000000Z.db"
+        )
+        path.write_bytes(b"historical")
+        os.utime(path, (1_700_000_000 + index, 1_700_000_000 + index))
+
+    observed_counts = []
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 50 * 1024**3
+        free = 50 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    original_assert = sqlite_runtime.assert_backup_capacity
+
+    def assert_after_preprune(*, source, target_dir):
+        observed_counts.append(
+            len(
+                sqlite_runtime.backup_data_files(
+                    target_dir
+                )
+            )
+        )
+        return original_assert(
+            source=source,
+            target_dir=target_dir,
+        )
+
+    monkeypatch.setattr(
+        sqlite_runtime,
+        "assert_backup_capacity",
+        assert_after_preprune,
+    )
+
+    result = create_verified_backup(
+        db_path=source,
+        backup_dir=backup_dir,
+        retention=3,
+    )
+
+    assert observed_counts == [2]
+    assert result.pruned_count == 1
+    assert len(
+        sqlite_runtime.backup_data_files(
+            backup_dir
+        )
+    ) == 3
+
+
+def test_backup_retention_one_preserves_last_good_before_new_copy(
+    tmp_path,
+    monkeypatch,
+):
+    import shutil
+
+    source = tmp_path / "source.db"
+    backup_dir = tmp_path / "backups"
+    _seed_source(source)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    previous = (
+        backup_dir
+        / "christiania_backup_20260101T000000Z.db"
+    )
+    previous.write_bytes(b"known-good")
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 95 * 1024**3
+        free = 5 * 1024**3
+
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    import pytest
+
+    with pytest.raises(
+        RuntimeError,
+        match="Insufficient backup filesystem headroom",
+    ):
+        create_verified_backup(
+            db_path=source,
+            backup_dir=backup_dir,
+            retention=1,
+        )
+
+    assert previous.read_bytes() == b"known-good"
