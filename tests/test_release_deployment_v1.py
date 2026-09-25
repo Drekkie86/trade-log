@@ -449,3 +449,26 @@ def test_release_receiver_pins_python_313_and_does_not_upgrade_pip():
     )
     assert "pip install --upgrade pip" not in receiver
     assert "--disable-pip-version-check" in receiver
+
+def test_release_receiver_installs_exact_locked_runtime():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "requirements-lock-linux-py313.txt" in receiver
+    assert "--no-deps" in receiver
+    assert "-m pip check" in receiver
+    assert "-r \"${RELEASE_DIR}/requirements.txt\"" not in receiver
+    assert "installed Python runtime does not match" in receiver
+
+
+def test_committed_production_lock_contains_no_ci_only_packages():
+    lock = (
+        ROOT / "requirements-lock-linux-py313.txt"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "streamlit==" in lock
+    assert "scipy==" in lock
+    assert "pytest==" not in lock
+    assert "pluggy==" not in lock
+    assert "iniconfig==" not in lock
