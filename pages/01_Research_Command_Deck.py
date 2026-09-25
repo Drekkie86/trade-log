@@ -86,6 +86,27 @@ st.caption(
     f"research run: {latest_iteration.get('research_run_id') or 'n/a'}"
 )
 
+st.subheader("Universe coverage")
+coverage = runtime.get("universe_coverage") or {}
+u1, u2, u3, u4 = st.columns(4)
+u1.metric("Universe", coverage.get("configured_symbols", 0))
+u2.metric("Covered recently", coverage.get("covered_symbols", 0))
+u3.metric("Coverage", f"{float(coverage.get('coverage_pct') or 0.0):.0f}%")
+latest_batch_index = coverage.get("latest_batch_index")
+u4.metric(
+    "Current batch",
+    (
+        "n/a"
+        if latest_batch_index is None
+        else f"{int(latest_batch_index) + 1}/{coverage.get('batch_count') or '?'}"
+    ),
+)
+st.caption(
+    f"Profile: {coverage.get('profile') or 'explicit/local'} · "
+    f"latest batch size: {coverage.get('latest_batch_size') or 0} · "
+    f"window: {coverage.get('recent_window_iterations') or 0} iterations"
+)
+
 st.subheader("Prospective evidence accumulation")
 prospective = runtime.get("prospective") or {}
 p1, p2, p3, p4 = st.columns(4)

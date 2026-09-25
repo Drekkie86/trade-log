@@ -23,6 +23,9 @@ from src.research.full_research_cycle import (
 from src.research.shadow_outcome_collector import (
     collect_shadow_marks,
 )
+from src.research.universe_profiles import (
+    select_symbol_batch,
+)
 
 NY = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
@@ -549,6 +552,7 @@ def run_one_iteration(
         run_full_research_cycle,
     mark_collector: Callable =
         collect_shadow_marks,
+    universe_context: dict[str, object] | None = None,
 ) -> DaemonIterationSummary:
     heartbeat_daemon_lock(
         owner_token=owner_token,
@@ -638,6 +642,8 @@ def run_one_iteration(
                 {
                     "symbols":
                         symbols,
+                    "universe":
+                        universe_context,
                     "shadow_marks_complete":
                         marks.complete_marks,
                     "shadow_marks_incomplete":
@@ -680,6 +686,7 @@ def run_one_iteration(
             evidence_json=json.dumps(
                 {
                     "symbols": symbols,
+                    "universe": universe_context,
                     "interrupted": True,
                 },
                 sort_keys=True,
@@ -715,6 +722,8 @@ def run_one_iteration(
                 {
                     "symbols":
                         symbols,
+                    "universe":
+                        universe_context,
                 },
                 sort_keys=True,
             ),
@@ -736,6 +745,8 @@ def run_daemon(
         DEFAULT_INTERVAL_MINUTES,
     max_iterations: int | None = None,
     db_path=None,
+    batch_size: int | None = None,
+    universe_profile: str | None = None,
 ) -> int:
     load_env_file()
 
@@ -796,6 +807,16 @@ def run_daemon(
         massive_key
     )
 
+    effective_batch_size = (
+        len(symbols)
+        if batch_size is None
+        else min(batch_size, len(symbols))
+    )
+    if effective_batch_size < 1:
+        raise ResearchDaemonError(
+            "Research universe batch size must be >= 1."
+        )
+
     completed = 0
 
     try:
@@ -851,6 +872,31 @@ def run_daemon(
 
             print()
 
+            batch = select_symbol_batch(
+                symbols=symbols,
+                scheduled_for=slot,
+                batch_size=effective_batch_size,
+                interval_minutes=interval_minutes,
+                profile=universe_profile,
+            )
+            batch_symbols = list(batch.symbols)
+            universe_context = {
+                "profile": batch.profile,
+                "universe_size": batch.universe_size,
+                "batch_size": batch.batch_size,
+                "batch_index": batch.batch_index,
+                "batch_count": batch.batch_count,
+            }
+            print(
+                "Universe batch: "
+                f"{batch.batch_index + 1}/{batch.batch_count}; "
+                f"{batch.batch_size}/{batch.universe_size} symbols."
+            )
+            print(
+                "Symbols: "
+                + ", ".join(batch_symbols)
+            )
+
             theta_health = probe_theta_terminal(
                 base_url=theta_client.base_url,
             )
@@ -891,7 +937,8 @@ def run_daemon(
                             "provider_state": theta_health.state,
                             "provider_detail": theta_health.detail,
                             "collection_started": False,
-                            "symbols": symbols,
+                            "symbols": batch_symbols,
+                            "universe": universe_context,
                         },
                         sort_keys=True,
                     ),
@@ -911,12 +958,14 @@ def run_daemon(
                 summary = run_one_iteration(
                     scheduled_for=slot,
                     owner_token=owner_token,
-                    symbols=symbols,
+                    symbols=batch_symbols,
                     massive_client=
                         massive_client,
                     theta_client=
                         theta_client,
                     db_path=db_path,
+                    universe_context=
+                        universe_context,
                 )
 
             print(
