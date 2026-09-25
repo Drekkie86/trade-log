@@ -12,6 +12,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
 $SshOptions = @(
+    "-o", "IdentitiesOnly=yes",
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=20",
     "-o", "TCPKeepAlive=yes"
