@@ -73,6 +73,29 @@ phase_start() {
   echo "==> ${PHASE_NAME}"
 }
 
+resolve_python_313() {
+  local candidate=""
+  local version=""
+
+  for candidate in python3.13 python3; do
+    if ! command -v "${candidate}" >/dev/null 2>&1; then
+      continue
+    fi
+
+    version="$(
+      "${candidate}" -c \
+        'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+    )"
+
+    if [[ "${version}" == "3.13" ]]; then
+      command -v "${candidate}"
+      return 0
+    fi
+  done
+
+  fail "Python 3.13 interpreter not found; install python3.13 and python3.13-venv side-by-side."
+}
+
 phase_done() {
   local finished_at
   local elapsed
@@ -485,7 +508,6 @@ for required in \
   ln \
   mktemp \
   mv \
-  python3 \
   readlink \
   rm \
   seq \
@@ -713,13 +735,13 @@ else
 fi
 
 phase_start "Building isolated target runtime"
+PYTHON_BIN="$(resolve_python_313)"
 PYTHON_VERSION="$(
-  python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+  "${PYTHON_BIN}" -c \
+    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
 )"
-if [[ "${PYTHON_VERSION}" != "3.13" ]]; then
-  fail "production python3 must be Python 3.13; found ${PYTHON_VERSION}"
-fi
-python3 -m venv "${RELEASE_DIR}/.venv"
+echo "Using production Python ${PYTHON_VERSION}: ${PYTHON_BIN}"
+"${PYTHON_BIN}" -m venv "${RELEASE_DIR}/.venv"
 "${RELEASE_DIR}/.venv/bin/python" -m pip install \
   --disable-pip-version-check \
   --no-compile \

@@ -15,7 +15,31 @@ UI_ENV_ROOT="/etc/christiania-ui"
 UI_ENV_FILE="${UI_ENV_ROOT}/christiania.env"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-for required in python3 rsync systemctl useradd usermod groupadd getent grep sort install git; do
+resolve_python_313() {
+  local candidate=""
+  local version=""
+
+  for candidate in python3.13 python3; do
+    if ! command -v "${candidate}" >/dev/null 2>&1; then
+      continue
+    fi
+
+    version="$(
+      "${candidate}" -c \
+        'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+    )"
+
+    if [[ "${version}" == "3.13" ]]; then
+      command -v "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "Christiania requires Python 3.13; install python3.13 and python3.13-venv side-by-side." >&2
+  return 1
+}
+
+for required in rsync systemctl useradd usermod groupadd getent grep sort install git; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     echo "Required command not found: ${required}" >&2
     exit 3
@@ -41,15 +65,14 @@ DEPLOYED_COMMIT="${DEPLOYED_COMMIT,,}"
 
 rsync -a --delete --exclude '.git' --exclude '.venv' --exclude 'vendor/' --exclude '*.db*' --exclude '.env' "${SOURCE_DIR}/" "${APP_DIR}/"
 printf '%s\n' "${DEPLOYED_COMMIT}" > "${APP_DIR}/DEPLOYED_COMMIT"
+PYTHON_BIN="$(resolve_python_313)" || exit 5
 PYTHON_VERSION="$(
-  python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+  "${PYTHON_BIN}" -c \
+    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
 )"
-if [[ "${PYTHON_VERSION}" != "3.13" ]]; then
-  echo "Christiania requires Python 3.13; found ${PYTHON_VERSION}." >&2
-  exit 5
-fi
+echo "Using Christiania Python ${PYTHON_VERSION}: ${PYTHON_BIN}"
 
-python3 -m venv "${APP_DIR}/.venv"
+"${PYTHON_BIN}" -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/python" -m pip install \
   --disable-pip-version-check \
   --no-compile \
