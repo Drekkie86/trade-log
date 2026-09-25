@@ -450,3 +450,78 @@ def test_release_rollback_preprunes_before_capacity_check(
     assert len(committed) == 3
     assert Path(result.backup_path) in committed
 
+def test_release_rollback_infeasible_plan_preserves_all_snapshots(
+    monkeypatch,
+    tmp_path,
+):
+    db = _make_v27_database(
+        tmp_path
+    )
+    backups = (
+        tmp_path
+        / "backups"
+    )
+    backups.mkdir()
+    pointer = (
+        tmp_path
+        / "rollback-pointer.txt"
+    )
+
+    monkeypatch.setenv(
+        "CHRISTIANIA_DB_PATH",
+        str(db),
+    )
+    monkeypatch.setenv(
+        "CHRISTIANIA_BACKUP_DIR",
+        str(backups),
+    )
+
+    existing = []
+    for index in range(4):
+        path = (
+            backups
+            / (
+                "christiania_release_rollback_"
+                f"2026092{index}T000000000000Z_v26.db"
+            )
+        )
+        path.write_bytes(
+            b"known-good"
+        )
+        existing.append(path)
+
+    class Usage:
+        total = 100 * 1024**3
+        used = 99 * 1024**3
+        free = 1 * 1024**3
+
+    monkeypatch.setattr(
+        release_db.shutil,
+        "disk_usage",
+        lambda path: Usage(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "Existing release rollback snapshots "
+            "were left untouched"
+        ),
+    ):
+        prepare_release_database(
+            migrations_dir=MIGRATIONS,
+            rollback_pointer=pointer,
+        )
+
+    assert pointer.exists() is False
+    assert all(
+        path.is_file()
+        for path in existing
+    )
+    assert len(
+        list(
+            backups.glob(
+                "christiania_release_rollback_*.db"
+            )
+        )
+    ) == 4
