@@ -119,6 +119,115 @@ PY
   )
 }
 
+validate_ui_readonly_runtime() {
+  (
+    cd "${RELEASE_DIR}"
+    sudo -u "${UI_USER}" \
+      "${RELEASE_DIR}/.venv/bin/python" \
+      - "${UI_ENV_FILE}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from src.config import (
+    load_runtime_env_file,
+    read_env_file,
+)
+from src.database.repository import (
+    EXPECTED_SCHEMA_VERSION,
+    resolve_db_path,
+)
+from src.operations.sqlite_runtime import (
+    open_readonly_connection,
+)
+from src.operations.ui_runtime_env import (
+    select_ui_runtime_settings,
+)
+
+env_path = Path(sys.argv[1])
+values = read_env_file(env_path)
+selected = select_ui_runtime_settings(values)
+
+if values != selected:
+    raise SystemExit(
+        "UI runtime environment contains settings outside the approved allowlist."
+    )
+
+load_runtime_env_file(
+    env_path,
+    overwrite=True,
+)
+
+database = resolve_db_path()
+backup_dir = Path(
+    selected["CHRISTIANIA_BACKUP_DIR"]
+).expanduser()
+
+if not database.is_file():
+    raise SystemExit(
+        f"UI runtime database is missing: {database}"
+    )
+
+if not backup_dir.is_dir():
+    raise SystemExit(
+        f"UI runtime backup directory is missing: {backup_dir}"
+    )
+
+if os.access(database, os.W_OK):
+    raise SystemExit(
+        "UI runtime unexpectedly has write access to the database file."
+    )
+
+if os.access(database.parent, os.W_OK):
+    raise SystemExit(
+        "UI runtime unexpectedly has write access to the database directory."
+    )
+
+if os.access(backup_dir, os.W_OK):
+    raise SystemExit(
+        "UI runtime unexpectedly has write access to the backup directory."
+    )
+
+connection = open_readonly_connection(
+    database
+)
+try:
+    row = connection.execute(
+        "SELECT MAX(version) FROM schema_version;"
+    ).fetchone()
+    version = (
+        int(row[0])
+        if row is not None
+        and row[0] is not None
+        else None
+    )
+    journal_mode = str(
+        connection.execute(
+            "PRAGMA journal_mode;"
+        ).fetchone()[0]
+    ).lower()
+finally:
+    connection.close()
+
+if version != EXPECTED_SCHEMA_VERSION:
+    raise SystemExit(
+        "UI runtime schema mismatch: "
+        f"found v{version}, expected v{EXPECTED_SCHEMA_VERSION}."
+    )
+
+if journal_mode != "wal":
+    raise SystemExit(
+        "UI runtime database is not readable in WAL mode."
+    )
+
+print(
+    "Least-privilege UI runtime validation passed: "
+    f"schema v{version}; WAL readable; DB and backup paths non-writable."
+)
+PY
+  )
+}
+
 validate_target_no_schema_change() {
   (
     cd "${RELEASE_DIR}"
@@ -370,6 +479,7 @@ for required in \
   find \
   getent \
   groupadd \
+  grep \
   id \
   install \
   ln \
@@ -655,6 +765,10 @@ install \
   "${UI_ENV_FILE}"
 rm -f "${UI_ENV_TEMP}"
 UI_ENV_TEMP=""
+
+phase_start "Validating least-privilege UI runtime"
+validate_ui_readonly_runtime
+phase_done
 
 phase_start "Validating current production deployment safety"
 if [[ "${RECOVERY_NO_SCHEMA_CHANGE}" -eq 1 ]]; then
