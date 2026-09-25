@@ -18,7 +18,7 @@ LIQUID_US_RESEARCH_V1 = (
     "AVGO", "NFLX", "ORCL", "CRM",
     "JPM", "BAC", "GS", "MS",
     "V", "MA", "XOM", "CVX",
-    "UNH", "LLY", "JNJ", "ABBV",
+    "UNH", "LLY", "PLTR", "INTC",
     "COST", "WMT", "HD", "CAT",
     "BA", "GE", "MU", "COIN",
 )
