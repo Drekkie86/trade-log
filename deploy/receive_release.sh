@@ -752,8 +752,12 @@ if [[ -d "${RELEASE_DIR}/vendor" ]]; then
   chmod -R g+rX,o-rwx "${RELEASE_DIR}/vendor"
 fi
 
-chown root:"${RUNTIME_GROUP}" "${RELEASE_ROOT}"
-chmod 0750 "${RELEASE_ROOT}"
+# Keep the release-root group on the backend identity so already-running
+# pre-release processes retain traversal before quiescence. Other users get
+# execute-only traversal; the active release directory itself is group-readable
+# only by christiania-runtime, while failed/rollback children remain protected.
+chown root:"${SERVICE_USER}" "${RELEASE_ROOT}"
+chmod 0751 "${RELEASE_ROOT}"
 
 UI_ENV_TEMP="$(mktemp)"
 "${RELEASE_DIR}/.venv/bin/python" \
