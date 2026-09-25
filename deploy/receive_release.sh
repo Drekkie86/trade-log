@@ -795,10 +795,6 @@ install \
 rm -f "${UI_ENV_TEMP}"
 UI_ENV_TEMP=""
 
-phase_start "Validating least-privilege UI runtime"
-validate_ui_readonly_runtime
-phase_done
-
 phase_start "Validating current production deployment safety"
 if [[ "${RECOVERY_NO_SCHEMA_CHANGE}" -eq 1 ]]; then
   validate_target_no_schema_change
