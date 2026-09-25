@@ -988,3 +988,126 @@ def test_control_plane_status_monitors_active_public_edge_even_if_disabled(
     assert status.public_edge_expected is True
     assert status.public_edge_state == "FAIL"
     assert status.ready is False
+
+def test_backup_schema_mismatch_does_not_deadlock_schema_migration_deploy(
+    tmp_path: Path,
+):
+    (
+        app_dir,
+        audit_dir,
+        systemd_root,
+    ) = _prepare(
+        tmp_path
+    )
+
+    audit_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    (
+        audit_dir
+        / "rc0_supervisor_status.json"
+    ).write_text(
+        json.dumps(
+            {
+                "state": "UNHEALTHY",
+                "observed_at": (
+                    FRESH_OBSERVED_AT
+                ),
+                "checks": [
+                    {
+                        "name": "research-progress",
+                        "state": "PASS",
+                        "detail": (
+                            "Research production current."
+                        ),
+                    },
+                    {
+                        "name": "backup-recovery-point",
+                        "state": "FAIL",
+                        "detail": (
+                            "Recovery point due=True; "
+                            "reason=LATEST_BACKUP_SCHEMA_MISMATCH; "
+                            "age_hours=0.1."
+                        ),
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = _collect(
+        app_dir=app_dir,
+        audit_dir=audit_dir,
+        systemd_root=systemd_root,
+    )
+
+    # Full operational readiness stays strict until a current-schema normal
+    # backup exists, but the deployment itself must not be rolled back after
+    # its verified pre-migration rollback snapshot was committed.
+    assert status.ready is False
+    assert status.supervisor_state == "UNHEALTHY"
+    assert status.deployment_supervisor_state == "PASS"
+    assert status.deployment_safe is True
+
+
+def test_other_backup_recovery_point_failures_still_block_deployment(
+    tmp_path: Path,
+):
+    (
+        app_dir,
+        audit_dir,
+        systemd_root,
+    ) = _prepare(
+        tmp_path
+    )
+
+    audit_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    (
+        audit_dir
+        / "rc0_supervisor_status.json"
+    ).write_text(
+        json.dumps(
+            {
+                "state": "UNHEALTHY",
+                "observed_at": (
+                    FRESH_OBSERVED_AT
+                ),
+                "checks": [
+                    {
+                        "name": "research-progress",
+                        "state": "PASS",
+                        "detail": (
+                            "Research production current."
+                        ),
+                    },
+                    {
+                        "name": "backup-recovery-point",
+                        "state": "FAIL",
+                        "detail": (
+                            "Recovery point due=True; "
+                            "reason=NO_RECOVERY_POINT."
+                        ),
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = _collect(
+        app_dir=app_dir,
+        audit_dir=audit_dir,
+        systemd_root=systemd_root,
+    )
+
+    assert status.ready is False
+    assert status.deployment_supervisor_state == "FAIL"
+    assert status.deployment_safe is False
+
