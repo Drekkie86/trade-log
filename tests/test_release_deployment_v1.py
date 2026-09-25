@@ -311,7 +311,6 @@ def test_release_receiver_has_complete_command_prerequisite_checks():
         "ln",
         "mktemp",
         "mv",
-        "python3",
         "readlink",
         "rm",
         "seq",
@@ -322,6 +321,8 @@ def test_release_receiver_has_complete_command_prerequisite_checks():
         "tar",
         "tr",
     }.issubset(required_commands)
+    assert "python3" not in required_commands
+    assert "resolve_python_313()" in receiver
 
 
 def test_release_receiver_avoids_redundant_deep_database_preflights():
