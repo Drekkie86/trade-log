@@ -53,7 +53,21 @@ python3 -m venv "${APP_DIR}/.venv"
 "${APP_DIR}/.venv/bin/python" -m pip install \
   --disable-pip-version-check \
   --no-compile \
-  -r "${APP_DIR}/requirements.txt"
+  --no-deps \
+  -r "${APP_DIR}/requirements-lock-linux-py313.txt"
+"${APP_DIR}/.venv/bin/python" -m pip check
+
+LOCK_ACTUAL="$(
+  "${APP_DIR}/.venv/bin/python" -m pip freeze
+)"
+LOCK_EXPECTED="$(
+  grep -vE '^[[:space:]]*(#|$)' \
+    "${APP_DIR}/requirements-lock-linux-py313.txt"
+)"
+if [[ "${LOCK_ACTUAL}" != "${LOCK_EXPECTED}" ]]; then
+  echo "Installed Python runtime does not match requirements-lock-linux-py313.txt." >&2
+  exit 6
+fi
 
 chown -R root:"${RUNTIME_GROUP}" "${APP_DIR}"
 chmod -R g+rX,o-rwx "${APP_DIR}"
