@@ -628,6 +628,17 @@ def create_verified_backup(
     )
     keep = capacity_plan.retention
 
+    if not capacity_plan.feasible_after_safe_prune:
+        raise RuntimeError(
+            "Insufficient backup filesystem headroom even after all "
+            "policy-permitted retention pruning: "
+            f"free={capacity_plan.filesystem_free_bytes} bytes, "
+            f"safe_prune_reclaimable={capacity_plan.reclaimable_bytes} bytes, "
+            f"projected_free={capacity_plan.projected_free_bytes} bytes, "
+            f"required={capacity_plan.required_free_bytes} bytes. "
+            "Existing verified backups were left untouched."
+        )
+
     # A new full backup temporarily coexists with retained recovery points.
     # Capacity planning treats configured retention as a maximum target and
     # may safely retain fewer old copies when disk headroom requires it.
