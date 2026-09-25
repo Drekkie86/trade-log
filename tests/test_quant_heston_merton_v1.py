@@ -72,3 +72,29 @@ def test_merton_invalid_jump_intensity_rejected():
             VanillaOption(100, 100, 1, 0.02, 0.2, "CALL"),
             MertonJumpParameters(-1, 0, 0.2),
         )
+
+def test_merton_refuses_max_terms_that_truncate_material_tail_mass():
+    option = VanillaOption(
+        100,
+        100,
+        1.0,
+        0.02,
+        0.2,
+        "CALL",
+    )
+    params = MertonJumpParameters(
+        100.0,
+        -0.01,
+        0.05,
+    )
+
+    with pytest.raises(
+        QuantInputError,
+        match="max_terms truncates",
+    ):
+        merton_price(
+            option,
+            params,
+            tail_probability=1e-12,
+            max_terms=5,
+        )
