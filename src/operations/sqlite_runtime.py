@@ -488,6 +488,34 @@ def create_verified_backup(
         exist_ok=True,
     )
 
+    keep = (
+        retention
+        if retention is not None
+        else backup_retention_count()
+    )
+
+    if keep < 1:
+        raise ValueError(
+            "Backup retention must be >= 1."
+        )
+
+    # A new full backup temporarily coexists with retained recovery points.
+    # If retention is already full, waiting until after the copy to prune can
+    # deadlock on disk headroom even though the oldest backup is outside the
+    # intended post-create retention window. Preserve at least one known-good
+    # recovery point, and otherwise make one slot before the capacity check.
+    preprune_keep = max(1, keep - 1)
+    prepruned = _prune_backups(
+        target_dir,
+        keep=preprune_keep,
+    )
+
+    if progress is not None and prepruned:
+        progress(
+            "retention: pre-pruned "
+            f"{prepruned} stale backup(s) before capacity check"
+        )
+
     assert_backup_capacity(
         source=source,
         target_dir=target_dir,
@@ -498,17 +526,6 @@ def create_verified_backup(
             "capacity: passed "
             f"logical_source_bytes={backup_logical_source_bytes(source)} "
             f"main_file_bytes={source.stat().st_size}"
-        )
-
-    keep = (
-        retention
-        if retention is not None
-        else backup_retention_count()
-    )
-
-    if keep < 1:
-        raise ValueError(
-            "Backup retention must be >= 1."
         )
 
     stamp = datetime.now(
@@ -640,7 +657,7 @@ def create_verified_backup(
             temp_path.unlink()
         raise
 
-    pruned = _prune_backups(
+    pruned = prepruned + _prune_backups(
         target_dir,
         keep=keep,
     )
