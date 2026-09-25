@@ -5,16 +5,16 @@ import streamlit as st
 from src.dashboard.research_command_deck_v1 import load_research_command_deck
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def _cached_research_command_deck():
-    return load_research_command_deck()
-
 
 st.set_page_config(
     page_title="Christiania — Research Command Deck",
     page_icon="⚓",
     layout="wide",
 )
+
+@st.cache_data(ttl=180, show_spinner=False)
+def _cached_research_command_deck():
+    return load_research_command_deck()
 
 st.title("Christiania — Research Command Deck")
 st.caption(
