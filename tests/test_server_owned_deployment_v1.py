@@ -107,3 +107,33 @@ def test_release_performance_probe_never_mutates_live_runtime():
     assert 'PRAGMA wal_checkpoint' not in probe
     assert 'ANALYZE' not in probe
     assert 'VACUUM' not in probe
+
+
+def test_release_activation_requires_recent_exact_sha_performance_evidence():
+    deployer = (
+        ROOT / "deploy/deploy_release.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "performance-probes" in deployer
+    assert "-mmin -1440" in deployer
+    assert "Run deploy/probe_release_performance.ps1 first." in deployer
+    assert "performanceReport.release_commit -ne $head" in deployer
+    assert "performanceReport.read_only" in deployer
+    assert "performanceReport.probe_version -lt 2" in deployer
+    assert '"Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL"' in deployer
+
+
+def test_performance_probe_client_is_exact_main_sha_and_server_owned():
+    client = (
+        ROOT / "deploy/probe_release_performance.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "local HEAD is not identical to origin/main" in client
+    assert "$_.event -eq \"push\"" in client
+    assert "$_.conclusion -eq \"success\"" in client
+    assert "systemd-run" in client
+    assert "--property=TimeoutStopSec=infinity" in client
+    assert "--no-block" in client
+    assert "performanceReport" not in client
+    assert "release_commit" in client
+    assert "read_only" in client
