@@ -200,3 +200,16 @@ def test_deployment_preflight_matches_python_313_runtime():
     assert 'sys.version_info[:2] == (3, 13)' in source
     assert "Python 3.13 is required" in source
     assert "Python 3.10 or newer is required" not in source
+
+
+def test_decision_desk_is_fragmented_for_row_interactions():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    page_start = app.index('elif page == "Decision Desk":')
+    next_page = app.index('elif page == "Research Runs":', page_start)
+    block = app[page_start:next_page]
+
+    assert "@st.fragment" in block
+    assert "def _render_decision_desk_page():" in block
+    assert '_show_selectable_table(' in block
+    assert '_render_decision_desk_page()' in block
