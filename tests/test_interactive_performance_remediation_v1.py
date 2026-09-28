@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.dashboard.read_model import load_command_deck
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -10,20 +12,30 @@ def test_navigation_is_resolved_before_expensive_runtime_snapshot():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
 
     assert app.index('page = st.radio(') < app.index(
-        'snapshot, backup_inventory = _load_runtime_state()'
+        'snapshot, backup_inventory = _load_runtime_state(page)'
     )
+
+
+def test_interactive_runtime_is_page_scoped_and_background_refreshed():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    cache_start = app.index("def _cached_page_runtime_state")
+    cache_end = app.index("def _load_runtime_state", cache_start)
+    cache_block = app[cache_start:cache_end]
+
+    assert 'refresh_mode="background"' in app
+    assert "page=page" in cache_block
+    assert "include_provider_health=False" in cache_block
+    assert "inventory_backups_fast().as_dict()" in cache_block
+    assert 'if page == "Dashboard"' in cache_block
 
 
 def test_normal_runtime_snapshot_does_not_probe_theta_inline():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
 
-    runtime_start = app.index("def _load_runtime_state")
-    runtime_end = app.index("def _cached_deep_ops_readiness", runtime_start)
-    runtime = app[runtime_start:runtime_end]
-
-    assert "include_provider_health=False" in runtime
-    assert 'refresh_mode="background"' in app
     assert "def _cached_theta_health()" in app
+    assert 'refresh_mode="background"' in app
+    assert "include_provider_health=False" in app
 
 
 def test_decision_desk_model_dossier_is_explicitly_requested():
@@ -42,6 +54,75 @@ def test_decision_desk_model_dossier_is_explicitly_requested():
     assert block.index('"Run model dossier"') < block.index(
         "_cached_candidate_model_dossier(full_selected)"
     )
+
+
+def test_dashboard_loader_skips_unrelated_populations(db_path):
+    deck = load_command_deck(
+        db_path,
+        include_provider_health=False,
+        deep_integrity=False,
+        page="Dashboard",
+    )
+
+    assert deck["ready"] is True
+    assert deck["read_model_page"] == "Dashboard"
+    assert deck["decision_desk_candidates"] == []
+    assert deck["shadow_candidate_followup"] == []
+    assert deck["recent_anomalies"] == []
+    assert deck["checkpoint_evaluations"] == []
+
+    timings = deck["read_model_timings_ms"]
+    assert "runtime_ms" in timings
+    assert "prospective_ms" in timings
+    assert "counts_ms" in timings
+    assert "governance_ms" in timings
+    assert "runs_ms" in timings
+    assert "decision_ms" not in timings
+    assert "shadow_detail_ms" not in timings
+    assert "observations_ms" not in timings
+
+
+def test_decision_desk_loader_skips_dashboard_and_shadow_history(db_path):
+    deck = load_command_deck(
+        db_path,
+        include_provider_health=False,
+        deep_integrity=False,
+        page="Decision Desk",
+    )
+
+    assert deck["ready"] is True
+    assert deck["read_model_page"] == "Decision Desk"
+    assert deck["recent_iterations"] == []
+    assert deck["shadow_candidate_followup"] == []
+    assert deck["historical_replay_latest"] == []
+
+    timings = deck["read_model_timings_ms"]
+    assert "governance_ms" in timings
+    assert "decision_ms" in timings
+    assert "decision_risk_ms" in timings
+    assert "runtime_ms" not in timings
+    assert "replay_ms" not in timings
+    assert "data_quality_ms" not in timings
+
+
+def test_non_database_heavy_quant_page_uses_minimal_read_model(db_path):
+    deck = load_command_deck(
+        db_path,
+        include_provider_health=False,
+        deep_integrity=False,
+        page="Quant Models",
+    )
+
+    assert deck["ready"] is True
+    assert deck["read_model_page"] == "Quant Models"
+    assert deck["decision_desk_candidates"] == []
+    assert deck["recent_iterations"] == []
+    assert deck["data_quality"] == {}
+    assert set(deck["read_model_timings_ms"]) == {
+        "database_health_ms",
+        "market_clock_ms",
+        "total_ms",
+    }
 
 
 def test_candidate_window_queries_are_bounded_before_history_ranking():
@@ -70,6 +151,45 @@ def test_candidate_window_queries_are_bounded_before_history_ranking():
     assert follow.count("JOIN recent_candidates AS rc") >= 4
     assert "FROM recent_candidates AS sc" in follow
     assert follow.index("LIMIT 100") < follow.index("ROW_NUMBER() OVER")
+
+
+def test_prospective_recovered_sample_count_avoids_string_distinct():
+    source = (
+        ROOT / "src/dashboard/read_model.py"
+    ).read_text(encoding="utf-8")
+
+    prospective_start = source.index("WITH prospective_rows AS")
+    counts_start = source.index('if _needs("counts")', prospective_start)
+    block = source[prospective_start:counts_start]
+
+    assert "CAST(research_run_id AS TEXT)" not in block
+    assert "GROUP BY research_run_id, underlying" in block
+    assert "FROM recovered_pairs" in block
+
+
+def test_replay_latest_mark_uses_indexable_correlated_lookup():
+    source = (
+        ROOT / "src/dashboard/read_model.py"
+    ).read_text(encoding="utf-8")
+
+    replay_start = source.index('if _needs("replay")')
+    lifecycle_start = source.index('if _needs("lifecycle")', replay_start)
+    replay = source[replay_start:lifecycle_start]
+
+    assert "ROW_NUMBER() OVER" not in replay
+    assert "WHERE hrm.policy_replay_id = hpr.id" in replay
+    assert "ORDER BY hrm.observed_at DESC, hrm.id DESC" in replay
+    assert "LIMIT 1" in replay
+
+
+def test_deep_ops_readiness_is_scoped_instead_of_loading_every_page():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    start = app.index("def _cached_deep_ops_readiness")
+    end = app.index("with st.sidebar:", start)
+    block = app[start:end]
+
+    assert 'page="Ops Readiness"' in block
 
 
 def test_deployment_preflight_matches_python_313_runtime():
