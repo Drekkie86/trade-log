@@ -759,282 +759,287 @@ if page == "Dashboard":
         )
 
 elif page == "Decision Desk":
-    section_heading(
-        "Decision Desk V2",
-        "One candidate-level synthesis of anomaly evidence, exact structure, settlement, market quality, risk, prospective history, shadow follow-up, model diagnostics and scenario stress.",
-    )
-    st.caption(
-        "CURRENT GLOBAL CONCLUSION: NO TRADE while candidate-specific scientific governance remains disabled. "
-        "The desk can also classify research as CONTINUE SHADOW. ELIGIBLE FOR MANUAL REVIEW requires every gate. "
-        "Christiania does not submit orders."
-    )
-
-    universe_state = cash_settled_research_universe()
-    u1, u2, u3 = st.columns(3)
-    u1.metric("Cash-settled research universe", ", ".join(universe_state.symbols))
-    u2.metric("Provider compatibility", universe_state.provider_compatibility_state)
-    u3.metric("Live collection enabled", "YES" if universe_state.live_collection_enabled else "NO")
-    _visual_note(universe_state.note)
-
-    with st.expander("Session risk controls", expanded=True):
+    @st.fragment
+    def _render_decision_desk_page():
+        section_heading(
+            "Decision Desk V2",
+            "One candidate-level synthesis of anomaly evidence, exact structure, settlement, market quality, risk, prospective history, shadow follow-up, model diagnostics and scenario stress.",
+        )
         st.caption(
-            "These are manual review controls for this session. They do not create broker orders. A zero value blocks manual eligibility. "
-            "Defined-risk maximum loss is primary; the loss threshold is only a monitoring trigger."
-        )
-        rc1, rc2, rc3 = st.columns(3)
-        max_trade_risk_eur = rc1.number_input(
-            "Maximum loss budget per trade (€)", min_value=0.0, max_value=500.0,
-            value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)), step=5.0,
-            key="decision_max_trade_risk_eur",
-        )
-        stop_loss_pct = rc2.number_input(
-            "Planned loss threshold (% of reserved risk)", min_value=0.0, max_value=100.0,
-            value=float(st.session_state.get("_chr_stop_loss_pct", 0.0)), step=5.0,
-            key="decision_stop_loss_pct",
-        )
-        rc3.metric("Active bankroll cap", "€500", "no compounding")
-        st.session_state["_chr_max_trade_risk_eur"] = max_trade_risk_eur
-        st.session_state["_chr_stop_loss_pct"] = stop_loss_pct
-        st.caption("A stop threshold is a monitoring rule, not a guaranteed fill. Defined-risk maximum loss remains the primary protection.")
-
-    board = build_candidate_review_board(
-        decision_candidates,
-        models=snapshot.get("models", []),
-        hypotheses=snapshot.get("hypotheses", []),
-        max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
-        stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
-    )
-
-    no_trade_count = sum(1 for row in board if row.get("decision_desk_disposition") == "NO TRADE")
-    shadow_count = sum(1 for row in board if row.get("decision_desk_disposition") == "CONTINUE SHADOW")
-    eligible_count = sum(1 for row in board if row.get("decision_desk_disposition") == "ELIGIBLE FOR MANUAL REVIEW")
-    cash_verified_count = sum(1 for row in board if row.get("settlement_state") == "VERIFIED_CASH_SETTLED")
-    top1, top2, top3, top4 = st.columns(4)
-    top1.metric("Tracked candidates", _fmt_count(len(board)))
-    top2.metric("NO TRADE", _fmt_count(no_trade_count))
-    top3.metric("Continue shadow", _fmt_count(shadow_count))
-    top4.metric("Manual-review eligible", _fmt_count(eligible_count), "0 is valid")
-    st.metric("Cash-settlement verified", _fmt_count(cash_verified_count), "exact contract identity required")
-    _visual_note(
-        "The desk separates hard safety failure from scientific incompleteness. NO TRADE means a hard gate failed; CONTINUE SHADOW means the candidate may remain useful research but has not earned manual-trade review."
-    )
-
-    if cash_verified_count == 0 and board:
-        st.warning(
-            "No tracked candidate currently passes the exact cash-settlement gate. Existing equity/ETF candidates remain useful shadow research, but Christiania will not recommend them for live/manual use."
+            "CURRENT GLOBAL CONCLUSION: NO TRADE while candidate-specific scientific governance remains disabled. "
+            "The desk can also classify research as CONTINUE SHADOW. ELIGIBLE FOR MANUAL REVIEW requires every gate. "
+            "Christiania does not submit orders."
         )
 
-    if not board:
-        st.info("No shadow candidates are available for Decision Desk synthesis yet.")
-    else:
-        section_heading("Research review board", "Select a row to open the complete candidate dossier.")
-        board_columns = [
-            "research_rank", "candidate_id", "underlying", "structure_id", "anomaly_direction",
-            "abs_iv_residual", "settlement_state", "market_quality_state", "candidate_governance_state",
-            "prospective_evidence_state", "time_to_expiry_state", "decision_blocker_count",
-            "decision_desk_disposition", "research_action",
-        ]
-        selected = _show_selectable_table(board, key="decision_desk_review_board_v2", columns=board_columns, height=340)
-        _visual_note(
-            "Research rank is only an inspection priority. It is not probability of profit, calibrated EV, or a recommendation score."
-        )
-        if selected is None:
-            selected = board[0]
-            st.caption("No row selected — showing the highest research-review priority candidate.")
-        candidate_id = int(selected.get("candidate_id"))
-        full_selected = next((row for row in board if int(row.get("candidate_id")) == candidate_id), selected)
+        universe_state = cash_settled_research_universe()
+        u1, u2, u3 = st.columns(3)
+        u1.metric("Cash-settled research universe", ", ".join(universe_state.symbols))
+        u2.metric("Provider compatibility", universe_state.provider_compatibility_state)
+        u3.metric("Live collection enabled", "YES" if universe_state.live_collection_enabled else "NO")
+        _visual_note(universe_state.note)
 
-        settlement = classify_settlement(
-            full_selected.get("underlying"), observed_exercise_style=full_selected.get("exercise_style"),
-            reference_contract_id=full_selected.get("reference_contract_id"), shares_per_contract=full_selected.get("target_shares_per_contract"),
-        )
-        risk_plan = build_risk_plan(
-            full_selected, max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
+        with st.expander("Session risk controls", expanded=True):
+            st.caption(
+                "These are manual review controls for this session. They do not create broker orders. A zero value blocks manual eligibility. "
+                "Defined-risk maximum loss is primary; the loss threshold is only a monitoring trigger."
+            )
+            rc1, rc2, rc3 = st.columns(3)
+            max_trade_risk_eur = rc1.number_input(
+                "Maximum loss budget per trade (€)", min_value=0.0, max_value=500.0,
+                value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)), step=5.0,
+                key="decision_max_trade_risk_eur",
+            )
+            stop_loss_pct = rc2.number_input(
+                "Planned loss threshold (% of reserved risk)", min_value=0.0, max_value=100.0,
+                value=float(st.session_state.get("_chr_stop_loss_pct", 0.0)), step=5.0,
+                key="decision_stop_loss_pct",
+            )
+            rc3.metric("Active bankroll cap", "€500", "no compounding")
+            st.session_state["_chr_max_trade_risk_eur"] = max_trade_risk_eur
+            st.session_state["_chr_stop_loss_pct"] = stop_loss_pct
+            st.caption("A stop threshold is a monitoring rule, not a guaranteed fill. Defined-risk maximum loss remains the primary protection.")
+
+        board = build_candidate_review_board(
+            decision_candidates,
+            models=snapshot.get("models", []),
+            hypotheses=snapshot.get("hypotheses", []),
+            max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
             stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
         )
-        governance = resolve_candidate_governance(full_selected, models=snapshot.get("models", []), hypotheses=snapshot.get("hypotheses", []))
-        market_quality = assess_market_quality(full_selected)
-        evidence = assess_prospective_evidence(full_selected)
-        tte = resolve_time_to_expiry(full_selected)
-        exit_monitor = assess_exit_monitor(full_selected, risk_plan)
 
-        section_heading("Frozen shadow risk evidence")
-        frozen_risk = full_selected.get("frozen_risk_plan")
-        if not frozen_risk:
-            st.warning("NOT FROZEN — session controls are exploratory and do not count as prospective risk evidence.")
-            st.caption("Freeze a plan with record_shadow_risk_plan_v1.py before using risk-management outcomes as prospective evidence.")
-        else:
-            fr1, fr2, fr3, fr4 = st.columns(4)
-            fr1.metric("Risk-plan state", "FROZEN")
-            fr2.metric("Defined max loss", f"€{float(frozen_risk.get('max_defined_loss_eur_minor') or 0)/100:.2f}")
-            fr3.metric("Reserved risk", f"€{float(frozen_risk.get('reserved_risk_eur_minor') or 0)/100:.2f}")
-            fr4.metric("Latest monitor", str(frozen_risk.get("overall_state") or "NOT ASSESSED"))
-            st.caption("Frozen plans are immutable. Assessments are append-only. A stop threshold is never presented as a guaranteed fill.")
-
-        section_heading("Current conclusion")
-        disposition = full_selected.get("decision_desk_disposition")
-        blockers = list(full_selected.get("decision_blockers") or [])
-        if disposition == "NO TRADE":
-            st.error("NO TRADE")
-        elif disposition == "CONTINUE SHADOW":
-            st.warning("CONTINUE SHADOW — useful research, not eligible for manual trade review")
-        else:
-            st.success("ELIGIBLE FOR MANUAL REVIEW — still not an order")
-        if blockers:
-            st.markdown("**Unresolved / blocking reasons:** " + " · ".join(blockers))
-        st.caption("A visually attractive anomaly can never override settlement, quote quality, evidence, governance or risk controls.")
-
-        section_heading("Candidate dossier", "What Christiania observed at inception and what happened afterward.")
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Underlying", str(full_selected.get("underlying") or "—"))
-        d2.metric("Structure", str(full_selected.get("structure_id") or "—"))
-        d3.metric("Absolute IV residual", _fmt_number(full_selected.get("abs_iv_residual"), decimals=4))
-        latest_pnl = full_selected.get("latest_estimated_net_pnl_eur_minor")
-        d4.metric("Latest shadow net P&L", "—" if latest_pnl is None else f"€{_fmt_number(float(latest_pnl)/100.0, decimals=2)}")
-        _show_table([full_selected], columns=[
-            "candidate_id", "research_run_id", "surfaced_at", "underlying", "expiration", "right", "target_strike",
-            "hypothesis_family", "hypothesis_version", "scanner_family_id", "scanner_version", "primary_research_model",
-            "anomaly_direction", "iv_residual", "abs_iv_residual", "residual_threshold", "admission_decision",
-            "admission_reason_code", "admission_label", "collection_status", "retry_count", "was_recovered",
-            "mark_count", "validated_outcomes", "latest_mark_at",
-        ])
-
-        section_heading("Exact hypothetical structure")
-        legs = full_selected.get("structure_legs") or []
-        if legs:
-            _show_table(legs, columns=[
-                "side", "quantity", "right", "strike", "entry_price", "bid", "ask", "quote_at",
-                "implied_volatility", "delta", "gamma", "theta", "vega", "shares_per_contract", "option_quote_id",
-            ])
-            _visual_note("These are persisted inception legs and prices, not a fresh executable quote.")
-        else:
-            st.warning("Persisted structure legs could not be reconstructed.")
-
-        g1, g2, g3 = st.columns(3)
-        with g1:
-            section_heading("Settlement & contract gate")
-            st.metric("Settlement", settlement.settlement_type)
-            st.metric("Exercise style", settlement.exercise_style)
-            st.metric("Contract identity", settlement.contract_identity_state)
-            st.metric("Multiplier", settlement.multiplier_state)
-            (st.success if settlement.live_eligible else st.error)(settlement.reason)
-            st.caption(f"Policy provenance: {settlement.provenance}")
-        with g2:
-            section_heading("Market quality")
-            st.metric("State", market_quality.state)
-            st.metric("Quote age", "—" if market_quality.quote_age_seconds is None else f"{_fmt_number(market_quality.quote_age_seconds, decimals=1)} s")
-            st.metric("Spread / mid", "—" if market_quality.spread_to_mid is None else f"{_fmt_number(market_quality.spread_to_mid*100.0, decimals=2)}%")
-            if market_quality.blockers:
-                st.error(" · ".join(market_quality.blockers))
-            if market_quality.warnings:
-                st.warning(" · ".join(market_quality.warnings))
-            _visual_note("Manual eligibility requires a fresh quote and bounded spread. Historical inception quotes cannot masquerade as executable prices.")
-        with g3:
-            section_heading("Risk & loss monitor")
-            st.metric("Reserved defined risk", "—" if risk_plan.reserved_risk_eur is None else f"€{_fmt_number(risk_plan.reserved_risk_eur, decimals=2)}")
-            st.metric("Planned loss threshold", "NOT CONFIGURED" if risk_plan.planned_loss_trigger_eur is None else f"−€{_fmt_number(risk_plan.planned_loss_trigger_eur, decimals=2)}")
-            st.metric("Bankroll exposure", "—" if risk_plan.bankroll_fraction is None else f"{_fmt_number(risk_plan.bankroll_fraction*100.0, decimals=1)}%")
-            st.metric("Shadow loss monitor", exit_monitor["loss_threshold_state"])
-            st.caption(risk_plan.note)
-
-        section_heading("Candidate-specific scientific governance")
-        gv1, gv2, gv3 = st.columns(3)
-        gv1.metric("Primary frozen model", governance.primary_model or "UNRESOLVED")
-        gv2.metric("Decision permission", "ENABLED" if governance.decision_enabled else "DISABLED")
-        gv3.metric("TTE semantics", tte["state"])
-        if governance.blockers:
-            st.warning(" · ".join(governance.blockers))
-        _visual_note(governance.note + " " + tte["note"])
-
-        section_heading("Prospective evidence from similar candidates")
-        e1, e2, e3, e4 = st.columns(4)
-        e1.metric("Independent dates", _fmt_count(evidence.independent_dates))
-        e2.metric("Similar candidates", _fmt_count(evidence.candidate_count))
-        e3.metric("Validated outcomes", _fmt_count(evidence.validated_outcomes))
-        e4.metric("Mean validated net P&L", "—" if evidence.mean_net_pnl_eur is None else f"€{_fmt_number(evidence.mean_net_pnl_eur, decimals=2)}")
-        st.warning(evidence.state)
-        _visual_note(evidence.note)
-
-        section_heading("Full model dossier", "Benchmark diagnostics are separated from uncalibrated stress models.")
-        if not full_selected.get("model_input_complete"):
-            st.warning("Full model dossier unavailable because persisted model inputs are incomplete. Christiania will not invent defaults.")
-        else:
-            dossier_state_key = "_chr_candidate_model_dossier"
-            candidate_id = int(full_selected.get("candidate_id") or 0)
-            cached_entry = st.session_state.get(dossier_state_key)
-
-            if st.button(
-                "Run model dossier",
-                key=f"run-model-dossier-{candidate_id}",
-                type="secondary",
-            ):
-                with st.spinner("Running cached multi-model diagnostics…"):
-                    cached_entry = {
-                        "candidate_id": candidate_id,
-                        "dossier": _cached_candidate_model_dossier(full_selected),
-                    }
-                    st.session_state[dossier_state_key] = cached_entry
-
-            if (
-                isinstance(cached_entry, dict)
-                and int(cached_entry.get("candidate_id") or -1) == candidate_id
-                and isinstance(cached_entry.get("dossier"), dict)
-            ):
-                dossier = cached_entry["dossier"]
-                if dossier.get("state") != "RESEARCH_ONLY":
-                    st.warning(dossier.get("reason") or dossier.get("state"))
-                else:
-                    st.warning(dossier["reason"])
-                    model_rows = dossier.get("structure_models", [])
-                    if model_rows:
-                        _show_table(model_rows)
-                        model_df = pd.DataFrame(model_rows).set_index("model")[["fair_value_per_contract"]]
-                        st.bar_chart(model_df, height=320)
-                        _visual_note("Benchmark bars are diagnostic cross-checks. Heston and Merton are stress models here and do not participate in a headline fair-value vote.")
-                    q1, q2, q3 = st.columns(3)
-                    q1.metric("Benchmark center / share", _fmt_number(dossier.get("benchmark_center_per_share"), decimals=4))
-                    q2.metric("Benchmark range / share", _fmt_number(dossier.get("benchmark_range_per_share"), decimals=4))
-                    q3.metric("Expected value", "NOT CALIBRATED", "decision use disabled")
-
-                    section_heading("Scenario stress")
-                    scenario = dossier.get("scenarios", {})
-                    if scenario.get("rows"):
-                        _show_table(scenario["rows"])
-                    _visual_note(scenario.get("reason") or "No scenario output available.")
-
-                    section_heading("Structure Greeks")
-                    _show_table([dossier.get("structure_greeks_per_contract", {})])
-                    _visual_note("Greeks describe sensitivities, not which market move will happen.")
-            else:
-                st.info(
-                    "Model diagnostics are intentionally lazy. Run the dossier only when you want "
-                    "the 10,000-path research calculation for this candidate."
-                )
-
-        section_heading("Arguments for / against")
-        positives = []
-        negatives = []
-        if full_selected.get("admission_decision") == "ADMITTED":
-            positives.append("Passed the existing shadow-admission process.")
-        if settlement.live_eligible:
-            positives.append("Exact persisted contract passes the cash-settlement gate.")
-        if market_quality.liquidity_pass:
-            positives.append("Observed bid/ask spread passes the current liquidity threshold.")
-        if evidence.validated_outcomes:
-            positives.append(f"There are {evidence.validated_outcomes} validated outcomes in the similar-candidate evidence pool.")
-        negatives.extend(blockers)
-        a1, a2 = st.columns(2)
-        with a1:
-            st.markdown("**For further research**")
-            st.markdown("\n".join(f"- {item}" for item in positives) if positives else "- No positive evidence claim is strong enough to highlight yet.")
-        with a2:
-            st.markdown("**Against manual trading**")
-            st.markdown("\n".join(f"- {item}" for item in negatives) if negatives else "- No unresolved blocker recorded.")
-
-        st.info(
-            "Net calibrated EV is intentionally not fabricated. Event/jump calendar context and exact expiration timestamps are still explicit missing-data gates. "
-            "Until those are real and candidate-specific prospective governance is enabled, Christiania cannot promote a candidate to manual-trade review."
+        no_trade_count = sum(1 for row in board if row.get("decision_desk_disposition") == "NO TRADE")
+        shadow_count = sum(1 for row in board if row.get("decision_desk_disposition") == "CONTINUE SHADOW")
+        eligible_count = sum(1 for row in board if row.get("decision_desk_disposition") == "ELIGIBLE FOR MANUAL REVIEW")
+        cash_verified_count = sum(1 for row in board if row.get("settlement_state") == "VERIFIED_CASH_SETTLED")
+        top1, top2, top3, top4 = st.columns(4)
+        top1.metric("Tracked candidates", _fmt_count(len(board)))
+        top2.metric("NO TRADE", _fmt_count(no_trade_count))
+        top3.metric("Continue shadow", _fmt_count(shadow_count))
+        top4.metric("Manual-review eligible", _fmt_count(eligible_count), "0 is valid")
+        st.metric("Cash-settlement verified", _fmt_count(cash_verified_count), "exact contract identity required")
+        _visual_note(
+            "The desk separates hard safety failure from scientific incompleteness. NO TRADE means a hard gate failed; CONTINUE SHADOW means the candidate may remain useful research but has not earned manual-trade review."
         )
+
+        if cash_verified_count == 0 and board:
+            st.warning(
+                "No tracked candidate currently passes the exact cash-settlement gate. Existing equity/ETF candidates remain useful shadow research, but Christiania will not recommend them for live/manual use."
+            )
+
+        if not board:
+            st.info("No shadow candidates are available for Decision Desk synthesis yet.")
+        else:
+            section_heading("Research review board", "Select a row to open the complete candidate dossier.")
+            board_columns = [
+                "research_rank", "candidate_id", "underlying", "structure_id", "anomaly_direction",
+                "abs_iv_residual", "settlement_state", "market_quality_state", "candidate_governance_state",
+                "prospective_evidence_state", "time_to_expiry_state", "decision_blocker_count",
+                "decision_desk_disposition", "research_action",
+            ]
+            selected = _show_selectable_table(board, key="decision_desk_review_board_v2", columns=board_columns, height=340)
+            _visual_note(
+                "Research rank is only an inspection priority. It is not probability of profit, calibrated EV, or a recommendation score."
+            )
+            if selected is None:
+                selected = board[0]
+                st.caption("No row selected — showing the highest research-review priority candidate.")
+            candidate_id = int(selected.get("candidate_id"))
+            full_selected = next((row for row in board if int(row.get("candidate_id")) == candidate_id), selected)
+
+            settlement = classify_settlement(
+                full_selected.get("underlying"), observed_exercise_style=full_selected.get("exercise_style"),
+                reference_contract_id=full_selected.get("reference_contract_id"), shares_per_contract=full_selected.get("target_shares_per_contract"),
+            )
+            risk_plan = build_risk_plan(
+                full_selected, max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
+                stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
+            )
+            governance = resolve_candidate_governance(full_selected, models=snapshot.get("models", []), hypotheses=snapshot.get("hypotheses", []))
+            market_quality = assess_market_quality(full_selected)
+            evidence = assess_prospective_evidence(full_selected)
+            tte = resolve_time_to_expiry(full_selected)
+            exit_monitor = assess_exit_monitor(full_selected, risk_plan)
+
+            section_heading("Frozen shadow risk evidence")
+            frozen_risk = full_selected.get("frozen_risk_plan")
+            if not frozen_risk:
+                st.warning("NOT FROZEN — session controls are exploratory and do not count as prospective risk evidence.")
+                st.caption("Freeze a plan with record_shadow_risk_plan_v1.py before using risk-management outcomes as prospective evidence.")
+            else:
+                fr1, fr2, fr3, fr4 = st.columns(4)
+                fr1.metric("Risk-plan state", "FROZEN")
+                fr2.metric("Defined max loss", f"€{float(frozen_risk.get('max_defined_loss_eur_minor') or 0)/100:.2f}")
+                fr3.metric("Reserved risk", f"€{float(frozen_risk.get('reserved_risk_eur_minor') or 0)/100:.2f}")
+                fr4.metric("Latest monitor", str(frozen_risk.get("overall_state") or "NOT ASSESSED"))
+                st.caption("Frozen plans are immutable. Assessments are append-only. A stop threshold is never presented as a guaranteed fill.")
+
+            section_heading("Current conclusion")
+            disposition = full_selected.get("decision_desk_disposition")
+            blockers = list(full_selected.get("decision_blockers") or [])
+            if disposition == "NO TRADE":
+                st.error("NO TRADE")
+            elif disposition == "CONTINUE SHADOW":
+                st.warning("CONTINUE SHADOW — useful research, not eligible for manual trade review")
+            else:
+                st.success("ELIGIBLE FOR MANUAL REVIEW — still not an order")
+            if blockers:
+                st.markdown("**Unresolved / blocking reasons:** " + " · ".join(blockers))
+            st.caption("A visually attractive anomaly can never override settlement, quote quality, evidence, governance or risk controls.")
+
+            section_heading("Candidate dossier", "What Christiania observed at inception and what happened afterward.")
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Underlying", str(full_selected.get("underlying") or "—"))
+            d2.metric("Structure", str(full_selected.get("structure_id") or "—"))
+            d3.metric("Absolute IV residual", _fmt_number(full_selected.get("abs_iv_residual"), decimals=4))
+            latest_pnl = full_selected.get("latest_estimated_net_pnl_eur_minor")
+            d4.metric("Latest shadow net P&L", "—" if latest_pnl is None else f"€{_fmt_number(float(latest_pnl)/100.0, decimals=2)}")
+            _show_table([full_selected], columns=[
+                "candidate_id", "research_run_id", "surfaced_at", "underlying", "expiration", "right", "target_strike",
+                "hypothesis_family", "hypothesis_version", "scanner_family_id", "scanner_version", "primary_research_model",
+                "anomaly_direction", "iv_residual", "abs_iv_residual", "residual_threshold", "admission_decision",
+                "admission_reason_code", "admission_label", "collection_status", "retry_count", "was_recovered",
+                "mark_count", "validated_outcomes", "latest_mark_at",
+            ])
+
+            section_heading("Exact hypothetical structure")
+            legs = full_selected.get("structure_legs") or []
+            if legs:
+                _show_table(legs, columns=[
+                    "side", "quantity", "right", "strike", "entry_price", "bid", "ask", "quote_at",
+                    "implied_volatility", "delta", "gamma", "theta", "vega", "shares_per_contract", "option_quote_id",
+                ])
+                _visual_note("These are persisted inception legs and prices, not a fresh executable quote.")
+            else:
+                st.warning("Persisted structure legs could not be reconstructed.")
+
+            g1, g2, g3 = st.columns(3)
+            with g1:
+                section_heading("Settlement & contract gate")
+                st.metric("Settlement", settlement.settlement_type)
+                st.metric("Exercise style", settlement.exercise_style)
+                st.metric("Contract identity", settlement.contract_identity_state)
+                st.metric("Multiplier", settlement.multiplier_state)
+                (st.success if settlement.live_eligible else st.error)(settlement.reason)
+                st.caption(f"Policy provenance: {settlement.provenance}")
+            with g2:
+                section_heading("Market quality")
+                st.metric("State", market_quality.state)
+                st.metric("Quote age", "—" if market_quality.quote_age_seconds is None else f"{_fmt_number(market_quality.quote_age_seconds, decimals=1)} s")
+                st.metric("Spread / mid", "—" if market_quality.spread_to_mid is None else f"{_fmt_number(market_quality.spread_to_mid*100.0, decimals=2)}%")
+                if market_quality.blockers:
+                    st.error(" · ".join(market_quality.blockers))
+                if market_quality.warnings:
+                    st.warning(" · ".join(market_quality.warnings))
+                _visual_note("Manual eligibility requires a fresh quote and bounded spread. Historical inception quotes cannot masquerade as executable prices.")
+            with g3:
+                section_heading("Risk & loss monitor")
+                st.metric("Reserved defined risk", "—" if risk_plan.reserved_risk_eur is None else f"€{_fmt_number(risk_plan.reserved_risk_eur, decimals=2)}")
+                st.metric("Planned loss threshold", "NOT CONFIGURED" if risk_plan.planned_loss_trigger_eur is None else f"−€{_fmt_number(risk_plan.planned_loss_trigger_eur, decimals=2)}")
+                st.metric("Bankroll exposure", "—" if risk_plan.bankroll_fraction is None else f"{_fmt_number(risk_plan.bankroll_fraction*100.0, decimals=1)}%")
+                st.metric("Shadow loss monitor", exit_monitor["loss_threshold_state"])
+                st.caption(risk_plan.note)
+
+            section_heading("Candidate-specific scientific governance")
+            gv1, gv2, gv3 = st.columns(3)
+            gv1.metric("Primary frozen model", governance.primary_model or "UNRESOLVED")
+            gv2.metric("Decision permission", "ENABLED" if governance.decision_enabled else "DISABLED")
+            gv3.metric("TTE semantics", tte["state"])
+            if governance.blockers:
+                st.warning(" · ".join(governance.blockers))
+            _visual_note(governance.note + " " + tte["note"])
+
+            section_heading("Prospective evidence from similar candidates")
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Independent dates", _fmt_count(evidence.independent_dates))
+            e2.metric("Similar candidates", _fmt_count(evidence.candidate_count))
+            e3.metric("Validated outcomes", _fmt_count(evidence.validated_outcomes))
+            e4.metric("Mean validated net P&L", "—" if evidence.mean_net_pnl_eur is None else f"€{_fmt_number(evidence.mean_net_pnl_eur, decimals=2)}")
+            st.warning(evidence.state)
+            _visual_note(evidence.note)
+
+            section_heading("Full model dossier", "Benchmark diagnostics are separated from uncalibrated stress models.")
+            if not full_selected.get("model_input_complete"):
+                st.warning("Full model dossier unavailable because persisted model inputs are incomplete. Christiania will not invent defaults.")
+            else:
+                dossier_state_key = "_chr_candidate_model_dossier"
+                candidate_id = int(full_selected.get("candidate_id") or 0)
+                cached_entry = st.session_state.get(dossier_state_key)
+
+                if st.button(
+                    "Run model dossier",
+                    key=f"run-model-dossier-{candidate_id}",
+                    type="secondary",
+                ):
+                    with st.spinner("Running cached multi-model diagnostics…"):
+                        cached_entry = {
+                            "candidate_id": candidate_id,
+                            "dossier": _cached_candidate_model_dossier(full_selected),
+                        }
+                        st.session_state[dossier_state_key] = cached_entry
+
+                if (
+                    isinstance(cached_entry, dict)
+                    and int(cached_entry.get("candidate_id") or -1) == candidate_id
+                    and isinstance(cached_entry.get("dossier"), dict)
+                ):
+                    dossier = cached_entry["dossier"]
+                    if dossier.get("state") != "RESEARCH_ONLY":
+                        st.warning(dossier.get("reason") or dossier.get("state"))
+                    else:
+                        st.warning(dossier["reason"])
+                        model_rows = dossier.get("structure_models", [])
+                        if model_rows:
+                            _show_table(model_rows)
+                            model_df = pd.DataFrame(model_rows).set_index("model")[["fair_value_per_contract"]]
+                            st.bar_chart(model_df, height=320)
+                            _visual_note("Benchmark bars are diagnostic cross-checks. Heston and Merton are stress models here and do not participate in a headline fair-value vote.")
+                        q1, q2, q3 = st.columns(3)
+                        q1.metric("Benchmark center / share", _fmt_number(dossier.get("benchmark_center_per_share"), decimals=4))
+                        q2.metric("Benchmark range / share", _fmt_number(dossier.get("benchmark_range_per_share"), decimals=4))
+                        q3.metric("Expected value", "NOT CALIBRATED", "decision use disabled")
+
+                        section_heading("Scenario stress")
+                        scenario = dossier.get("scenarios", {})
+                        if scenario.get("rows"):
+                            _show_table(scenario["rows"])
+                        _visual_note(scenario.get("reason") or "No scenario output available.")
+
+                        section_heading("Structure Greeks")
+                        _show_table([dossier.get("structure_greeks_per_contract", {})])
+                        _visual_note("Greeks describe sensitivities, not which market move will happen.")
+                else:
+                    st.info(
+                        "Model diagnostics are intentionally lazy. Run the dossier only when you want "
+                        "the 10,000-path research calculation for this candidate."
+                    )
+
+            section_heading("Arguments for / against")
+            positives = []
+            negatives = []
+            if full_selected.get("admission_decision") == "ADMITTED":
+                positives.append("Passed the existing shadow-admission process.")
+            if settlement.live_eligible:
+                positives.append("Exact persisted contract passes the cash-settlement gate.")
+            if market_quality.liquidity_pass:
+                positives.append("Observed bid/ask spread passes the current liquidity threshold.")
+            if evidence.validated_outcomes:
+                positives.append(f"There are {evidence.validated_outcomes} validated outcomes in the similar-candidate evidence pool.")
+            negatives.extend(blockers)
+            a1, a2 = st.columns(2)
+            with a1:
+                st.markdown("**For further research**")
+                st.markdown("\n".join(f"- {item}" for item in positives) if positives else "- No positive evidence claim is strong enough to highlight yet.")
+            with a2:
+                st.markdown("**Against manual trading**")
+                st.markdown("\n".join(f"- {item}" for item in negatives) if negatives else "- No unresolved blocker recorded.")
+
+            st.info(
+                "Net calibrated EV is intentionally not fabricated. Event/jump calendar context and exact expiration timestamps are still explicit missing-data gates. "
+                "Until those are real and candidate-specific prospective governance is enabled, Christiania cannot promote a candidate to manual-trade review."
+            )
+
+
+    _render_decision_desk_page()
 
 elif page == "Research Runs":
     section_heading("Research runs", "Collection cadence, provider outcomes, proposals and marks.")
