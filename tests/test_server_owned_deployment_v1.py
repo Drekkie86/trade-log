@@ -137,3 +137,17 @@ def test_performance_probe_client_is_exact_main_sha_and_server_owned():
     assert "performanceReport" not in client
     assert "release_commit" in client
     assert "read_only" in client
+
+
+def test_release_and_probe_refuse_heavy_maintenance_conflicts():
+    for relative in (
+        "deploy/start_release.sh",
+        "deploy/probe_release_performance.sh",
+    ):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "HEAVY_MAINTENANCE_UNITS=(" in source
+        assert "christiania-backup.service" in source
+        assert "christiania-backup-compress.service" in source
+        assert "christiania-restore-drill.service" in source
+        assert "systemctl is-active --quiet" in source
+        assert "heavy maintenance is active" in source
