@@ -213,3 +213,35 @@ def test_decision_desk_is_fragmented_for_row_interactions():
     assert "def _render_decision_desk_page():" in block
     assert '_show_selectable_table(' in block
     assert '_render_decision_desk_page()' in block
+
+
+def test_other_interactive_pages_are_fragmented():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    expected = {
+        "Research Runs": "_render_research_runs_page",
+        "Calibration": "_render_calibration_page",
+        "Observations": "_render_observations_page",
+        "Shadow Lab": "_render_shadow_lab_page",
+        "Ops": "_render_ops_page",
+    }
+
+    for page, function_name in expected.items():
+        start = app.index(f'elif page == "{page}":')
+        next_page = app.find('elif page == "', start + 1)
+        block = app[start:] if next_page == -1 else app[start:next_page]
+
+        assert "@st.fragment" in block
+        assert f"def {function_name}():" in block
+        assert f"{function_name}()" in block
+
+
+def test_observation_cross_filter_reruns_only_its_fragment():
+    app = (ROOT / "app.py").read_text(encoding="utf-8")
+
+    start = app.index('elif page == "Observations":')
+    end = app.index('elif page == "Shadow Lab":', start)
+    block = app[start:end]
+
+    assert 'st.rerun(scope="fragment")' in block
+    assert "st.rerun()" not in block
