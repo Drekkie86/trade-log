@@ -480,26 +480,37 @@ def _html_rows(items: list[tuple[str, str, str | None]]) -> str:
 RUNTIME_REFRESH_SECONDS = 180
 
 
-def _load_runtime_state(*, force: bool = False):
-    now = time.monotonic()
-    loaded_at = st.session_state.get("_chr_runtime_loaded_at", 0.0)
-    stale = (now - loaded_at) >= RUNTIME_REFRESH_SECONDS
-
-    if force or "_chr_snapshot" not in st.session_state or stale:
-        with st.spinner("Refreshing Christiania research state…"):
-            st.session_state["_chr_snapshot"] = load_command_deck(
-                include_provider_health=False,
-                deep_integrity=False,
-            )
-            st.session_state["_chr_backup_inventory"] = (
-                inventory_backups_fast().as_dict()
-            )
-            st.session_state["_chr_runtime_loaded_at"] = now
-
-    return (
-        st.session_state["_chr_snapshot"],
-        st.session_state["_chr_backup_inventory"],
+@st.cache_data(
+    show_spinner="Loading Christiania page…",
+    ttl=RUNTIME_REFRESH_SECONDS,
+    max_entries=12,
+    refresh_mode="background",
+)
+def _cached_page_runtime_state(page: str):
+    snapshot = load_command_deck(
+        include_provider_health=False,
+        deep_integrity=False,
+        page=page,
     )
+    backup_inventory = (
+        inventory_backups_fast().as_dict()
+        if page == "Dashboard"
+        else {
+            "total_files": 0,
+            "valid_files": 0,
+            "invalid_files": 0,
+            "latest_valid_path": None,
+            "latest_valid_age_hours": None,
+            "entries": [],
+        }
+    )
+    return snapshot, backup_inventory
+
+
+def _load_runtime_state(page: str, *, force: bool = False):
+    if force:
+        _cached_page_runtime_state.clear()
+    return _cached_page_runtime_state(page)
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -507,6 +518,7 @@ def _cached_deep_ops_readiness():
     deep_snapshot = load_command_deck(
         include_provider_health=True,
         deep_integrity=True,
+        page="Ops Readiness",
     )
     deep_backups = inventory_backups().as_dict()
     deep_readiness = assess_v1_readiness(
@@ -545,12 +557,12 @@ with st.sidebar:
     st.divider()
     if st.button("↻ Refresh deck", width="stretch"):
         _cached_theta_health.clear()
-        _load_runtime_state(force=True)
+        _load_runtime_state(page, force=True)
         st.rerun()
 
     st.caption(f"Christiania {CHRISTIANIA_VERSION}")
 
-snapshot, backup_inventory = _load_runtime_state()
+snapshot, backup_inventory = _load_runtime_state(page)
 
 hero()
 
@@ -1765,6 +1777,13 @@ elif page == "Ops":
         )
         st.caption(
             "Provider labels identify vendors. Exchange or tape names appear only when the stored source field actually represents one."
+        )
+
+        section_heading("Read-model timings")
+        st.json(snapshot.get("read_model_timings_ms", {}))
+        st.caption(
+            "These timings are page-scoped read costs from the current cached snapshot. "
+            "They are diagnostics, not hard release budgets until production baselines are established."
         )
 
         section_heading("Database path")
