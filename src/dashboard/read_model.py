@@ -810,6 +810,36 @@ def load_command_deck(
         decision_desk_candidates = _rows_to_dicts(
             conn.execute(
                 '''
+                WITH recent_candidates AS (
+                    SELECT *
+                    FROM shadow_candidates
+                    ORDER BY id DESC
+                    LIMIT 100
+                ),
+                mark_counts AS (
+                    SELECT
+                        smo.candidate_id,
+                        COUNT(*) AS mark_count,
+                        SUM(CASE WHEN smo.outcome_eligible = 1 THEN 1 ELSE 0 END)
+                            AS validated_outcomes
+                    FROM shadow_mark_observations AS smo
+                    JOIN recent_candidates AS rc
+                      ON rc.id = smo.candidate_id
+                    GROUP BY smo.candidate_id
+                ),
+                latest_marks AS (
+                    SELECT
+                        smo.candidate_id,
+                        smo.observed_at,
+                        smo.estimated_net_pnl_eur_minor,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY smo.candidate_id
+                            ORDER BY smo.observed_at DESC, smo.id DESC
+                        ) AS row_rank
+                    FROM shadow_mark_observations AS smo
+                    JOIN recent_candidates AS rc
+                      ON rc.id = smo.candidate_id
+                )
                 SELECT
                     sc.id AS candidate_id,
                     sc.research_run_id,
@@ -864,7 +894,7 @@ def load_command_deck(
                     rm.observed_at AS latest_mark_at,
                     rm.estimated_net_pnl_eur_minor
                         AS latest_estimated_net_pnl_eur_minor
-                FROM shadow_candidates AS sc
+                FROM recent_candidates AS sc
                 LEFT JOIN v_shadow_admission_decisions_all AS sad
                   ON sad.candidate_id = sc.id
                  AND sad.decision = 'ADMITTED'
@@ -881,34 +911,12 @@ def load_command_deck(
                 LEFT JOIN research_run_underlyings AS ru
                   ON ru.run_id = sc.research_run_id
                  AND ru.underlying = sc.underlying
-                LEFT JOIN (
-                    SELECT
-                        candidate_id,
-                        COUNT(*) AS mark_count,
-                        SUM(CASE WHEN outcome_eligible = 1 THEN 1 ELSE 0 END)
-                            AS validated_outcomes
-                    FROM shadow_mark_observations
-                    GROUP BY candidate_id
-                ) AS mc
+                LEFT JOIN mark_counts AS mc
                   ON mc.candidate_id = sc.id
-                LEFT JOIN (
-                    SELECT candidate_id, observed_at, estimated_net_pnl_eur_minor
-                    FROM (
-                        SELECT
-                            candidate_id,
-                            observed_at,
-                            estimated_net_pnl_eur_minor,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY candidate_id
-                                ORDER BY observed_at DESC, id DESC
-                            ) AS row_rank
-                        FROM shadow_mark_observations
-                    )
-                    WHERE row_rank = 1
-                ) AS rm
+                LEFT JOIN latest_marks AS rm
                   ON rm.candidate_id = sc.id
-                ORDER BY sc.id DESC
-                LIMIT 100;
+                 AND rm.row_rank = 1
+                ORDER BY sc.id DESC;
                 '''
             ).fetchall()
         )
@@ -1101,7 +1109,13 @@ def load_command_deck(
         shadow_candidate_followup = _rows_to_dicts(
             conn.execute(
                 '''
-                WITH ranked_marks AS (
+                WITH recent_candidates AS (
+                    SELECT *
+                    FROM shadow_candidates
+                    ORDER BY id DESC
+                    LIMIT 100
+                ),
+                ranked_marks AS (
                     SELECT
                         smo.*,
                         ROW_NUMBER() OVER (
@@ -1109,17 +1123,21 @@ def load_command_deck(
                             ORDER BY smo.observed_at DESC, smo.id DESC
                         ) AS mark_rank
                     FROM shadow_mark_observations AS smo
+                    JOIN recent_candidates AS rc
+                      ON rc.id = smo.candidate_id
                 ),
                 mark_counts AS (
                     SELECT
-                        candidate_id,
+                        smo.candidate_id,
                         COUNT(*) AS mark_count,
-                        SUM(CASE WHEN outcome_eligible = 1 THEN 1 ELSE 0 END)
+                        SUM(CASE WHEN smo.outcome_eligible = 1 THEN 1 ELSE 0 END)
                             AS validated_outcomes
-                    FROM shadow_mark_observations
-                    GROUP BY candidate_id
-                )
-                , latest_state AS (
+                    FROM shadow_mark_observations AS smo
+                    JOIN recent_candidates AS rc
+                      ON rc.id = smo.candidate_id
+                    GROUP BY smo.candidate_id
+                ),
+                latest_state AS (
                     SELECT
                         se.*,
                         ROW_NUMBER() OVER (
@@ -1127,7 +1145,10 @@ def load_command_deck(
                             ORDER BY se.id DESC
                         ) AS state_rank
                     FROM shadow_state_events AS se
-                ), validated_mark AS (
+                    JOIN recent_candidates AS rc
+                      ON rc.id = se.candidate_id
+                ),
+                validated_mark AS (
                     SELECT
                         smo.*,
                         ROW_NUMBER() OVER (
@@ -1135,6 +1156,8 @@ def load_command_deck(
                             ORDER BY smo.observed_at DESC, smo.id DESC
                         ) AS validated_rank
                     FROM shadow_mark_observations AS smo
+                    JOIN recent_candidates AS rc
+                      ON rc.id = smo.candidate_id
                     WHERE smo.outcome_eligible = 1
                 )
                 SELECT
@@ -1171,7 +1194,7 @@ def load_command_deck(
                         WHEN vm.estimated_net_pnl_eur_minor < 0 THEN 'UNPROFITABLE'
                         ELSE 'FLAT'
                     END AS validated_trade_result
-                FROM shadow_candidates AS sc
+                FROM recent_candidates AS sc
                 LEFT JOIN v_shadow_admission_decisions_all AS sad
                   ON sad.candidate_id = sc.id
                  AND sad.decision = 'ADMITTED'
@@ -1188,8 +1211,7 @@ def load_command_deck(
                 LEFT JOIN validated_mark AS vm
                   ON vm.candidate_id = sc.id
                  AND vm.validated_rank = 1
-                ORDER BY sc.id DESC
-                LIMIT 100;
+                ORDER BY sc.id DESC;
                 '''
             ).fetchall()
         )
