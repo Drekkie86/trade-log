@@ -6,6 +6,7 @@ import statistics
 import time
 from pathlib import Path
 
+from src.config import load_runtime_env_file
 from src.dashboard.read_model import load_command_deck
 from src.database.repository import resolve_db_path
 from src.operations.sqlite_runtime import open_readonly_connection
@@ -154,6 +155,13 @@ def main() -> int:
         )
     )
     parser.add_argument(
+        "--env-file",
+        help=(
+            "Optional deployed Christiania env file to load before resolving "
+            "the database path. Values are parsed without shell evaluation."
+        ),
+    )
+    parser.add_argument(
         "--db",
         help=(
             "Database path. Defaults to CHRISTIANIA_DB_PATH / "
@@ -184,6 +192,16 @@ def main() -> int:
         parser.error("--warmups must be >= 0")
     if args.runs < 1:
         parser.error("--runs must be >= 1")
+
+    if args.env_file:
+        values = load_runtime_env_file(
+            args.env_file,
+            overwrite=False,
+        )
+        if not values:
+            raise SystemExit(
+                f"Environment file missing or empty: {args.env_file}"
+            )
 
     path = resolve_db_path(args.db)
     pages = tuple(args.page or PAGES)
