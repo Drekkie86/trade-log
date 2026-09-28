@@ -370,34 +370,41 @@ def load_command_deck(
             _section_started = time.perf_counter()
             prospective_row = conn.execute(
                 '''
+                WITH prospective_rows AS (
+                    SELECT
+                        us_session_date,
+                        was_recovered,
+                        research_run_id,
+                        underlying,
+                        prospective_start_session_date
+                    FROM v_local_surface_v2_prospective_partition_v2
+                    WHERE evidence_phase = 'POST_FREEZE_PROSPECTIVE'
+                ),
+                recovered_pairs AS (
+                    SELECT
+                        research_run_id,
+                        underlying
+                    FROM prospective_rows
+                    WHERE was_recovered = 1
+                    GROUP BY research_run_id, underlying
+                )
                 SELECT
                     COUNT(*) AS observation_rows,
-                    COUNT(
-                        DISTINCT us_session_date
-                    ) AS independent_dates,
+                    COUNT(DISTINCT us_session_date) AS independent_dates,
                     SUM(
                         CASE
                             WHEN was_recovered = 1
                             THEN 1 ELSE 0
                         END
                     ) AS recovered_rows,
-                    COUNT(
-                        DISTINCT CASE
-                            WHEN was_recovered = 1
-                            THEN
-                                CAST(research_run_id AS TEXT)
-                                || ':'
-                                || underlying
-                        END
+                    (
+                        SELECT COUNT(*)
+                        FROM recovered_pairs
                     ) AS recovered_samples,
                     MIN(
                         prospective_start_session_date
                     ) AS prospective_start_session_date
-                FROM
-                    v_local_surface_v2_prospective_partition_v2
-                WHERE
-                    evidence_phase =
-                    'POST_FREEZE_PROSPECTIVE';
+                FROM prospective_rows;
                 '''
             ).fetchone()
 
@@ -586,17 +593,6 @@ def load_command_deck(
             replay_latest_rows = _rows_to_dicts(
                 conn.execute(
                     '''
-                    WITH latest_complete AS (
-                        SELECT
-                            hrm.*,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY hrm.policy_replay_id
-                                ORDER BY hrm.observed_at DESC, hrm.id DESC
-                            ) AS mark_rank
-                        FROM historical_replay_marks_v1 AS hrm
-                        WHERE hrm.quality_state =
-                            'COMPLETE_RECONSTRUCTED_CONSERVATIVE_LIQUIDATION'
-                    )
                     SELECT
                         hpr.id AS policy_replay_id,
                         hpr.proposal_id,
@@ -631,9 +627,16 @@ def load_command_deck(
                       ON ssp.id = hpr.proposal_id
                     JOIN fx_observations AS fx
                       ON fx.id = hpr.original_fx_observation_id
-                    LEFT JOIN latest_complete AS lm
-                      ON lm.policy_replay_id = hpr.id
-                     AND lm.mark_rank = 1
+                    LEFT JOIN historical_replay_marks_v1 AS lm
+                      ON lm.id = (
+                          SELECT hrm.id
+                          FROM historical_replay_marks_v1 AS hrm
+                          WHERE hrm.policy_replay_id = hpr.id
+                            AND hrm.quality_state =
+                                'COMPLETE_RECONSTRUCTED_CONSERVATIVE_LIQUIDATION'
+                          ORDER BY hrm.observed_at DESC, hrm.id DESC
+                          LIMIT 1
+                      )
                     WHERE hpr.counterfactual_decision = 'WOULD_ADMIT'
                     ORDER BY hpr.id;
                     '''
