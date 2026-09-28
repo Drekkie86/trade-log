@@ -25,6 +25,7 @@ from src.operations.backup_recovery import (
 from src.operations.burn_in import read_burn_in_samples, summarize_burn_in
 from src.operations.release_manifest import build_release_manifest
 from src.operations.v1_readiness import assess_v1_readiness
+from src.providers.thetadata_control import probe_theta_terminal
 from src.research.cash_settled_universe import cash_settled_research_universe
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
 from src.quant.bench import run_vanilla_bench
@@ -421,6 +422,16 @@ def _cached_candidate_model_dossier(candidate: dict) -> dict:
     return run_candidate_model_dossier(candidate, mc_paths=10_000)
 
 
+@st.cache_data(
+    show_spinner=False,
+    ttl=30,
+    max_entries=1,
+    refresh_mode="background",
+)
+def _cached_theta_health() -> dict:
+    return probe_theta_terminal().as_dict()
+
+
 st.set_page_config(
     page_title="Christiania",
     page_icon="⚓",
@@ -477,7 +488,7 @@ def _load_runtime_state(*, force: bool = False):
     if force or "_chr_snapshot" not in st.session_state or stale:
         with st.spinner("Refreshing Christiania research state…"):
             st.session_state["_chr_snapshot"] = load_command_deck(
-                include_provider_health=True,
+                include_provider_health=False,
                 deep_integrity=False,
             )
             st.session_state["_chr_backup_inventory"] = (
@@ -504,8 +515,6 @@ def _cached_deep_ops_readiness():
     ).as_dict()
     return deep_snapshot, deep_backups, deep_readiness
 
-
-snapshot, backup_inventory = _load_runtime_state()
 
 with st.sidebar:
     if LOGO_PATH.exists():
@@ -535,10 +544,13 @@ with st.sidebar:
 
     st.divider()
     if st.button("↻ Refresh deck", width="stretch"):
+        _cached_theta_health.clear()
         _load_runtime_state(force=True)
         st.rerun()
 
     st.caption(f"Christiania {CHRISTIANIA_VERSION}")
+
+snapshot, backup_inventory = _load_runtime_state()
 
 hero()
 
@@ -556,7 +568,11 @@ prospective = snapshot["prospective"]
 counts = snapshot["research_counts"]
 market_clock = snapshot["market_clock"]
 daemon_health = snapshot["daemon_health"]
-theta_health = snapshot.get("theta_health", {"state": "NOT_PROBED"})
+theta_health = (
+    _cached_theta_health()
+    if page in {"Dashboard", "Ops"}
+    else snapshot.get("theta_health", {"state": "NOT_PROBED"})
+)
 database = snapshot["database"]
 quality = snapshot.get("data_quality", {})
 decision_candidates = snapshot.get("decision_desk_candidates", [])
@@ -931,32 +947,57 @@ elif page == "Decision Desk":
         if not full_selected.get("model_input_complete"):
             st.warning("Full model dossier unavailable because persisted model inputs are incomplete. Christiania will not invent defaults.")
         else:
-            with st.spinner("Running cached multi-model diagnostics…"):
-                dossier = _cached_candidate_model_dossier(full_selected)
-            if dossier.get("state") != "RESEARCH_ONLY":
-                st.warning(dossier.get("reason") or dossier.get("state"))
+            dossier_state_key = "_chr_candidate_model_dossier"
+            candidate_id = int(full_selected.get("candidate_id") or 0)
+            cached_entry = st.session_state.get(dossier_state_key)
+
+            if st.button(
+                "Run model dossier",
+                key=f"run-model-dossier-{candidate_id}",
+                type="secondary",
+            ):
+                with st.spinner("Running cached multi-model diagnostics…"):
+                    cached_entry = {
+                        "candidate_id": candidate_id,
+                        "dossier": _cached_candidate_model_dossier(full_selected),
+                    }
+                    st.session_state[dossier_state_key] = cached_entry
+
+            if (
+                isinstance(cached_entry, dict)
+                and int(cached_entry.get("candidate_id") or -1) == candidate_id
+                and isinstance(cached_entry.get("dossier"), dict)
+            ):
+                dossier = cached_entry["dossier"]
+                if dossier.get("state") != "RESEARCH_ONLY":
+                    st.warning(dossier.get("reason") or dossier.get("state"))
+                else:
+                    st.warning(dossier["reason"])
+                    model_rows = dossier.get("structure_models", [])
+                    if model_rows:
+                        _show_table(model_rows)
+                        model_df = pd.DataFrame(model_rows).set_index("model")[["fair_value_per_contract"]]
+                        st.bar_chart(model_df, height=320)
+                        _visual_note("Benchmark bars are diagnostic cross-checks. Heston and Merton are stress models here and do not participate in a headline fair-value vote.")
+                    q1, q2, q3 = st.columns(3)
+                    q1.metric("Benchmark center / share", _fmt_number(dossier.get("benchmark_center_per_share"), decimals=4))
+                    q2.metric("Benchmark range / share", _fmt_number(dossier.get("benchmark_range_per_share"), decimals=4))
+                    q3.metric("Expected value", "NOT CALIBRATED", "decision use disabled")
+
+                    section_heading("Scenario stress")
+                    scenario = dossier.get("scenarios", {})
+                    if scenario.get("rows"):
+                        _show_table(scenario["rows"])
+                    _visual_note(scenario.get("reason") or "No scenario output available.")
+
+                    section_heading("Structure Greeks")
+                    _show_table([dossier.get("structure_greeks_per_contract", {})])
+                    _visual_note("Greeks describe sensitivities, not which market move will happen.")
             else:
-                st.warning(dossier["reason"])
-                model_rows = dossier.get("structure_models", [])
-                if model_rows:
-                    _show_table(model_rows)
-                    model_df = pd.DataFrame(model_rows).set_index("model")[["fair_value_per_contract"]]
-                    st.bar_chart(model_df, height=320)
-                    _visual_note("Benchmark bars are diagnostic cross-checks. Heston and Merton are stress models here and do not participate in a headline fair-value vote.")
-                q1, q2, q3 = st.columns(3)
-                q1.metric("Benchmark center / share", _fmt_number(dossier.get("benchmark_center_per_share"), decimals=4))
-                q2.metric("Benchmark range / share", _fmt_number(dossier.get("benchmark_range_per_share"), decimals=4))
-                q3.metric("Expected value", "NOT CALIBRATED", "decision use disabled")
-
-                section_heading("Scenario stress")
-                scenario = dossier.get("scenarios", {})
-                if scenario.get("rows"):
-                    _show_table(scenario["rows"])
-                _visual_note(scenario.get("reason") or "No scenario output available.")
-
-                section_heading("Structure Greeks")
-                _show_table([dossier.get("structure_greeks_per_contract", {})])
-                _visual_note("Greeks describe sensitivities, not which market move will happen.")
+                st.info(
+                    "Model diagnostics are intentionally lazy. Run the dossier only when you want "
+                    "the 10,000-path research calculation for this candidate."
+                )
 
         section_heading("Arguments for / against")
         positives = []
