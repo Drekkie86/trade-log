@@ -151,6 +151,55 @@ if ($head -ne $originMain) {
 
 Assert-ExactShaQualityGate -Commit $head
 
+$performanceDir = "/var/lib/christiania/audit/performance-probes"
+$performancePathOutput = & ssh @SshOptions -i $KeyPath "${User}@${Server}" (
+    "sudo find $performanceDir -maxdepth 1 -type f " +
+    "-name '$head-*.json' -mmin -1440 -print | sort | tail -n 1"
+)
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Cannot verify production performance evidence for exact SHA $head."
+}
+
+$performancePath = ($performancePathOutput | Out-String).Trim()
+if (-not $performancePath) {
+    throw "Refusing deployment: no production performance probe from the last 24 hours exists for exact SHA $head. Run deploy/probe_release_performance.ps1 first."
+}
+
+if ($performancePath -notmatch "^/var/lib/christiania/audit/performance-probes/[0-9a-f]{40}-[A-Za-z0-9._-]+[.]json$") {
+    throw "Refusing deployment: server returned an invalid performance-report path."
+}
+
+$performanceText = (& ssh @SshOptions -i $KeyPath "${User}@${Server}" "sudo cat $performancePath" | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "Refusing deployment: production performance report could not be read."
+}
+
+$performanceReport = $performanceText | ConvertFrom-Json
+if ([string]$performanceReport.release_commit -ne $head) {
+    throw "Refusing deployment: performance report belongs to a different release SHA."
+}
+if (-not [bool]$performanceReport.read_only) {
+    throw "Refusing deployment: performance report does not assert read-only execution."
+}
+if ([int]$performanceReport.probe_version -lt 2) {
+    throw "Refusing deployment: performance report format is too old."
+}
+
+$measuredPages = @($performanceReport.pages | ForEach-Object { [string]$_.page })
+foreach ($requiredPage in @("Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL")) {
+    if ($requiredPage -notin $measuredPages) {
+        throw "Refusing deployment: performance evidence is missing required page $requiredPage."
+    }
+}
+
+Write-Host "Performance evidence accepted: $performancePath"
+Write-Host "Production timing summary:"
+foreach ($page in $performanceReport.pages) {
+    Write-Host ("  {0}: median={1}ms cache={2} bytes unpickle={3}ms" -f $page.page, $page.wall_ms.median, $page.cache_payload_bytes, $page.pickle_load_ms.median)
+}
+Write-Host "  wal_delta_bytes=$($performanceReport.wal_delta_bytes)"
+
 $tempRoot = Join-Path $env:TEMP "christiania-release-$head"
 $archiveName = "christiania-$head.tar.gz"
 $archivePath = Join-Path $tempRoot $archiveName
