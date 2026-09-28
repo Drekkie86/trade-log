@@ -37,6 +37,15 @@ def _sqlite_metadata(path: Path) -> dict[str, object]:
         journal_mode = str(
             connection.execute("PRAGMA journal_mode;").fetchone()[0]
         ).lower()
+        cache_size = int(
+            connection.execute("PRAGMA cache_size;").fetchone()[0]
+        )
+        mmap_size = int(
+            connection.execute("PRAGMA mmap_size;").fetchone()[0]
+        )
+        wal_autocheckpoint = int(
+            connection.execute("PRAGMA wal_autocheckpoint;").fetchone()[0]
+        )
         stat1_exists = bool(
             connection.execute(
                 """
@@ -64,6 +73,9 @@ def _sqlite_metadata(path: Path) -> dict[str, object]:
         "freelist_count": freelist_count,
         "logical_bytes": page_size * page_count,
         "journal_mode": journal_mode,
+        "cache_size": cache_size,
+        "mmap_size": mmap_size,
+        "wal_autocheckpoint": wal_autocheckpoint,
         "sqlite_stat1_exists": stat1_exists,
     }
 
