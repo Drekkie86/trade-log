@@ -52,6 +52,17 @@ REPORT_PATH="$4"
 [[ -f "${ENV_FILE}" ]] || fail "runtime environment file missing: ${ENV_FILE}"
 id "${SERVICE_USER}" >/dev/null 2>&1 || fail "service account missing: ${SERVICE_USER}"
 
+HEAVY_MAINTENANCE_UNITS=(
+  "christiania-backup.service"
+  "christiania-backup-compress.service"
+  "christiania-restore-drill.service"
+)
+for unit in "${HEAVY_MAINTENANCE_UNITS[@]}"; do
+  if systemctl is-active --quiet "${unit}"; then
+    fail "heavy maintenance is active: ${unit}; retry after it finishes"
+  fi
+done
+
 for required in awk chmod chown date grep install mktemp rm sha256sum sort sudo tar; do
   command -v "${required}" >/dev/null 2>&1 || fail "required command missing: ${required}"
 done
