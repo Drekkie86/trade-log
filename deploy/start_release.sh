@@ -44,6 +44,17 @@ done
 [[ -f "${RECEIVER}" ]] || fail "receiver missing: ${RECEIVER}"
 [[ -f "${RUNNER}" ]] || fail "runner missing: ${RUNNER}"
 
+HEAVY_MAINTENANCE_UNITS=(
+  "christiania-backup.service"
+  "christiania-backup-compress.service"
+  "christiania-restore-drill.service"
+)
+for unit in "${HEAVY_MAINTENANCE_UNITS[@]}"; do
+  if systemctl is-active --quiet "${unit}"; then
+    fail "heavy maintenance is active: ${unit}; retry after it finishes"
+  fi
+done
+
 actual_sha="$(sha256sum "${ARCHIVE}" | awk '{print tolower($1)}')"
 [[ "${actual_sha}" == "${EXPECTED_SHA256}" ]] || fail "archive SHA-256 mismatch"
 
