@@ -50,14 +50,21 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path .\deploy\deploy_release.ps1),
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -ne 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            throw "deploy_release.ps1 has PowerShell syntax errors."
+          foreach ($script in @(
+            ".\deploy\deploy_release.ps1",
+            ".\deploy\probe_release_performance.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "$script : $($_.Message)" }
+              throw "$script has PowerShell syntax errors."
+            }
           }
 
       - name: Run Christiania quality gate
