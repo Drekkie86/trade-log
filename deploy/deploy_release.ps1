@@ -2,7 +2,8 @@ param(
     [string]$Server = "2.28.76.101",
     [string]$User = "dirk",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\christiania_hetzner_ed25519",
-    [switch]$RecoveryNoSchemaChange
+    [switch]$RecoveryNoSchemaChange,
+    [switch]$Detach
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +34,80 @@ function Invoke-Git {
     return ($output | Out-String).Trim()
 }
 
+function Assert-ExactShaQualityGate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Commit
+    )
+
+    $headers = @{
+        "User-Agent" = "Christiania-Deploy"
+        "Accept" = "application/vnd.github+json"
+    }
+    $uri = "https://api.github.com/repos/Drekkie86/trade-log/actions/runs?head_sha=$Commit&status=completed&per_page=20"
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+    }
+    catch {
+        throw "Cannot verify GitHub quality gate for exact SHA $Commit. $($_.Exception.Message)"
+    }
+
+    $run = @($response.workflow_runs) |
+        Where-Object {
+            $_.name -eq "Christiania Quality Gate" -and
+            $_.head_sha -eq $Commit -and
+            $_.event -eq "push" -and
+            $_.conclusion -eq "success"
+        } |
+        Sort-Object created_at -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $run) {
+        throw "Refusing deployment: exact main SHA $Commit has no successful push-triggered Christiania Quality Gate run."
+    }
+
+    Write-Host "quality_gate_run=$($run.id)"
+}
+
+function ConvertFrom-StatusText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text
+    )
+
+    $result = @{}
+    foreach ($line in ($Text -split '\r?\n')) {
+        if (-not $line.Contains("=")) {
+            continue
+        }
+        $parts = $line.Split("=", 2)
+        $result[$parts[0].Trim()] = $parts[1].Trim()
+    }
+    return $result
+}
+
+function Write-LfNormalizedScript {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source)) {
+        throw "Release script source was not found: $Source"
+    }
+
+    $text = [System.IO.File]::ReadAllText($Source)
+    $text = $text.Replace([string][char]13, "")
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Destination, $text, $utf8NoBom)
+
+    if ([System.IO.File]::ReadAllBytes($Destination) -contains 13) {
+        throw "Release script still contains CR bytes after LF normalization: $Source"
+    }
+}
 if (-not (Test-Path -LiteralPath $KeyPath)) {
     throw "SSH key not found: $KeyPath"
 }
@@ -74,11 +149,17 @@ if ($head -ne $originMain) {
     throw "Refusing deployment: local HEAD is not identical to origin/main."
 }
 
+Assert-ExactShaQualityGate -Commit $head
+
 $tempRoot = Join-Path $env:TEMP "christiania-release-$head"
 $archiveName = "christiania-$head.tar.gz"
 $archivePath = Join-Path $tempRoot $archiveName
 $receiverSourcePath = Join-Path $PSScriptRoot "receive_release.sh"
 $receiverUploadPath = Join-Path $tempRoot "christiania-receive-release.sh"
+$launcherSourcePath = Join-Path $PSScriptRoot "start_release.sh"
+$launcherUploadPath = Join-Path $tempRoot "christiania-start-release.sh"
+$runnerSourcePath = Join-Path $PSScriptRoot "run_server_release.sh"
+$runnerUploadPath = Join-Path $tempRoot "christiania-run-server-release.sh"
 
 if (Test-Path -LiteralPath $tempRoot) {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force
@@ -97,38 +178,9 @@ try {
         throw "Release archive was not created."
     }
 
-    if (-not (Test-Path -LiteralPath $receiverSourcePath)) {
-        throw "Release receiver source was not found."
-    }
-
-    $receiverText = [System.IO.File]::ReadAllText(
-        $receiverSourcePath
-    )
-
-    $receiverText = $receiverText.Replace(
-        "`r`n",
-        "`n"
-    ).Replace(
-        "`r",
-        "`n"
-    )
-
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-    [System.IO.File]::WriteAllText(
-        $receiverUploadPath,
-        $receiverText,
-        $utf8NoBom
-    )
-
-    $receiverBytes = [System.IO.File]::ReadAllBytes(
-        $receiverUploadPath
-    )
-
-    if ($receiverBytes -contains 13) {
-        throw "Release receiver still contains CR bytes after LF normalization."
-    }
-
+    Write-LfNormalizedScript -Source $receiverSourcePath -Destination $receiverUploadPath
+    Write-LfNormalizedScript -Source $launcherSourcePath -Destination $launcherUploadPath
+    Write-LfNormalizedScript -Source $runnerSourcePath -Destination $runnerUploadPath
     $sha256 = (
         Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
     ).Hash.ToLowerInvariant()
@@ -142,6 +194,8 @@ try {
 
     $remoteArchive = "/tmp/$archiveName"
     $remoteReceiver = "/tmp/christiania-receive-release.sh"
+    $remoteLauncher = "/tmp/christiania-start-release.sh"
+    $remoteRunner = "/tmp/christiania-run-server-release.sh"
 
     & scp @SshOptions -i $KeyPath $archivePath "${User}@${Server}:$remoteArchive"
 
@@ -155,6 +209,17 @@ try {
         throw "SCP of release receiver failed."
     }
 
+    & scp @SshOptions -i $KeyPath $launcherUploadPath "${User}@${Server}:$remoteLauncher"
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "SCP of server release launcher failed."
+    }
+
+    & scp @SshOptions -i $KeyPath $runnerUploadPath "${User}@${Server}:$remoteRunner"
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "SCP of server release runner failed."
+    }
     $recoveryArg = if ($RecoveryNoSchemaChange) {
         " --recovery-no-schema-change"
     }
@@ -163,19 +228,81 @@ try {
     }
 
     $remoteCommand = (
-        "sudo bash $remoteReceiver $remoteArchive $head $sha256" +
+        "sudo bash $remoteLauncher $remoteArchive $remoteReceiver $remoteRunner " +
+        "$head $sha256" +
         $recoveryArg
     )
 
-    & ssh @SshOptions -t -i $KeyPath "${User}@${Server}" $remoteCommand
+    $launchOutput = & ssh @SshOptions -t -i $KeyPath "${User}@${Server}" $remoteCommand
+    $launchExit = $LASTEXITCODE
+    $launchText = ($launchOutput | Out-String).Trim()
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Remote Christiania release activation failed."
+    if ($launchText) {
+        Write-Host $launchText
+    }
+
+    if ($launchExit -ne 0) {
+        throw "Remote Christiania server-owned deployment launch failed."
+    }
+
+    $launchState = ConvertFrom-StatusText -Text $launchText
+    $statusPath = [string]$launchState["status_path"]
+    $unit = [string]$launchState["unit"]
+    $activationId = [string]$launchState["activation_id"]
+
+    if (
+        $statusPath -notmatch "^/var/lib/christiania/deployments/[A-Za-z0-9._-]+/status[.]env$" -or
+        $unit -notmatch "^christiania-deploy-[A-Za-z0-9._-]+[.]service$"
+    ) {
+        throw "Server launcher returned invalid deployment status metadata."
     }
 
     Write-Host ""
-    Write-Host "Christiania deployment completed successfully."
-    Write-Host "commit=$head"
+    Write-Host "Christiania deployment accepted by server."
+    Write-Host "activation_id=$activationId"
+    Write-Host "unit=$unit"
+    Write-Host "status_path=$statusPath"
+    Write-Host "Deployment is server-owned; losing the workstation SSH session will not stop it."
+
+    if ($Detach) {
+        Write-Host "Detached by request."
+        Write-Host "Inspect later with sudo cat $statusPath and sudo journalctl -u $unit -n 80 --no-pager."
+        return
+    }
+
+    $lastPhase = ""
+    while ($true) {
+        $statusOutput = & ssh @SshOptions -i $KeyPath "${User}@${Server}" "sudo cat $statusPath"
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Lost status access. The server-owned deployment may still be running; reconnect using unit $unit."
+        }
+
+        $deployStatus = ConvertFrom-StatusText -Text (($statusOutput | Out-String).Trim())
+        $state = [string]$deployStatus["state"]
+        $phase = [string]$deployStatus["phase"]
+        $detail = [string]$deployStatus["detail"]
+
+        if ($phase -and $phase -ne $lastPhase) {
+            Write-Host "phase=$phase"
+            $lastPhase = $phase
+        }
+
+        if ($state -eq "SUCCEEDED") {
+            Write-Host ""
+            Write-Host "Christiania deployment completed successfully."
+            Write-Host "commit=$head"
+            Write-Host "activation_id=$activationId"
+            break
+        }
+
+        if ($state -eq "FAILED") {
+            & ssh @SshOptions -i $KeyPath "${User}@${Server}" "sudo journalctl -u $unit -n 120 --no-pager"
+            throw "Christiania deployment failed: $detail"
+        }
+
+        Start-Sleep -Seconds 5
+    }
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
