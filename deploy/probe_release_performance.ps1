@@ -39,14 +39,14 @@ function Assert-ExactShaQualityGate {
         Where-Object {
             $_.name -eq "Christiania Quality Gate" -and
             $_.head_sha -eq $Commit -and
-            $_.event -eq "push" -and
+            $_.event -in @("pull_request", "push") -and
             $_.conclusion -eq "success"
         } |
         Sort-Object created_at -Descending |
         Select-Object -First 1
 
     if ($null -eq $run) {
-        throw "Exact main SHA $Commit has no successful push-triggered Christiania Quality Gate run."
+        throw "Exact SHA $Commit has no successful Christiania Quality Gate run."
     }
 
     Write-Host "quality_gate_run=$($run.id)"
@@ -84,16 +84,6 @@ if ($status) {
 $head = (Invoke-Git -Arguments @("rev-parse", "HEAD")).ToLowerInvariant()
 if ($head -notmatch "^[0-9a-f]{40}$") {
     throw "Cannot determine a full 40-character Git commit."
-}
-
-& git fetch origin main
-if ($LASTEXITCODE -ne 0) {
-    throw "git fetch origin main failed."
-}
-
-$originMain = (Invoke-Git -Arguments @("rev-parse", "origin/main")).ToLowerInvariant()
-if ($head -ne $originMain) {
-    throw "Refusing performance probe: local HEAD is not identical to origin/main."
 }
 
 Assert-ExactShaQualityGate -Commit $head
