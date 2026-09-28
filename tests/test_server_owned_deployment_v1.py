@@ -71,6 +71,7 @@ def test_release_client_uses_server_owned_launcher_not_direct_receiver():
     [
         "deploy/start_release.sh",
         "deploy/run_server_release.sh",
+        "deploy/probe_release_performance.sh",
         "deploy/receive_release.sh",
     ],
 )
@@ -87,3 +88,22 @@ def test_release_shell_entrypoints_have_valid_bash_syntax(relative):
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_release_performance_probe_never_mutates_live_runtime():
+    probe = (
+        ROOT / "deploy/probe_release_performance.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'PROBE_ROOT="/opt/christiania-probes"' in probe
+    assert '--include-full' in probe
+    assert '--warmups 1' in probe
+    assert '--runs 3' in probe
+    assert 'christiania_performance_probe.py' in probe
+    assert 'systemctl stop' not in probe
+    assert 'systemctl restart' not in probe
+    assert 'ln -s "${PROBE_DIR}" "${APP_LINK}"' not in probe
+    assert 'christiania_release_database.py' not in probe
+    assert 'PRAGMA wal_checkpoint' not in probe
+    assert 'ANALYZE' not in probe
+    assert 'VACUUM' not in probe
