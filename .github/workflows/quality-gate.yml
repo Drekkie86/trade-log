@@ -45,6 +45,21 @@ jobs:
           }
           .\.venv\Scripts\python.exe -m pip check
 
+      - name: Parse deployment PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\deploy\deploy_release.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw "deploy_release.ps1 has PowerShell syntax errors."
+          }
+
       - name: Run Christiania quality gate
         shell: pwsh
         env:
