@@ -191,6 +191,13 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--release-commit",
+        help=(
+            "Optional 40-character release SHA to bind this production "
+            "measurement to an exact candidate."
+        ),
+    )
+    parser.add_argument(
         "--db",
         help=(
             "Database path. Defaults to CHRISTIANIA_DB_PATH / "
@@ -229,6 +236,17 @@ def main() -> int:
         parser.error("--warmups must be >= 0")
     if args.runs < 1:
         parser.error("--runs must be >= 1")
+    if (
+        args.release_commit is not None
+        and (
+            len(args.release_commit) != 40
+            or any(
+                value not in "0123456789abcdefABCDEF"
+                for value in args.release_commit
+            )
+        )
+    ):
+        parser.error("--release-commit must be a 40-character hexadecimal SHA")
 
     if args.env_file:
         values = load_runtime_env_file(
@@ -272,6 +290,11 @@ def main() -> int:
 
     payload = {
         "probe_version": 2,
+        "release_commit": (
+            None
+            if args.release_commit is None
+            else args.release_commit.lower()
+        ),
         "read_only": True,
         "database_before": database_before,
         "database_after": database_after,
