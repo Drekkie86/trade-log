@@ -34,18 +34,21 @@ if [[ "${EUID}" -ne 0 ]]; then
   fail "probe must run as root"
 fi
 
-if [[ "$#" -ne 3 ]]; then
-  echo "Usage: sudo bash probe_release_performance.sh <archive.tar.gz> <40-char-commit> <sha256>" >&2
+if [[ "$#" -ne 4 ]]; then
+  echo "Usage: sudo bash probe_release_performance.sh <archive.tar.gz> <40-char-commit> <sha256> <report-path>" >&2
   exit 2
 fi
 
 ARCHIVE="$1"
 EXPECTED_COMMIT="${2,,}"
 EXPECTED_SHA256="${3,,}"
+REPORT_PATH="$4"
 
 [[ -f "${ARCHIVE}" ]] || fail "release archive missing: ${ARCHIVE}"
 [[ "${EXPECTED_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit SHA"
 [[ "${EXPECTED_SHA256}" =~ ^[0-9a-f]{64}$ ]] || fail "invalid archive SHA-256"
+[[ "${REPORT_PATH}" =~ ^/var/lib/christiania/audit/performance-probes/${EXPECTED_COMMIT}-[A-Za-z0-9._-]+[.]json$ ]] \
+  || fail "invalid performance report path for target commit"
 [[ -f "${ENV_FILE}" ]] || fail "runtime environment file missing: ${ENV_FILE}"
 id "${SERVICE_USER}" >/dev/null 2>&1 || fail "service account missing: ${SERVICE_USER}"
 
@@ -65,7 +68,6 @@ done < <(tar -tzf "${ARCHIVE}")
 PROBE_ID="${EXPECTED_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 PROBE_DIR="${PROBE_ROOT}/${PROBE_ID}"
 REPORT_DIR="${STATE_ROOT}/audit/performance-probes"
-REPORT_PATH="${REPORT_DIR}/${EXPECTED_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ).json"
 
 cleanup() {
   rm -rf -- "${PROBE_DIR}"
@@ -103,6 +105,7 @@ trap 'rm -f "${TMP_REPORT}"; cleanup' EXIT
     "${PROBE_DIR}/.venv/bin/python" \
     "${PROBE_DIR}/christiania_performance_probe.py" \
     --env-file "${ENV_FILE}" \
+    --release-commit "${EXPECTED_COMMIT}" \
     --include-full \
     --warmups 1 \
     --runs 3
