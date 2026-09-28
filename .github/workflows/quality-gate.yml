@@ -87,14 +87,15 @@ jobs:
           test -x .venv/bin/python
           .venv/bin/python -m pip check
 
-      - name: Resolve clean Linux production runtime
+      - name: Validate exact Linux production runtime lock
         shell: bash
         run: |
           python -m venv .runtime-lock-venv
           .runtime-lock-venv/bin/python -m pip install \
             --disable-pip-version-check \
             --no-compile \
-            -r requirements.txt
+            --no-deps \
+            -r requirements-lock-linux-py313.txt
           .runtime-lock-venv/bin/python -m pip check
           .runtime-lock-venv/bin/python -m pip freeze > runtime-lock-linux-py313.txt
           if grep -Eiq '^(pytest|pluggy|iniconfig)==' runtime-lock-linux-py313.txt; then
@@ -107,10 +108,10 @@ jobs:
             > committed-runtime-lock-linux-py313.txt
           LC_ALL=C sort -f \
             runtime-lock-linux-py313.txt \
-            > resolved-runtime-lock-linux-py313.txt
+            > installed-runtime-lock-linux-py313.txt
           diff -u \
             committed-runtime-lock-linux-py313.txt \
-            resolved-runtime-lock-linux-py313.txt
+            installed-runtime-lock-linux-py313.txt
 
       - name: Upload resolved Linux runtime
         uses: actions/upload-artifact@v4
