@@ -123,14 +123,15 @@ def test_release_activation_requires_recent_exact_sha_performance_evidence():
     assert '"Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL"' in deployer
 
 
-def test_performance_probe_client_is_exact_main_sha_and_server_owned():
+def test_performance_probe_client_accepts_green_pr_candidate_and_is_server_owned():
     client = (
         ROOT / "deploy/probe_release_performance.ps1"
     ).read_text(encoding="utf-8")
 
-    assert "local HEAD is not identical to origin/main" in client
-    assert "$_.event -eq \"push\"" in client
+    assert "local HEAD is not identical to origin/main" not in client
+    assert '$_.event -in @("pull_request", "push")' in client
     assert "$_.conclusion -eq \"success\"" in client
+    assert "$_.head_sha -eq $Commit" in client
     assert "systemd-run" in client
     assert "--property=TimeoutStopSec=infinity" in client
     assert "--no-block" in client
