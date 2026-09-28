@@ -77,12 +77,12 @@ def run_preflight(
     checks.append(
         _check(
             "python-version",
-            sys.version_info >= (3, 10),
+            sys.version_info[:2] == (3, 13),
             (
                 f"Python {sys.version_info.major}."
-                f"{sys.version_info.minor} is supported."
+                f"{sys.version_info.minor} matches the production runtime."
             ),
-            "Python 3.10 or newer is required.",
+            "Python 3.13 is required for the Christiania production runtime.",
         )
     )
 
