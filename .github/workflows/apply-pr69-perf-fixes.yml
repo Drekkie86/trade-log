@@ -1,0 +1,69 @@
+name: Temporary apply Claude PR69 perf fixes
+
+on:
+  push:
+    branches:
+      - review-export-pr69-3ce6b093
+    paths:
+      - ".github/workflows/apply-pr69-perf-fixes.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout guarded payload
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: payload
+          fetch-depth: 1
+
+      - name: Checkout PR69 branch
+        uses: actions/checkout@v4
+        with:
+          ref: christiania-perf-deploy-hardening-v1
+          path: target
+          fetch-depth: 0
+
+      - name: Verify base and reconstruct Claude patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_head="3ce6b0932c1e6943e7a68efee65d99f91fed822c"
+          actual_head="$(git -C target rev-parse HEAD)"
+          if [[ "$actual_head" != "$expected_head" ]]; then
+            echo "Refusing patch: PR69 head moved. Expected $expected_head, got $actual_head." >&2
+            exit 1
+          fi
+
+          cat payload/.review_payload/pr69_perf_fixes.part01               payload/.review_payload/pr69_perf_fixes.part02               payload/.review_payload/pr69_perf_fixes.part03               > "$RUNNER_TEMP/pr69_patch.gz.b64"
+
+          echo "2a435fa5e4cd2db1cfe2b779309299a589c82cee852b7054db10e14fce06319c  $RUNNER_TEMP/pr69_patch.gz.b64"             | sha256sum -c -
+
+          base64 -d "$RUNNER_TEMP/pr69_patch.gz.b64"             | gunzip             > "$RUNNER_TEMP/pr69-perf-fixes.patch"
+
+          echo "0b27e7101768e80f6f3d8f51c93b6e5942ba167935501be688b654a77da035a1  $RUNNER_TEMP/pr69-perf-fixes.patch"             | sha256sum -c -
+
+      - name: Apply exact Claude patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          git config user.name "Christiania Review Handoff"
+          git config user.email "41843790+Drekkie86@users.noreply.github.com"
+          git am "$RUNNER_TEMP/pr69-perf-fixes.patch"
+          git diff --check HEAD^ HEAD
+          git status --porcelain=v1
+          git log -1 --oneline
+
+      - name: Push PR69 branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          test "$(git rev-parse HEAD^)" = "3ce6b0932c1e6943e7a68efee65d99f91fed822c"
+          git push origin HEAD:refs/heads/christiania-perf-deploy-hardening-v1
