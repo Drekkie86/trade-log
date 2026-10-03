@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   export:
@@ -36,5 +37,33 @@ jobs:
         with:
           name: christiania-pr69-source-3ce6b093
           path: ${{ runner.temp }}/christiania-pr69-source-3ce6b093.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+
+  collect-gate-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Collect PR69 quality-gate run index and failed-step logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/gate-history"
+          gh run list             --repo Drekkie86/trade-log             --branch christiania-perf-deploy-hardening-v1             --workflow "Christiania Quality Gate"             --limit 100             --json databaseId,number,headSha,status,conclusion,displayTitle,event,createdAt,updatedAt,url             > "$RUNNER_TEMP/gate-history/run-index.json"
+
+          jq -r '.[] | select(.conclusion == "failure") | .databaseId'             "$RUNNER_TEMP/gate-history/run-index.json"             | while read -r run_id; do
+                gh run view "$run_id"                   --repo Drekkie86/trade-log                   --log-failed                   > "$RUNNER_TEMP/gate-history/run-${run_id}-failed.log"                   2>&1 || true
+              done
+
+          gh run view 36490912304             --repo Drekkie86/trade-log             --json databaseId,number,headSha,status,conclusion,jobs,url,createdAt,updatedAt             > "$RUNNER_TEMP/gate-history/run-464-success.json"
+
+      - name: Upload gate history
+        uses: actions/upload-artifact@v4
+        with:
+          name: christiania-pr69-gate-history
+          path: ${{ runner.temp }}/gate-history
           if-no-files-found: error
           retention-days: 1
