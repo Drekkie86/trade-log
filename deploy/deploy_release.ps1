@@ -182,8 +182,14 @@ if ([string]$performanceReport.release_commit -ne $head) {
 if (-not [bool]$performanceReport.read_only) {
     throw "Refusing deployment: performance report does not assert read-only execution."
 }
-if ([int]$performanceReport.probe_version -lt 2) {
+if ([int]$performanceReport.probe_version -lt 3) {
     throw "Refusing deployment: performance report format is too old."
+}
+if (-not [bool]$performanceReport.deployment_lock_held) {
+    throw "Refusing deployment: performance evidence was not serialized with the deployment lock."
+}
+if ($null -eq $performanceReport.runtime_activity_before -or $null -eq $performanceReport.runtime_activity_after) {
+    throw "Refusing deployment: performance evidence is missing daemon activity context."
 }
 
 $measuredPages = @($performanceReport.pages | ForEach-Object { [string]$_.page })
