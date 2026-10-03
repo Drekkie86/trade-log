@@ -277,6 +277,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--deployment-lock-held",
+        action="store_true",
+        help=(
+            "Assert that the caller holds the Christiania deployment lock "
+            "for the complete measurement window."
+        ),
+    )
+    parser.add_argument(
         "--db",
         help=(
             "Database path. Defaults to CHRISTIANIA_DB_PATH / "
@@ -377,6 +385,7 @@ def main() -> int:
             else args.release_commit.lower()
         ),
         "read_only": True,
+        "deployment_lock_held": bool(args.deployment_lock_held),
         "database_before": database_before,
         "database_after": database_after,
         "runtime_activity_before": runtime_activity_before,
