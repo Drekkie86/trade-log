@@ -29,12 +29,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar --exclude=.git -czf christiania-pr69-source-3ce6b093.tar.gz .
+          tar --exclude=.git -czf "$RUNNER_TEMP/christiania-pr69-source-3ce6b093.tar.gz" .
 
       - name: Upload source snapshot
         uses: actions/upload-artifact@v4
         with:
           name: christiania-pr69-source-3ce6b093
-          path: christiania-pr69-source-3ce6b093.tar.gz
+          path: ${{ runner.temp }}/christiania-pr69-source-3ce6b093.tar.gz
           if-no-files-found: error
           retention-days: 1
