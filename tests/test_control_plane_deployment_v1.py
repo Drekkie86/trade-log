@@ -46,29 +46,33 @@ def test_windows_deployer_uses_committed_git_archive():
     assert "git pull" not in script
 
 
-def test_windows_deployer_normalizes_receiver_to_lf():
+def test_windows_deployer_normalizes_release_shell_scripts_to_lf():
     script = _read(
         "deploy/deploy_release.ps1"
     )
 
+    assert "function Write-LfNormalizedScript" in script
+    assert '$text.Replace([string][char]13, "")' in script
+    assert "System.Text.UTF8Encoding" in script
     assert (
-        '$receiverText.Replace('
-        in script
-    )
-    assert '"`r`n"' in script
-    assert '"`n"' in script
-    assert (
-        "System.Text.UTF8Encoding"
-        in script
-    )
-    assert (
-        "$receiverBytes -contains 13"
+        "[System.IO.File]::ReadAllBytes($Destination) -contains 13"
         in script
     )
     assert (
         "still contains CR bytes after LF normalization"
         in script
     )
+
+    for source, destination in (
+        ("$receiverSourcePath", "$receiverUploadPath"),
+        ("$launcherSourcePath", "$launcherUploadPath"),
+        ("$runnerSourcePath", "$runnerUploadPath"),
+    ):
+        assert (
+            "Write-LfNormalizedScript "
+            f"-Source {source} -Destination {destination}"
+            in script
+        )
 
 
 def test_windows_deployer_uploads_normalized_receiver():

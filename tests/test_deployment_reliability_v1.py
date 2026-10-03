@@ -648,17 +648,19 @@ def test_clean_installer_uses_locked_runtime_and_checks_dependency_health():
     assert 'LC_ALL=C sort -f' in installer
 
 
-def test_quality_gate_verifies_runtime_lock_without_deferred_ui_rehearsal():
+def test_quality_gate_validates_exact_committed_runtime_lock():
     workflow = (
         ROOT
         / ".github/workflows/quality-gate.yml"
     ).read_text(encoding="utf-8")
 
-    assert "Resolve clean Linux production runtime" in workflow
+    assert "Validate exact Linux production runtime lock" in workflow
+    assert "requirements-lock-linux-py313.txt" in workflow
+    assert "--no-deps" in workflow
     assert "committed-runtime-lock-linux-py313.txt" in workflow
-    assert "resolved-runtime-lock-linux-py313.txt" in workflow
+    assert "installed-runtime-lock-linux-py313.txt" in workflow
     assert "diff -u" in workflow
-    assert "Prove real Christiania readonly helper under provisioned UI" not in workflow
+    assert "Resolve clean Linux production runtime" not in workflow
 
 def test_clean_installer_prefers_python_313_without_replacing_system_python():
     installer = (

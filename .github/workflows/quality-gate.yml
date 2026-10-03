@@ -45,6 +45,28 @@ jobs:
           }
           .\.venv\Scripts\python.exe -m pip check
 
+      - name: Parse deployment PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          foreach ($script in @(
+            ".\deploy\deploy_release.ps1",
+            ".\deploy\probe_release_performance.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error "$script : $($_.Message)" }
+              throw "$script has PowerShell syntax errors."
+            }
+          }
+
       - name: Run Christiania quality gate
         shell: pwsh
         env:
@@ -87,14 +109,15 @@ jobs:
           test -x .venv/bin/python
           .venv/bin/python -m pip check
 
-      - name: Resolve clean Linux production runtime
+      - name: Validate exact Linux production runtime lock
         shell: bash
         run: |
           python -m venv .runtime-lock-venv
           .runtime-lock-venv/bin/python -m pip install \
             --disable-pip-version-check \
             --no-compile \
-            -r requirements.txt
+            --no-deps \
+            -r requirements-lock-linux-py313.txt
           .runtime-lock-venv/bin/python -m pip check
           .runtime-lock-venv/bin/python -m pip freeze > runtime-lock-linux-py313.txt
           if grep -Eiq '^(pytest|pluggy|iniconfig)==' runtime-lock-linux-py313.txt; then
@@ -107,10 +130,10 @@ jobs:
             > committed-runtime-lock-linux-py313.txt
           LC_ALL=C sort -f \
             runtime-lock-linux-py313.txt \
-            > resolved-runtime-lock-linux-py313.txt
+            > installed-runtime-lock-linux-py313.txt
           diff -u \
             committed-runtime-lock-linux-py313.txt \
-            resolved-runtime-lock-linux-py313.txt
+            installed-runtime-lock-linux-py313.txt
 
       - name: Upload resolved Linux runtime
         uses: actions/upload-artifact@v4
@@ -124,6 +147,9 @@ jobs:
         shell: bash
         run: |
           bash -n deploy/receive_release.sh
+          bash -n deploy/start_release.sh
+          bash -n deploy/run_server_release.sh
+          bash -n deploy/probe_release_performance.sh
           bash -n deploy/install_one_vm.sh
           bash -n deploy/provision_runtime_identities.sh
           test -x deploy/christiania-maintenance
