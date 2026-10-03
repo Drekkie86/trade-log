@@ -72,14 +72,39 @@ export CHRISTIANIA_DEPLOY_STATUS_FILE="${STATUS_FILE}"
 
 status_write "RUNNING" "STARTING" "Server-owned deployment started."
 
+CHILD_PID=""
+
+forward_signal() {
+  local signal="$1"
+  if [[ -n "${CHILD_PID}" ]] && kill -0 "${CHILD_PID}" 2>/dev/null; then
+    echo "Forwarding ${signal} to release receiver pid=${CHILD_PID}." >&2
+    kill -s "${signal}" "${CHILD_PID}" 2>/dev/null || true
+  fi
+}
+
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+trap 'forward_signal HUP' HUP
+
 set +e
 if [[ -n "${RECOVERY_ARG}" ]]; then
-  bash "${RECEIVER}" "${ARCHIVE}" "${EXPECTED_COMMIT}" "${EXPECTED_SHA256}" "${RECOVERY_ARG}"
-  rc=$?
+  bash "${RECEIVER}" "${ARCHIVE}" "${EXPECTED_COMMIT}" "${EXPECTED_SHA256}" "${RECOVERY_ARG}" &
 else
-  bash "${RECEIVER}" "${ARCHIVE}" "${EXPECTED_COMMIT}" "${EXPECTED_SHA256}"
-  rc=$?
+  bash "${RECEIVER}" "${ARCHIVE}" "${EXPECTED_COMMIT}" "${EXPECTED_SHA256}" &
 fi
+CHILD_PID=$!
+
+while true; do
+  wait "${CHILD_PID}"
+  rc=$?
+  if kill -0 "${CHILD_PID}" 2>/dev/null; then
+    continue
+  fi
+  break
+done
+
+CHILD_PID=""
+trap - TERM INT HUP
 set -e
 
 if [[ "${rc}" -eq 0 ]]; then
