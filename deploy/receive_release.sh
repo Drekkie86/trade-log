@@ -62,9 +62,35 @@ fail() {
 PHASE_STARTED_AT=0
 PHASE_NAME=""
 
+deployment_status_phase() {
+  local phase="$1"
+  local detail="$2"
+  local status_file="${CHRISTIANIA_DEPLOY_STATUS_FILE:-}"
+  local tmp=""
+
+  [[ -n "${status_file}" ]] || return 0
+
+  tmp="${status_file}.receiver.$$"
+  umask 027
+  {
+    printf 'state=RUNNING\n'
+    printf 'phase=%s\n' "${phase}"
+    printf 'target_commit=%s\n' "${EXPECTED_COMMIT:-unknown}"
+    printf 'activation_id=%s\n' "${CHRISTIANIA_DEPLOY_ACTIVATION_ID:-unknown}"
+    printf 'unit=%s\n' "${CHRISTIANIA_DEPLOY_UNIT:-unknown}"
+    printf 'started_at=%s\n' "${CHRISTIANIA_DEPLOY_STARTED_AT:-unknown}"
+    printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'finished_at=\n'
+    printf 'detail=%s\n' "${detail//$'\n'/ }"
+  } > "${tmp}"
+  chmod 0640 "${tmp}"
+  mv -f "${tmp}" "${status_file}"
+}
+
 phase_start() {
   PHASE_NAME="$1"
   PHASE_STARTED_AT="$(date +%s)"
+  deployment_status_phase "${PHASE_NAME}" "Receiver phase started: ${PHASE_NAME}."
   echo
   echo "==> ${PHASE_NAME}"
 }
@@ -98,6 +124,7 @@ phase_done() {
   finished_at="$(date +%s)"
   elapsed=$((finished_at - PHASE_STARTED_AT))
   echo "<== ${PHASE_NAME} completed in ${elapsed}s"
+  deployment_status_phase "${PHASE_NAME}" "Receiver phase completed in ${elapsed}s."
   PHASE_NAME=""
   PHASE_STARTED_AT=0
 }

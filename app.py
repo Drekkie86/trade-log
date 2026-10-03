@@ -25,6 +25,7 @@ from src.operations.backup_recovery import (
 from src.operations.burn_in import read_burn_in_samples, summarize_burn_in
 from src.operations.release_manifest import build_release_manifest
 from src.operations.v1_readiness import assess_v1_readiness
+from src.providers.thetadata_control import probe_theta_terminal
 from src.research.cash_settled_universe import cash_settled_research_universe
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
 from src.quant.bench import run_vanilla_bench
@@ -312,9 +313,15 @@ def _show_observation_filter_strip(filters: dict[str, str]) -> None:
         labels.append(f"{_human_column_name(field)}: {value}")
     left, right = st.columns([5, 1])
     left.caption("Active filters · " + " · ".join(labels))
-    if right.button("Clear filters", key="clear_observation_filters", width="stretch"):
-        _clear_observation_filters()
-        st.rerun()
+    # on_click clears state before the next pass, so neither a whole-app rerun
+    # nor a fragment-scoped st.rerun() (which raises outside fragment reruns)
+    # is needed.
+    right.button(
+        "Clear filters",
+        key="clear_observation_filters",
+        width="stretch",
+        on_click=_clear_observation_filters,
+    )
 
 
 def _show_full_text_details(frame: pd.DataFrame) -> None:
@@ -421,6 +428,16 @@ def _cached_candidate_model_dossier(candidate: dict) -> dict:
     return run_candidate_model_dossier(candidate, mc_paths=10_000)
 
 
+@st.cache_data(
+    show_spinner=False,
+    ttl=30,
+    max_entries=1,
+    refresh_mode="background",
+)
+def _cached_theta_health() -> dict:
+    return probe_theta_terminal().as_dict()
+
+
 st.set_page_config(
     page_title="Christiania",
     page_icon="⚓",
@@ -467,35 +484,49 @@ def _html_rows(items: list[tuple[str, str, str | None]]) -> str:
 
 
 RUNTIME_REFRESH_SECONDS = 180
+DEEP_OPS_VERIFICATION_STATE_KEY = "_chr_ops_deep_verification_requested_at"
+DEEP_OPS_VERIFICATION_TTL_SECONDS = 300
 
 
-def _load_runtime_state(*, force: bool = False):
-    now = time.monotonic()
-    loaded_at = st.session_state.get("_chr_runtime_loaded_at", 0.0)
-    stale = (now - loaded_at) >= RUNTIME_REFRESH_SECONDS
-
-    if force or "_chr_snapshot" not in st.session_state or stale:
-        with st.spinner("Refreshing Christiania research state…"):
-            st.session_state["_chr_snapshot"] = load_command_deck(
-                include_provider_health=True,
-                deep_integrity=False,
-            )
-            st.session_state["_chr_backup_inventory"] = (
-                inventory_backups_fast().as_dict()
-            )
-            st.session_state["_chr_runtime_loaded_at"] = now
-
-    return (
-        st.session_state["_chr_snapshot"],
-        st.session_state["_chr_backup_inventory"],
+@st.cache_data(
+    show_spinner="Loading Christiania page…",
+    ttl=RUNTIME_REFRESH_SECONDS,
+    max_entries=12,
+    refresh_mode="background",
+)
+def _cached_page_runtime_state(page: str):
+    snapshot = load_command_deck(
+        include_provider_health=False,
+        deep_integrity=False,
+        page=page,
     )
+    backup_inventory = (
+        inventory_backups_fast().as_dict()
+        if page == "Dashboard"
+        else {
+            "total_files": 0,
+            "valid_files": 0,
+            "invalid_files": 0,
+            "latest_valid_path": None,
+            "latest_valid_age_hours": None,
+            "entries": [],
+        }
+    )
+    return snapshot, backup_inventory
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+def _load_runtime_state(page: str, *, force: bool = False):
+    if force:
+        _cached_page_runtime_state.clear()
+    return _cached_page_runtime_state(page)
+
+
+@st.cache_data(show_spinner=False, ttl=DEEP_OPS_VERIFICATION_TTL_SECONDS)
 def _cached_deep_ops_readiness():
     deep_snapshot = load_command_deck(
         include_provider_health=True,
         deep_integrity=True,
+        page="Ops Readiness",
     )
     deep_backups = inventory_backups().as_dict()
     deep_readiness = assess_v1_readiness(
@@ -504,8 +535,6 @@ def _cached_deep_ops_readiness():
     ).as_dict()
     return deep_snapshot, deep_backups, deep_readiness
 
-
-snapshot, backup_inventory = _load_runtime_state()
 
 with st.sidebar:
     if LOGO_PATH.exists():
@@ -535,10 +564,13 @@ with st.sidebar:
 
     st.divider()
     if st.button("↻ Refresh deck", width="stretch"):
-        _load_runtime_state(force=True)
+        _cached_theta_health.clear()
+        _load_runtime_state(page, force=True)
         st.rerun()
 
     st.caption(f"Christiania {CHRISTIANIA_VERSION}")
+
+snapshot, backup_inventory = _load_runtime_state(page)
 
 hero()
 
@@ -556,7 +588,11 @@ prospective = snapshot["prospective"]
 counts = snapshot["research_counts"]
 market_clock = snapshot["market_clock"]
 daemon_health = snapshot["daemon_health"]
-theta_health = snapshot.get("theta_health", {"state": "NOT_PROBED"})
+theta_health = (
+    _cached_theta_health()
+    if page in {"Dashboard", "Ops"}
+    else snapshot.get("theta_health", {"state": "NOT_PROBED"})
+)
 database = snapshot["database"]
 quality = snapshot.get("data_quality", {})
 decision_candidates = snapshot.get("decision_desk_candidates", [])
@@ -731,715 +767,765 @@ if page == "Dashboard":
         )
 
 elif page == "Decision Desk":
-    section_heading(
-        "Decision Desk V2",
-        "One candidate-level synthesis of anomaly evidence, exact structure, settlement, market quality, risk, prospective history, shadow follow-up, model diagnostics and scenario stress.",
-    )
-    st.caption(
-        "CURRENT GLOBAL CONCLUSION: NO TRADE while candidate-specific scientific governance remains disabled. "
-        "The desk can also classify research as CONTINUE SHADOW. ELIGIBLE FOR MANUAL REVIEW requires every gate. "
-        "Christiania does not submit orders."
-    )
-
-    universe_state = cash_settled_research_universe()
-    u1, u2, u3 = st.columns(3)
-    u1.metric("Cash-settled research universe", ", ".join(universe_state.symbols))
-    u2.metric("Provider compatibility", universe_state.provider_compatibility_state)
-    u3.metric("Live collection enabled", "YES" if universe_state.live_collection_enabled else "NO")
-    _visual_note(universe_state.note)
-
-    with st.expander("Session risk controls", expanded=True):
+    @st.fragment
+    def _render_decision_desk_page():
+        section_heading(
+            "Decision Desk V2",
+            "One candidate-level synthesis of anomaly evidence, exact structure, settlement, market quality, risk, prospective history, shadow follow-up, model diagnostics and scenario stress.",
+        )
         st.caption(
-            "These are manual review controls for this session. They do not create broker orders. A zero value blocks manual eligibility. "
-            "Defined-risk maximum loss is primary; the loss threshold is only a monitoring trigger."
-        )
-        rc1, rc2, rc3 = st.columns(3)
-        max_trade_risk_eur = rc1.number_input(
-            "Maximum loss budget per trade (€)", min_value=0.0, max_value=500.0,
-            value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)), step=5.0,
-            key="decision_max_trade_risk_eur",
-        )
-        stop_loss_pct = rc2.number_input(
-            "Planned loss threshold (% of reserved risk)", min_value=0.0, max_value=100.0,
-            value=float(st.session_state.get("_chr_stop_loss_pct", 0.0)), step=5.0,
-            key="decision_stop_loss_pct",
-        )
-        rc3.metric("Active bankroll cap", "€500", "no compounding")
-        st.session_state["_chr_max_trade_risk_eur"] = max_trade_risk_eur
-        st.session_state["_chr_stop_loss_pct"] = stop_loss_pct
-        st.caption("A stop threshold is a monitoring rule, not a guaranteed fill. Defined-risk maximum loss remains the primary protection.")
-
-    board = build_candidate_review_board(
-        decision_candidates,
-        models=snapshot.get("models", []),
-        hypotheses=snapshot.get("hypotheses", []),
-        max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
-        stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
-    )
-
-    no_trade_count = sum(1 for row in board if row.get("decision_desk_disposition") == "NO TRADE")
-    shadow_count = sum(1 for row in board if row.get("decision_desk_disposition") == "CONTINUE SHADOW")
-    eligible_count = sum(1 for row in board if row.get("decision_desk_disposition") == "ELIGIBLE FOR MANUAL REVIEW")
-    cash_verified_count = sum(1 for row in board if row.get("settlement_state") == "VERIFIED_CASH_SETTLED")
-    top1, top2, top3, top4 = st.columns(4)
-    top1.metric("Tracked candidates", _fmt_count(len(board)))
-    top2.metric("NO TRADE", _fmt_count(no_trade_count))
-    top3.metric("Continue shadow", _fmt_count(shadow_count))
-    top4.metric("Manual-review eligible", _fmt_count(eligible_count), "0 is valid")
-    st.metric("Cash-settlement verified", _fmt_count(cash_verified_count), "exact contract identity required")
-    _visual_note(
-        "The desk separates hard safety failure from scientific incompleteness. NO TRADE means a hard gate failed; CONTINUE SHADOW means the candidate may remain useful research but has not earned manual-trade review."
-    )
-
-    if cash_verified_count == 0 and board:
-        st.warning(
-            "No tracked candidate currently passes the exact cash-settlement gate. Existing equity/ETF candidates remain useful shadow research, but Christiania will not recommend them for live/manual use."
+            "CURRENT GLOBAL CONCLUSION: NO TRADE while candidate-specific scientific governance remains disabled. "
+            "The desk can also classify research as CONTINUE SHADOW. ELIGIBLE FOR MANUAL REVIEW requires every gate. "
+            "Christiania does not submit orders."
         )
 
-    if not board:
-        st.info("No shadow candidates are available for Decision Desk synthesis yet.")
-    else:
-        section_heading("Research review board", "Select a row to open the complete candidate dossier.")
-        board_columns = [
-            "research_rank", "candidate_id", "underlying", "structure_id", "anomaly_direction",
-            "abs_iv_residual", "settlement_state", "market_quality_state", "candidate_governance_state",
-            "prospective_evidence_state", "time_to_expiry_state", "decision_blocker_count",
-            "decision_desk_disposition", "research_action",
-        ]
-        selected = _show_selectable_table(board, key="decision_desk_review_board_v2", columns=board_columns, height=340)
-        _visual_note(
-            "Research rank is only an inspection priority. It is not probability of profit, calibrated EV, or a recommendation score."
-        )
-        if selected is None:
-            selected = board[0]
-            st.caption("No row selected — showing the highest research-review priority candidate.")
-        candidate_id = int(selected.get("candidate_id"))
-        full_selected = next((row for row in board if int(row.get("candidate_id")) == candidate_id), selected)
+        universe_state = cash_settled_research_universe()
+        u1, u2, u3 = st.columns(3)
+        u1.metric("Cash-settled research universe", ", ".join(universe_state.symbols))
+        u2.metric("Provider compatibility", universe_state.provider_compatibility_state)
+        u3.metric("Live collection enabled", "YES" if universe_state.live_collection_enabled else "NO")
+        _visual_note(universe_state.note)
 
-        settlement = classify_settlement(
-            full_selected.get("underlying"), observed_exercise_style=full_selected.get("exercise_style"),
-            reference_contract_id=full_selected.get("reference_contract_id"), shares_per_contract=full_selected.get("target_shares_per_contract"),
-        )
-        risk_plan = build_risk_plan(
-            full_selected, max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
+        with st.expander("Session risk controls", expanded=True):
+            st.caption(
+                "These are manual review controls for this session. They do not create broker orders. A zero value blocks manual eligibility. "
+                "Defined-risk maximum loss is primary; the loss threshold is only a monitoring trigger."
+            )
+            rc1, rc2, rc3 = st.columns(3)
+            max_trade_risk_eur = rc1.number_input(
+                "Maximum loss budget per trade (€)", min_value=0.0, max_value=500.0,
+                value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)), step=5.0,
+                key="decision_max_trade_risk_eur",
+            )
+            stop_loss_pct = rc2.number_input(
+                "Planned loss threshold (% of reserved risk)", min_value=0.0, max_value=100.0,
+                value=float(st.session_state.get("_chr_stop_loss_pct", 0.0)), step=5.0,
+                key="decision_stop_loss_pct",
+            )
+            rc3.metric("Active bankroll cap", "€500", "no compounding")
+            st.session_state["_chr_max_trade_risk_eur"] = max_trade_risk_eur
+            st.session_state["_chr_stop_loss_pct"] = stop_loss_pct
+            st.caption("A stop threshold is a monitoring rule, not a guaranteed fill. Defined-risk maximum loss remains the primary protection.")
+
+        board = build_candidate_review_board(
+            decision_candidates,
+            models=snapshot.get("models", []),
+            hypotheses=snapshot.get("hypotheses", []),
+            max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
             stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
         )
-        governance = resolve_candidate_governance(full_selected, models=snapshot.get("models", []), hypotheses=snapshot.get("hypotheses", []))
-        market_quality = assess_market_quality(full_selected)
-        evidence = assess_prospective_evidence(full_selected)
-        tte = resolve_time_to_expiry(full_selected)
-        exit_monitor = assess_exit_monitor(full_selected, risk_plan)
 
-        section_heading("Frozen shadow risk evidence")
-        frozen_risk = full_selected.get("frozen_risk_plan")
-        if not frozen_risk:
-            st.warning("NOT FROZEN — session controls are exploratory and do not count as prospective risk evidence.")
-            st.caption("Freeze a plan with record_shadow_risk_plan_v1.py before using risk-management outcomes as prospective evidence.")
-        else:
-            fr1, fr2, fr3, fr4 = st.columns(4)
-            fr1.metric("Risk-plan state", "FROZEN")
-            fr2.metric("Defined max loss", f"€{float(frozen_risk.get('max_defined_loss_eur_minor') or 0)/100:.2f}")
-            fr3.metric("Reserved risk", f"€{float(frozen_risk.get('reserved_risk_eur_minor') or 0)/100:.2f}")
-            fr4.metric("Latest monitor", str(frozen_risk.get("overall_state") or "NOT ASSESSED"))
-            st.caption("Frozen plans are immutable. Assessments are append-only. A stop threshold is never presented as a guaranteed fill.")
-
-        section_heading("Current conclusion")
-        disposition = full_selected.get("decision_desk_disposition")
-        blockers = list(full_selected.get("decision_blockers") or [])
-        if disposition == "NO TRADE":
-            st.error("NO TRADE")
-        elif disposition == "CONTINUE SHADOW":
-            st.warning("CONTINUE SHADOW — useful research, not eligible for manual trade review")
-        else:
-            st.success("ELIGIBLE FOR MANUAL REVIEW — still not an order")
-        if blockers:
-            st.markdown("**Unresolved / blocking reasons:** " + " · ".join(blockers))
-        st.caption("A visually attractive anomaly can never override settlement, quote quality, evidence, governance or risk controls.")
-
-        section_heading("Candidate dossier", "What Christiania observed at inception and what happened afterward.")
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Underlying", str(full_selected.get("underlying") or "—"))
-        d2.metric("Structure", str(full_selected.get("structure_id") or "—"))
-        d3.metric("Absolute IV residual", _fmt_number(full_selected.get("abs_iv_residual"), decimals=4))
-        latest_pnl = full_selected.get("latest_estimated_net_pnl_eur_minor")
-        d4.metric("Latest shadow net P&L", "—" if latest_pnl is None else f"€{_fmt_number(float(latest_pnl)/100.0, decimals=2)}")
-        _show_table([full_selected], columns=[
-            "candidate_id", "research_run_id", "surfaced_at", "underlying", "expiration", "right", "target_strike",
-            "hypothesis_family", "hypothesis_version", "scanner_family_id", "scanner_version", "primary_research_model",
-            "anomaly_direction", "iv_residual", "abs_iv_residual", "residual_threshold", "admission_decision",
-            "admission_reason_code", "admission_label", "collection_status", "retry_count", "was_recovered",
-            "mark_count", "validated_outcomes", "latest_mark_at",
-        ])
-
-        section_heading("Exact hypothetical structure")
-        legs = full_selected.get("structure_legs") or []
-        if legs:
-            _show_table(legs, columns=[
-                "side", "quantity", "right", "strike", "entry_price", "bid", "ask", "quote_at",
-                "implied_volatility", "delta", "gamma", "theta", "vega", "shares_per_contract", "option_quote_id",
-            ])
-            _visual_note("These are persisted inception legs and prices, not a fresh executable quote.")
-        else:
-            st.warning("Persisted structure legs could not be reconstructed.")
-
-        g1, g2, g3 = st.columns(3)
-        with g1:
-            section_heading("Settlement & contract gate")
-            st.metric("Settlement", settlement.settlement_type)
-            st.metric("Exercise style", settlement.exercise_style)
-            st.metric("Contract identity", settlement.contract_identity_state)
-            st.metric("Multiplier", settlement.multiplier_state)
-            (st.success if settlement.live_eligible else st.error)(settlement.reason)
-            st.caption(f"Policy provenance: {settlement.provenance}")
-        with g2:
-            section_heading("Market quality")
-            st.metric("State", market_quality.state)
-            st.metric("Quote age", "—" if market_quality.quote_age_seconds is None else f"{_fmt_number(market_quality.quote_age_seconds, decimals=1)} s")
-            st.metric("Spread / mid", "—" if market_quality.spread_to_mid is None else f"{_fmt_number(market_quality.spread_to_mid*100.0, decimals=2)}%")
-            if market_quality.blockers:
-                st.error(" · ".join(market_quality.blockers))
-            if market_quality.warnings:
-                st.warning(" · ".join(market_quality.warnings))
-            _visual_note("Manual eligibility requires a fresh quote and bounded spread. Historical inception quotes cannot masquerade as executable prices.")
-        with g3:
-            section_heading("Risk & loss monitor")
-            st.metric("Reserved defined risk", "—" if risk_plan.reserved_risk_eur is None else f"€{_fmt_number(risk_plan.reserved_risk_eur, decimals=2)}")
-            st.metric("Planned loss threshold", "NOT CONFIGURED" if risk_plan.planned_loss_trigger_eur is None else f"−€{_fmt_number(risk_plan.planned_loss_trigger_eur, decimals=2)}")
-            st.metric("Bankroll exposure", "—" if risk_plan.bankroll_fraction is None else f"{_fmt_number(risk_plan.bankroll_fraction*100.0, decimals=1)}%")
-            st.metric("Shadow loss monitor", exit_monitor["loss_threshold_state"])
-            st.caption(risk_plan.note)
-
-        section_heading("Candidate-specific scientific governance")
-        gv1, gv2, gv3 = st.columns(3)
-        gv1.metric("Primary frozen model", governance.primary_model or "UNRESOLVED")
-        gv2.metric("Decision permission", "ENABLED" if governance.decision_enabled else "DISABLED")
-        gv3.metric("TTE semantics", tte["state"])
-        if governance.blockers:
-            st.warning(" · ".join(governance.blockers))
-        _visual_note(governance.note + " " + tte["note"])
-
-        section_heading("Prospective evidence from similar candidates")
-        e1, e2, e3, e4 = st.columns(4)
-        e1.metric("Independent dates", _fmt_count(evidence.independent_dates))
-        e2.metric("Similar candidates", _fmt_count(evidence.candidate_count))
-        e3.metric("Validated outcomes", _fmt_count(evidence.validated_outcomes))
-        e4.metric("Mean validated net P&L", "—" if evidence.mean_net_pnl_eur is None else f"€{_fmt_number(evidence.mean_net_pnl_eur, decimals=2)}")
-        st.warning(evidence.state)
-        _visual_note(evidence.note)
-
-        section_heading("Full model dossier", "Benchmark diagnostics are separated from uncalibrated stress models.")
-        if not full_selected.get("model_input_complete"):
-            st.warning("Full model dossier unavailable because persisted model inputs are incomplete. Christiania will not invent defaults.")
-        else:
-            with st.spinner("Running cached multi-model diagnostics…"):
-                dossier = _cached_candidate_model_dossier(full_selected)
-            if dossier.get("state") != "RESEARCH_ONLY":
-                st.warning(dossier.get("reason") or dossier.get("state"))
-            else:
-                st.warning(dossier["reason"])
-                model_rows = dossier.get("structure_models", [])
-                if model_rows:
-                    _show_table(model_rows)
-                    model_df = pd.DataFrame(model_rows).set_index("model")[["fair_value_per_contract"]]
-                    st.bar_chart(model_df, height=320)
-                    _visual_note("Benchmark bars are diagnostic cross-checks. Heston and Merton are stress models here and do not participate in a headline fair-value vote.")
-                q1, q2, q3 = st.columns(3)
-                q1.metric("Benchmark center / share", _fmt_number(dossier.get("benchmark_center_per_share"), decimals=4))
-                q2.metric("Benchmark range / share", _fmt_number(dossier.get("benchmark_range_per_share"), decimals=4))
-                q3.metric("Expected value", "NOT CALIBRATED", "decision use disabled")
-
-                section_heading("Scenario stress")
-                scenario = dossier.get("scenarios", {})
-                if scenario.get("rows"):
-                    _show_table(scenario["rows"])
-                _visual_note(scenario.get("reason") or "No scenario output available.")
-
-                section_heading("Structure Greeks")
-                _show_table([dossier.get("structure_greeks_per_contract", {})])
-                _visual_note("Greeks describe sensitivities, not which market move will happen.")
-
-        section_heading("Arguments for / against")
-        positives = []
-        negatives = []
-        if full_selected.get("admission_decision") == "ADMITTED":
-            positives.append("Passed the existing shadow-admission process.")
-        if settlement.live_eligible:
-            positives.append("Exact persisted contract passes the cash-settlement gate.")
-        if market_quality.liquidity_pass:
-            positives.append("Observed bid/ask spread passes the current liquidity threshold.")
-        if evidence.validated_outcomes:
-            positives.append(f"There are {evidence.validated_outcomes} validated outcomes in the similar-candidate evidence pool.")
-        negatives.extend(blockers)
-        a1, a2 = st.columns(2)
-        with a1:
-            st.markdown("**For further research**")
-            st.markdown("\n".join(f"- {item}" for item in positives) if positives else "- No positive evidence claim is strong enough to highlight yet.")
-        with a2:
-            st.markdown("**Against manual trading**")
-            st.markdown("\n".join(f"- {item}" for item in negatives) if negatives else "- No unresolved blocker recorded.")
-
-        st.info(
-            "Net calibrated EV is intentionally not fabricated. Event/jump calendar context and exact expiration timestamps are still explicit missing-data gates. "
-            "Until those are real and candidate-specific prospective governance is enabled, Christiania cannot promote a candidate to manual-trade review."
+        no_trade_count = sum(1 for row in board if row.get("decision_desk_disposition") == "NO TRADE")
+        shadow_count = sum(1 for row in board if row.get("decision_desk_disposition") == "CONTINUE SHADOW")
+        eligible_count = sum(1 for row in board if row.get("decision_desk_disposition") == "ELIGIBLE FOR MANUAL REVIEW")
+        cash_verified_count = sum(1 for row in board if row.get("settlement_state") == "VERIFIED_CASH_SETTLED")
+        top1, top2, top3, top4 = st.columns(4)
+        top1.metric("Tracked candidates", _fmt_count(len(board)))
+        top2.metric("NO TRADE", _fmt_count(no_trade_count))
+        top3.metric("Continue shadow", _fmt_count(shadow_count))
+        top4.metric("Manual-review eligible", _fmt_count(eligible_count), "0 is valid")
+        st.metric("Cash-settlement verified", _fmt_count(cash_verified_count), "exact contract identity required")
+        _visual_note(
+            "The desk separates hard safety failure from scientific incompleteness. NO TRADE means a hard gate failed; CONTINUE SHADOW means the candidate may remain useful research but has not earned manual-trade review."
         )
+
+        if cash_verified_count == 0 and board:
+            st.warning(
+                "No tracked candidate currently passes the exact cash-settlement gate. Existing equity/ETF candidates remain useful shadow research, but Christiania will not recommend them for live/manual use."
+            )
+
+        if not board:
+            st.info("No shadow candidates are available for Decision Desk synthesis yet.")
+        else:
+            section_heading("Research review board", "Select a row to open the complete candidate dossier.")
+            board_columns = [
+                "research_rank", "candidate_id", "underlying", "structure_id", "anomaly_direction",
+                "abs_iv_residual", "settlement_state", "market_quality_state", "candidate_governance_state",
+                "prospective_evidence_state", "time_to_expiry_state", "decision_blocker_count",
+                "decision_desk_disposition", "research_action",
+            ]
+            selected = _show_selectable_table(board, key="decision_desk_review_board_v2", columns=board_columns, height=340)
+            _visual_note(
+                "Research rank is only an inspection priority. It is not probability of profit, calibrated EV, or a recommendation score."
+            )
+            if selected is None:
+                selected = board[0]
+                st.caption("No row selected — showing the highest research-review priority candidate.")
+            candidate_id = int(selected.get("candidate_id"))
+            full_selected = next((row for row in board if int(row.get("candidate_id")) == candidate_id), selected)
+
+            settlement = classify_settlement(
+                full_selected.get("underlying"), observed_exercise_style=full_selected.get("exercise_style"),
+                reference_contract_id=full_selected.get("reference_contract_id"), shares_per_contract=full_selected.get("target_shares_per_contract"),
+            )
+            risk_plan = build_risk_plan(
+                full_selected, max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
+                stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
+            )
+            governance = resolve_candidate_governance(full_selected, models=snapshot.get("models", []), hypotheses=snapshot.get("hypotheses", []))
+            market_quality = assess_market_quality(full_selected)
+            evidence = assess_prospective_evidence(full_selected)
+            tte = resolve_time_to_expiry(full_selected)
+            exit_monitor = assess_exit_monitor(full_selected, risk_plan)
+
+            section_heading("Frozen shadow risk evidence")
+            frozen_risk = full_selected.get("frozen_risk_plan")
+            if not frozen_risk:
+                st.warning("NOT FROZEN — session controls are exploratory and do not count as prospective risk evidence.")
+                st.caption("Freeze a plan with record_shadow_risk_plan_v1.py before using risk-management outcomes as prospective evidence.")
+            else:
+                fr1, fr2, fr3, fr4 = st.columns(4)
+                fr1.metric("Risk-plan state", "FROZEN")
+                fr2.metric("Defined max loss", f"€{float(frozen_risk.get('max_defined_loss_eur_minor') or 0)/100:.2f}")
+                fr3.metric("Reserved risk", f"€{float(frozen_risk.get('reserved_risk_eur_minor') or 0)/100:.2f}")
+                fr4.metric("Latest monitor", str(frozen_risk.get("overall_state") or "NOT ASSESSED"))
+                st.caption("Frozen plans are immutable. Assessments are append-only. A stop threshold is never presented as a guaranteed fill.")
+
+            section_heading("Current conclusion")
+            disposition = full_selected.get("decision_desk_disposition")
+            blockers = list(full_selected.get("decision_blockers") or [])
+            if disposition == "NO TRADE":
+                st.error("NO TRADE")
+            elif disposition == "CONTINUE SHADOW":
+                st.warning("CONTINUE SHADOW — useful research, not eligible for manual trade review")
+            else:
+                st.success("ELIGIBLE FOR MANUAL REVIEW — still not an order")
+            if blockers:
+                st.markdown("**Unresolved / blocking reasons:** " + " · ".join(blockers))
+            st.caption("A visually attractive anomaly can never override settlement, quote quality, evidence, governance or risk controls.")
+
+            section_heading("Candidate dossier", "What Christiania observed at inception and what happened afterward.")
+            d1, d2, d3, d4 = st.columns(4)
+            d1.metric("Underlying", str(full_selected.get("underlying") or "—"))
+            d2.metric("Structure", str(full_selected.get("structure_id") or "—"))
+            d3.metric("Absolute IV residual", _fmt_number(full_selected.get("abs_iv_residual"), decimals=4))
+            latest_pnl = full_selected.get("latest_estimated_net_pnl_eur_minor")
+            d4.metric("Latest shadow net P&L", "—" if latest_pnl is None else f"€{_fmt_number(float(latest_pnl)/100.0, decimals=2)}")
+            _show_table([full_selected], columns=[
+                "candidate_id", "research_run_id", "surfaced_at", "underlying", "expiration", "right", "target_strike",
+                "hypothesis_family", "hypothesis_version", "scanner_family_id", "scanner_version", "primary_research_model",
+                "anomaly_direction", "iv_residual", "abs_iv_residual", "residual_threshold", "admission_decision",
+                "admission_reason_code", "admission_label", "collection_status", "retry_count", "was_recovered",
+                "mark_count", "validated_outcomes", "latest_mark_at",
+            ])
+
+            section_heading("Exact hypothetical structure")
+            legs = full_selected.get("structure_legs") or []
+            if legs:
+                _show_table(legs, columns=[
+                    "side", "quantity", "right", "strike", "entry_price", "bid", "ask", "quote_at",
+                    "implied_volatility", "delta", "gamma", "theta", "vega", "shares_per_contract", "option_quote_id",
+                ])
+                _visual_note("These are persisted inception legs and prices, not a fresh executable quote.")
+            else:
+                st.warning("Persisted structure legs could not be reconstructed.")
+
+            g1, g2, g3 = st.columns(3)
+            with g1:
+                section_heading("Settlement & contract gate")
+                st.metric("Settlement", settlement.settlement_type)
+                st.metric("Exercise style", settlement.exercise_style)
+                st.metric("Contract identity", settlement.contract_identity_state)
+                st.metric("Multiplier", settlement.multiplier_state)
+                (st.success if settlement.live_eligible else st.error)(settlement.reason)
+                st.caption(f"Policy provenance: {settlement.provenance}")
+            with g2:
+                section_heading("Market quality")
+                st.metric("State", market_quality.state)
+                st.metric("Quote age", "—" if market_quality.quote_age_seconds is None else f"{_fmt_number(market_quality.quote_age_seconds, decimals=1)} s")
+                st.metric("Spread / mid", "—" if market_quality.spread_to_mid is None else f"{_fmt_number(market_quality.spread_to_mid*100.0, decimals=2)}%")
+                if market_quality.blockers:
+                    st.error(" · ".join(market_quality.blockers))
+                if market_quality.warnings:
+                    st.warning(" · ".join(market_quality.warnings))
+                _visual_note("Manual eligibility requires a fresh quote and bounded spread. Historical inception quotes cannot masquerade as executable prices.")
+            with g3:
+                section_heading("Risk & loss monitor")
+                st.metric("Reserved defined risk", "—" if risk_plan.reserved_risk_eur is None else f"€{_fmt_number(risk_plan.reserved_risk_eur, decimals=2)}")
+                st.metric("Planned loss threshold", "NOT CONFIGURED" if risk_plan.planned_loss_trigger_eur is None else f"−€{_fmt_number(risk_plan.planned_loss_trigger_eur, decimals=2)}")
+                st.metric("Bankroll exposure", "—" if risk_plan.bankroll_fraction is None else f"{_fmt_number(risk_plan.bankroll_fraction*100.0, decimals=1)}%")
+                st.metric("Shadow loss monitor", exit_monitor["loss_threshold_state"])
+                st.caption(risk_plan.note)
+
+            section_heading("Candidate-specific scientific governance")
+            gv1, gv2, gv3 = st.columns(3)
+            gv1.metric("Primary frozen model", governance.primary_model or "UNRESOLVED")
+            gv2.metric("Decision permission", "ENABLED" if governance.decision_enabled else "DISABLED")
+            gv3.metric("TTE semantics", tte["state"])
+            if governance.blockers:
+                st.warning(" · ".join(governance.blockers))
+            _visual_note(governance.note + " " + tte["note"])
+
+            section_heading("Prospective evidence from similar candidates")
+            e1, e2, e3, e4 = st.columns(4)
+            e1.metric("Independent dates", _fmt_count(evidence.independent_dates))
+            e2.metric("Similar candidates", _fmt_count(evidence.candidate_count))
+            e3.metric("Validated outcomes", _fmt_count(evidence.validated_outcomes))
+            e4.metric("Mean validated net P&L", "—" if evidence.mean_net_pnl_eur is None else f"€{_fmt_number(evidence.mean_net_pnl_eur, decimals=2)}")
+            st.warning(evidence.state)
+            _visual_note(evidence.note)
+
+            section_heading("Full model dossier", "Benchmark diagnostics are separated from uncalibrated stress models.")
+            if not full_selected.get("model_input_complete"):
+                st.warning("Full model dossier unavailable because persisted model inputs are incomplete. Christiania will not invent defaults.")
+            else:
+                dossier_state_key = "_chr_candidate_model_dossier"
+                candidate_id = int(full_selected.get("candidate_id") or 0)
+                cached_entry = st.session_state.get(dossier_state_key)
+
+                if st.button(
+                    "Run model dossier",
+                    key=f"run-model-dossier-{candidate_id}",
+                    type="secondary",
+                ):
+                    with st.spinner("Running cached multi-model diagnostics…"):
+                        cached_entry = {
+                            "candidate_id": candidate_id,
+                            "dossier": _cached_candidate_model_dossier(full_selected),
+                        }
+                        st.session_state[dossier_state_key] = cached_entry
+
+                if (
+                    isinstance(cached_entry, dict)
+                    and int(cached_entry.get("candidate_id") or -1) == candidate_id
+                    and isinstance(cached_entry.get("dossier"), dict)
+                ):
+                    dossier = cached_entry["dossier"]
+                    if dossier.get("state") != "RESEARCH_ONLY":
+                        st.warning(dossier.get("reason") or dossier.get("state"))
+                    else:
+                        st.warning(dossier["reason"])
+                        model_rows = dossier.get("structure_models", [])
+                        if model_rows:
+                            _show_table(model_rows)
+                            model_df = pd.DataFrame(model_rows).set_index("model")[["fair_value_per_contract"]]
+                            st.bar_chart(model_df, height=320)
+                            _visual_note("Benchmark bars are diagnostic cross-checks. Heston and Merton are stress models here and do not participate in a headline fair-value vote.")
+                        q1, q2, q3 = st.columns(3)
+                        q1.metric("Benchmark center / share", _fmt_number(dossier.get("benchmark_center_per_share"), decimals=4))
+                        q2.metric("Benchmark range / share", _fmt_number(dossier.get("benchmark_range_per_share"), decimals=4))
+                        q3.metric("Expected value", "NOT CALIBRATED", "decision use disabled")
+
+                        section_heading("Scenario stress")
+                        scenario = dossier.get("scenarios", {})
+                        if scenario.get("rows"):
+                            _show_table(scenario["rows"])
+                        _visual_note(scenario.get("reason") or "No scenario output available.")
+
+                        section_heading("Structure Greeks")
+                        _show_table([dossier.get("structure_greeks_per_contract", {})])
+                        _visual_note("Greeks describe sensitivities, not which market move will happen.")
+                else:
+                    st.info(
+                        "Model diagnostics are intentionally lazy. Run the dossier only when you want "
+                        "the 10,000-path research calculation for this candidate."
+                    )
+
+            section_heading("Arguments for / against")
+            positives = []
+            negatives = []
+            if full_selected.get("admission_decision") == "ADMITTED":
+                positives.append("Passed the existing shadow-admission process.")
+            if settlement.live_eligible:
+                positives.append("Exact persisted contract passes the cash-settlement gate.")
+            if market_quality.liquidity_pass:
+                positives.append("Observed bid/ask spread passes the current liquidity threshold.")
+            if evidence.validated_outcomes:
+                positives.append(f"There are {evidence.validated_outcomes} validated outcomes in the similar-candidate evidence pool.")
+            negatives.extend(blockers)
+            a1, a2 = st.columns(2)
+            with a1:
+                st.markdown("**For further research**")
+                st.markdown("\n".join(f"- {item}" for item in positives) if positives else "- No positive evidence claim is strong enough to highlight yet.")
+            with a2:
+                st.markdown("**Against manual trading**")
+                st.markdown("\n".join(f"- {item}" for item in negatives) if negatives else "- No unresolved blocker recorded.")
+
+            st.info(
+                "Net calibrated EV is intentionally not fabricated. Event/jump calendar context and exact expiration timestamps are still explicit missing-data gates. "
+                "Until those are real and candidate-specific prospective governance is enabled, Christiania cannot promote a candidate to manual-trade review."
+            )
+
+
+    _render_decision_desk_page()
 
 elif page == "Research Runs":
-    section_heading("Research runs", "Collection cadence, provider outcomes, proposals and marks.")
-    selected_run = None
-    if snapshot.get("recent_iterations"):
-        selected_run = _show_selectable_table(
-            snapshot["recent_iterations"],
-            key="research_runs_selectable",
-        )
-        _visual_note(
-            "One row is one scheduled research cycle. Select a row to focus the run-specific diagnostics below; "
-            "selection changes only the view, never the stored research state."
-        )
-    else:
-        st.info("No daemon iterations recorded.")
+    @st.fragment
+    def _render_research_runs_page():
+        section_heading("Research runs", "Collection cadence, provider outcomes, proposals and marks.")
+        selected_run = None
+        if snapshot.get("recent_iterations"):
+            selected_run = _show_selectable_table(
+                snapshot["recent_iterations"],
+                key="research_runs_selectable",
+            )
+            _visual_note(
+                "One row is one scheduled research cycle. Select a row to focus the run-specific diagnostics below; "
+                "selection changes only the view, never the stored research state."
+            )
+        else:
+            st.info("No daemon iterations recorded.")
 
-    if selected_run:
-        st.caption(
-            f"Selected cycle {_fmt_count(selected_run.get('id'))} · research run "
-            f"{_safe(selected_run.get('research_run_id'))} · {_status_label(selected_run.get('status'))}"
-        )
+        if selected_run:
+            st.caption(
+                f"Selected cycle {_fmt_count(selected_run.get('id'))} · research run "
+                f"{_safe(selected_run.get('research_run_id'))} · {_status_label(selected_run.get('status'))}"
+            )
 
-    c1, c2 = st.columns(2)
-    with c1:
-        section_heading("Session summary")
-        st.json(snapshot.get("session", {}))
-    with c2:
-        section_heading("Data-quality pulse")
-        st.json(quality.get("iteration_window", {}))
+        c1, c2 = st.columns(2)
+        with c1:
+            section_heading("Session summary")
+            st.json(snapshot.get("session", {}))
+        with c2:
+            section_heading("Data-quality pulse")
+            st.json(quality.get("iteration_window", {}))
 
-    if quality.get("recent_failed_underlyings"):
-        section_heading("Recent failed underlying samples", "Failure reasons remain explicit and queryable.")
-        failed_rows = quality["recent_failed_underlyings"]
-        if selected_run and selected_run.get("research_run_id") is not None:
-            run_id = selected_run.get("research_run_id")
-            narrowed = [row for row in failed_rows if row.get("run_id") == run_id]
-            if narrowed:
-                failed_rows = narrowed
-                st.caption(f"Filtered to research run {run_id} from the selected cycle.")
-        _show_table(failed_rows)
-        _visual_note(
-            "These are individual underlying collections that failed. They stay visible so a completed cycle cannot "
-            "silently look cleaner than the data it actually collected."
-        )
+        if quality.get("recent_failed_underlyings"):
+            section_heading("Recent failed underlying samples", "Failure reasons remain explicit and queryable.")
+            failed_rows = quality["recent_failed_underlyings"]
+            if selected_run and selected_run.get("research_run_id") is not None:
+                run_id = selected_run.get("research_run_id")
+                narrowed = [row for row in failed_rows if row.get("run_id") == run_id]
+                if narrowed:
+                    failed_rows = narrowed
+                    st.caption(f"Filtered to research run {run_id} from the selected cycle.")
+            _show_table(failed_rows)
+            _visual_note(
+                "These are individual underlying collections that failed. They stay visible so a completed cycle cannot "
+                "silently look cleaner than the data it actually collected."
+            )
+
+
+    _render_research_runs_page()
 
 elif page == "Calibration":
-    section_heading("Calibration", "Evidence accumulation and frozen prospective governance.")
-    if calibration_state["tone"] == "bad":
-        st.error(calibration_state["state"] + " — " + calibration_state["detail"])
-    else:
-        st.warning(calibration_state["state"] + " — " + calibration_state["detail"])
-    st.caption(
-        "Calibration status is scientific evidence maturity, not trading readiness. "
-        "Decision and admission flags remain authoritative."
-    )
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Independent dates", _fmt_count(prospective["independent_dates"]), "first descriptive review at 5")
-    c2.metric("Prospective rows", _fmt_count(prospective["observation_rows"]))
-    c3.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "visible covariate")
-    _visual_note(
-        "This is evidence maturity, not a trading score. Independent dates are the main clock because repeated rows "
-        "inside one market day are not independent new days."
-    )
-
-    st.progress(_pct(prospective["independent_dates"], 20), text=f"{prospective['independent_dates']}/20 dates toward preregistration review")
-
-    section_heading("Frozen hypotheses")
-    _show_table(snapshot.get("hypotheses", []))
-    st.caption(
-        "Friendly names are reviewed aliases only. The exact backend hypothesis ID is shown alongside every alias."
-    )
-
-    section_heading(
-        "Latest prospective checkpoints",
-        "Persisted H1–H4 evidence from the frozen protocol. Descriptive only; no automatic model promotion.",
-    )
-    checkpoints = snapshot.get("checkpoint_evaluations", [])
-    if checkpoints:
-        _show_table(
-            checkpoints,
-            columns=[
-                "hypothesis_key",
-                "evaluation_version",
-                "evaluated_at",
-                "evidence_start_session_date",
-                "evidence_end_session_date",
-                "independent_date_count",
-                "observation_count",
-                "evaluation_state",
-                "p_values_enabled",
-                "fdr_enabled",
-                "decision_enabled",
-            ],
+    @st.fragment
+    def _render_calibration_page():
+        section_heading("Calibration", "Evidence accumulation and frozen prospective governance.")
+        if calibration_state["tone"] == "bad":
+            st.error(calibration_state["state"] + " — " + calibration_state["detail"])
+        else:
+            st.warning(calibration_state["state"] + " — " + calibration_state["detail"])
+        st.caption(
+            "Calibration status is scientific evidence maturity, not trading readiness. "
+            "Decision and admission flags remain authoritative."
         )
-        checkpoint_choices = {
-            f"{hypothesis_label(row.get('hypothesis_key'))} · {row.get('evaluation_state')}": row
-            for row in checkpoints
-        }
-        checkpoint_label = st.selectbox(
-            "Checkpoint detail",
-            list(checkpoint_choices),
-            key="checkpoint_detail_selector",
-        )
-        with st.expander("Checkpoint metrics", expanded=False):
-            st.json(checkpoint_choices[checkpoint_label].get("metrics", {}))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Independent dates", _fmt_count(prospective["independent_dates"]), "first descriptive review at 5")
+        c2.metric("Prospective rows", _fmt_count(prospective["observation_rows"]))
+        c3.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "visible covariate")
         _visual_note(
-            "These evaluations are append-only scientific evidence. They do not change the scanner, "
-            "do not reset the prospective clock and cannot enable decisions in the current protocol."
+            "This is evidence maturity, not a trading score. Independent dates are the main clock because repeated rows "
+            "inside one market day are not independent new days."
         )
-    else:
-        st.info("No prospective checkpoint evaluation has been persisted yet.")
 
-    section_heading("Research model registry")
-    _show_table(snapshot.get("models", []))
-    st.caption(
-        "Friendly model names never replace versioned backend IDs; unknown identifiers are displayed verbatim."
-    )
+        st.progress(_pct(prospective["independent_dates"], 20), text=f"{prospective['independent_dates']}/20 dates toward preregistration review")
+
+        section_heading("Frozen hypotheses")
+        _show_table(snapshot.get("hypotheses", []))
+        st.caption(
+            "Friendly names are reviewed aliases only. The exact backend hypothesis ID is shown alongside every alias."
+        )
+
+        section_heading(
+            "Latest prospective checkpoints",
+            "Persisted H1–H4 evidence from the frozen protocol. Descriptive only; no automatic model promotion.",
+        )
+        checkpoints = snapshot.get("checkpoint_evaluations", [])
+        if checkpoints:
+            _show_table(
+                checkpoints,
+                columns=[
+                    "hypothesis_key",
+                    "evaluation_version",
+                    "evaluated_at",
+                    "evidence_start_session_date",
+                    "evidence_end_session_date",
+                    "independent_date_count",
+                    "observation_count",
+                    "evaluation_state",
+                    "p_values_enabled",
+                    "fdr_enabled",
+                    "decision_enabled",
+                ],
+            )
+            checkpoint_choices = {
+                f"{hypothesis_label(row.get('hypothesis_key'))} · {row.get('evaluation_state')}": row
+                for row in checkpoints
+            }
+            checkpoint_label = st.selectbox(
+                "Checkpoint detail",
+                list(checkpoint_choices),
+                key="checkpoint_detail_selector",
+            )
+            with st.expander("Checkpoint metrics", expanded=False):
+                st.json(checkpoint_choices[checkpoint_label].get("metrics", {}))
+            _visual_note(
+                "These evaluations are append-only scientific evidence. They do not change the scanner, "
+                "do not reset the prospective clock and cannot enable decisions in the current protocol."
+            )
+        else:
+            st.info("No prospective checkpoint evaluation has been persisted yet.")
+
+        section_heading("Research model registry")
+        _show_table(snapshot.get("models", []))
+        st.caption(
+            "Friendly model names never replace versioned backend IDs; unknown identifiers are displayed verbatim."
+        )
+
+
+    _render_calibration_page()
 
 elif page == "Observations":
-    section_heading("Surfaced observations", "OBSERVATIONAL ONLY — not validated edge and not trade signals. No broker-order path.")
-    if snapshot.get("recent_anomalies"):
-        source_df = pd.DataFrame(snapshot["recent_anomalies"]).reset_index(drop=True)
-        source_df["observation_row"] = source_df.index.astype(int)
-        filters = _observation_filter_context()
-        _show_observation_filter_strip(filters)
-        filtered_df = _filter_observations(source_df, filters).reset_index(drop=True)
+    @st.fragment
+    def _render_observations_page():
+        section_heading("Surfaced observations", "OBSERVATIONAL ONLY — not validated edge and not trade signals. No broker-order path.")
+        if snapshot.get("recent_anomalies"):
+            source_df = pd.DataFrame(snapshot["recent_anomalies"]).reset_index(drop=True)
+            source_df["observation_row"] = source_df.index.astype(int)
+            filters = _observation_filter_context()
+            _show_observation_filter_strip(filters)
+            filtered_df = _filter_observations(source_df, filters).reset_index(drop=True)
 
-        table_pick = _show_selectable_table(
-            filtered_df.drop(columns=["observation_row"], errors="ignore"),
-            key="observations_selectable_table",
-        )
-        if table_pick and _set_observation_filters(table_pick):
-            st.rerun()
-        _visual_note(
-            "Each row is an anomaly Christiania surfaced for investigation. Click a row to cross-filter this page. "
-            "A surfaced observation is a question to investigate, not a recommendation to trade."
-        )
-
-        if "abs_iv_residual" in filtered_df.columns and not filtered_df.empty:
-            chart_df = filtered_df.head(25).copy()
-            chart_df["abs_iv_residual"] = pd.to_numeric(
-                chart_df["abs_iv_residual"], errors="coerce"
+            table_pick = _show_selectable_table(
+                filtered_df.drop(columns=["observation_row"], errors="ignore"),
+                key="observations_selectable_table",
             )
-            chart_df = chart_df.dropna(subset=["abs_iv_residual"])
-            if not chart_df.empty:
-                spec = {
-                    "mark": {"type": "bar", "tooltip": True},
-                    "params": [
-                        {
-                            "name": "observation_pick",
-                            "select": {
-                                "type": "point",
-                                "fields": ["observation_row", "underlying", "surfaced_direction", "right"],
-                                "on": "click",
-                                "clear": False,
-                            },
-                        }
-                    ],
-                    "encoding": {
-                        "x": {
-                            "field": "underlying",
-                            "type": "nominal",
-                            "title": "Underlying",
-                            "sort": None,
-                        },
-                        "y": {
-                            "field": "abs_iv_residual",
-                            "type": "quantitative",
-                            "title": "Absolute IV residual",
-                        },
-                        "opacity": {
-                            "condition": {"param": "observation_pick", "value": 1.0},
-                            "value": 0.45,
-                        },
-                        "tooltip": [
-                            {"field": "underlying", "type": "nominal", "title": "Underlying"},
-                            {"field": "expiration", "type": "nominal", "title": "Expiration"},
-                            {"field": "strike", "type": "quantitative", "title": "Strike"},
-                            {"field": "right", "type": "nominal", "title": "Right"},
-                            {"field": "abs_iv_residual", "type": "quantitative", "title": "Absolute IV residual"},
-                            {"field": "surfaced_direction", "type": "nominal", "title": "Direction"},
+            if table_pick and _set_observation_filters(table_pick):
+                st.rerun(scope="fragment")
+            _visual_note(
+                "Each row is an anomaly Christiania surfaced for investigation. Click a row to cross-filter this page. "
+                "A surfaced observation is a question to investigate, not a recommendation to trade."
+            )
+
+            if "abs_iv_residual" in filtered_df.columns and not filtered_df.empty:
+                chart_df = filtered_df.head(25).copy()
+                chart_df["abs_iv_residual"] = pd.to_numeric(
+                    chart_df["abs_iv_residual"], errors="coerce"
+                )
+                chart_df = chart_df.dropna(subset=["abs_iv_residual"])
+                if not chart_df.empty:
+                    spec = {
+                        "mark": {"type": "bar", "tooltip": True},
+                        "params": [
+                            {
+                                "name": "observation_pick",
+                                "select": {
+                                    "type": "point",
+                                    "fields": ["observation_row", "underlying", "surfaced_direction", "right"],
+                                    "on": "click",
+                                    "clear": False,
+                                },
+                            }
                         ],
-                    },
-                }
-                chart_event = st.vega_lite_chart(
-                    chart_df,
-                    spec,
-                    width="stretch",
-                    height=280,
-                    key="observations_residual_chart",
-                    on_select="rerun",
-                    selection_mode="observation_pick",
-                )
-                selected_points = _vega_selected_points(chart_event, "observation_pick")
-                if selected_points:
-                    point = selected_points[0]
-                    row_id = point.get("observation_row")
-                    if row_id is not None:
-                        matches = source_df[source_df["observation_row"] == int(row_id)]
-                        if not matches.empty and _set_observation_filters(matches.iloc[0].to_dict()):
-                            st.rerun()
-                _visual_note(
-                    "Shows how far observed IV differs from the local model. Larger bars mean more disagreement, "
-                    "not stronger trade conviction. Click a bar to cross-filter the table and chart; use Clear filters to restore the full view."
-                )
-        st.caption(
-            f"Showing {_fmt_count(len(filtered_df))} of {_fmt_count(len(source_df))} recent surfaced observations."
-        )
-    else:
-        st.info("No surfaced observations recorded.")
+                        "encoding": {
+                            "x": {
+                                "field": "underlying",
+                                "type": "nominal",
+                                "title": "Underlying",
+                                "sort": None,
+                            },
+                            "y": {
+                                "field": "abs_iv_residual",
+                                "type": "quantitative",
+                                "title": "Absolute IV residual",
+                            },
+                            "opacity": {
+                                "condition": {"param": "observation_pick", "value": 1.0},
+                                "value": 0.45,
+                            },
+                            "tooltip": [
+                                {"field": "underlying", "type": "nominal", "title": "Underlying"},
+                                {"field": "expiration", "type": "nominal", "title": "Expiration"},
+                                {"field": "strike", "type": "quantitative", "title": "Strike"},
+                                {"field": "right", "type": "nominal", "title": "Right"},
+                                {"field": "abs_iv_residual", "type": "quantitative", "title": "Absolute IV residual"},
+                                {"field": "surfaced_direction", "type": "nominal", "title": "Direction"},
+                            ],
+                        },
+                    }
+                    chart_event = st.vega_lite_chart(
+                        chart_df,
+                        spec,
+                        width="stretch",
+                        height=280,
+                        key="observations_residual_chart",
+                        on_select="rerun",
+                        selection_mode="observation_pick",
+                    )
+                    selected_points = _vega_selected_points(chart_event, "observation_pick")
+                    if selected_points:
+                        point = selected_points[0]
+                        row_id = point.get("observation_row")
+                        if row_id is not None:
+                            matches = source_df[source_df["observation_row"] == int(row_id)]
+                            if not matches.empty and _set_observation_filters(matches.iloc[0].to_dict()):
+                                st.rerun(scope="fragment")
+                    _visual_note(
+                        "Shows how far observed IV differs from the local model. Larger bars mean more disagreement, "
+                        "not stronger trade conviction. Click a bar to cross-filter the table and chart; use Clear filters to restore the full view."
+                    )
+            st.caption(
+                f"Showing {_fmt_count(len(filtered_df))} of {_fmt_count(len(source_df))} recent surfaced observations."
+            )
+        else:
+            st.info("No surfaced observations recorded.")
+
+
+    _render_observations_page()
 
 elif page == "Shadow Lab":
-    section_heading(
-        "Shadow Lab",
-        "Candidate follow-up: inception, subsequent marks, validated outcomes, and current evidence state.",
-    )
-    tracking = snapshot.get("shadow_tracking", {})
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Proposals", _fmt_count(counts["proposals_total"]), f"{_fmt_count(counts['proposals_blocked'])} builder-blocked")
-    c2.metric("Admitted shadows", _fmt_count(counts["admitted_total"]), f"{_fmt_count(counts['admission_blocked'])} blocked")
-    c3.metric("Recorded marks", _fmt_count(counts["shadow_marks"]), f"{_fmt_count(tracking.get('marked_candidates', 0))} candidate(s)")
-    c4.metric("Validated hold/mark outcomes", _fmt_count(tracking.get("validated_outcomes", 0)), "raw population")
-    c5.metric("Predeclared risk exits", _fmt_count(tracking.get("risk_exit_outcomes", 0)), f"{_fmt_count(tracking.get('eligible_risk_exit_outcomes', 0))} evidence-eligible")
-    _visual_note(
-        "This is the follow-up laboratory: proposals are ideas, admitted shadows are hypothetical experiments we track, "
-        "marks are later valuations. Validated hold/mark outcomes and predeclared risk-trigger exits are deliberately separate measurement populations."
-    )
-
-    lifecycle = snapshot.get("lifecycle_health", {})
-    replay_summary = snapshot.get("historical_replay_summary", {})
-
-    section_heading(
-        "Evidence integrity",
-        "Lifecycle health and historical replay are visible without promoting stress marks into trading P&L.",
-    )
-    e1, e2, e3, e4, e5 = st.columns(5)
-    e1.metric(
-        "Lifecycle",
-        _status_label(lifecycle.get("state")),
-        f"{_fmt_count(lifecycle.get('stale_tracked_count', 0))} stale tracked",
-    )
-    e2.metric(
-        "Wallet replay cohort",
-        _fmt_count(replay_summary.get("would_admit_count", 0)),
-        "retrospective only",
-    )
-    e3.metric(
-        "Replay marks",
-        _fmt_count(replay_summary.get("mark_count", 0)),
-        f"{_fmt_count(replay_summary.get('complete_mark_count', 0))} complete",
-    )
-    e4.metric(
-        "Midpoint-incoherent latest",
-        _fmt_count(replay_summary.get("midpoint_incoherent_latest", 0)),
-        "package diagnostic",
-    )
-    e5.metric(
-        "Economic P&L eligible",
-        _fmt_count(replay_summary.get("economic_pnl_eligible_latest", 0)),
-        "replay latest marks",
-    )
-
-    if lifecycle.get("state") == "WARN":
-        st.warning(
-            f"{_fmt_count(lifecycle.get('stale_tracked_count', 0))} candidate(s) remain "
-            "SHADOW_TRACKED after expiration relative to the latest completed research session "
-            f"({lifecycle.get('latest_completed_session_date') or '—'})."
-        )
-        _show_table(
-            lifecycle.get("stale_candidates", []),
-            columns=[
-                "candidate_id",
-                "underlying",
-                "expiration",
-                "current_state",
-                "state_at",
-                "state_reason",
-            ],
-        )
-
-    replay_latest = snapshot.get("historical_replay_latest", [])
-    if replay_latest:
+    @st.fragment
+    def _render_shadow_lab_page():
         section_heading(
-            "Historical wallet-policy replay",
-            "Counterfactual admission evidence. Latest leg-cross marks are liquidity stress, not ordinary P&L.",
+            "Shadow Lab",
+            "Candidate follow-up: inception, subsequent marks, validated outcomes, and current evidence state.",
         )
-        st.warning(
-            "Replay values below are independent-leg liquidation stress. They are not "
-            "validated economic outcomes and are never eligible as trading P&L."
-        )
-        _show_table(
-            replay_latest,
-            columns=[
-                "policy_replay_id",
-                "proposal_id",
-                "underlying",
-                "expiration",
-                "structure_id",
-                "package_coherence_state",
-                "conservative_stress_net_eur_minor",
-                "midpoint_diagnostic_net_eur_minor",
-                "spread_crossing_penalty_eur_minor",
-                "stress_loss_to_intrinsic_risk",
-                "midpoint_loss_to_intrinsic_risk",
-                "max_leg_spread_to_mid",
-                "quote_time_span_seconds",
-                "measurement_role",
-                "outcome_eligible",
-            ],
-        )
+        tracking = snapshot.get("shadow_tracking", {})
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Proposals", _fmt_count(counts["proposals_total"]), f"{_fmt_count(counts['proposals_blocked'])} builder-blocked")
+        c2.metric("Admitted shadows", _fmt_count(counts["admitted_total"]), f"{_fmt_count(counts['admission_blocked'])} blocked")
+        c3.metric("Recorded marks", _fmt_count(counts["shadow_marks"]), f"{_fmt_count(tracking.get('marked_candidates', 0))} candidate(s)")
+        c4.metric("Validated hold/mark outcomes", _fmt_count(tracking.get("validated_outcomes", 0)), "raw population")
+        c5.metric("Predeclared risk exits", _fmt_count(tracking.get("risk_exit_outcomes", 0)), f"{_fmt_count(tracking.get('eligible_risk_exit_outcomes', 0))} evidence-eligible")
         _visual_note(
-            "The midpoint value is a diagnostic only, not an executable quote. A midpoint outside "
-            "the no-arbitrage butterfly bounds is a package-coherence warning. The leg-cross value "
-            "measures forced spread crossing and may exceed hold-to-expiry defined risk."
+            "This is the follow-up laboratory: proposals are ideas, admitted shadows are hypothetical experiments we track, "
+            "marks are later valuations. Validated hold/mark outcomes and predeclared risk-trigger exits are deliberately separate measurement populations."
         )
 
-        if snapshot.get("replay_outcome_recovery"):
-            with st.expander("Replay / original expiry recovery status", expanded=False):
-                _show_table(snapshot["replay_outcome_recovery"])
+        lifecycle = snapshot.get("lifecycle_health", {})
+        replay_summary = snapshot.get("historical_replay_summary", {})
 
-    followup = snapshot.get("shadow_candidate_followup", [])
-    if followup:
-        choices = {
-            f"#{row['candidate_id']} · {row['underlying']} · {hypothesis_label(row.get('hypothesis_family'))}": row
-            for row in followup
-        }
-        selected_label = st.selectbox(
-            "Shadow candidate",
-            list(choices),
-            key="shadow_candidate_selector",
+        section_heading(
+            "Evidence integrity",
+            "Lifecycle health and historical replay are visible without promoting stress marks into trading P&L.",
         )
-        selected = choices[selected_label]
-        candidate_id = int(selected["candidate_id"])
-
-        section_heading("Candidate lifecycle")
-        a, b, c, d = st.columns(4)
-        a.metric("Underlying", selected.get("underlying") or "—")
-        b.metric("Current state", _status_label(selected.get("current_state")))
-        c.metric("Thesis assessment", selected.get("thesis_assessment") or "NOT YET SCORED")
-        d.metric("Validated trade result", selected.get("validated_trade_result") or "NOT YET VALIDATED")
-        _visual_note(
-            "Thesis assessment asks whether the original market idea was right. Validated trade result asks whether the "
-            "hypothetical structure made money after the allowed outcome rules. Those are deliberately different questions."
+        e1, e2, e3, e4, e5 = st.columns(5)
+        e1.metric(
+            "Lifecycle",
+            _status_label(lifecycle.get("state")),
+            f"{_fmt_count(lifecycle.get('stale_tracked_count', 0))} stale tracked",
         )
-
-        details = pd.DataFrame([selected])
-        _show_table(
-            details.to_dict("records"),
-            columns=[
-                "candidate_id",
-                "underlying",
-                "surfaced_at",
-                "hypothesis_family",
-                "hypothesis_version",
-                "scanner_family_id",
-                "scanner_version",
-                "structure_id",
-                "anomaly_direction",
-                "admission_label",
-                "current_state",
-                "mark_count",
-                "validated_outcomes",
-                "latest_mark_at",
-                "latest_measurement_role",
-                "latest_outcome_eligible",
-                "validated_net_pnl_eur_minor",
-                "thesis_assessment",
-                "validated_trade_result",
-            ],
+        e2.metric(
+            "Wallet replay cohort",
+            _fmt_count(replay_summary.get("would_admit_count", 0)),
+            "retrospective only",
+        )
+        e3.metric(
+            "Replay marks",
+            _fmt_count(replay_summary.get("mark_count", 0)),
+            f"{_fmt_count(replay_summary.get('complete_mark_count', 0))} complete",
+        )
+        e4.metric(
+            "Midpoint-incoherent latest",
+            _fmt_count(replay_summary.get("midpoint_incoherent_latest", 0)),
+            "package diagnostic",
+        )
+        e5.metric(
+            "Economic P&L eligible",
+            _fmt_count(replay_summary.get("economic_pnl_eligible_latest", 0)),
+            "replay latest marks",
         )
 
-        candidate_marks = [
-            row for row in snapshot.get("shadow_mark_history", [])
-            if int(row.get("candidate_id")) == candidate_id
-        ]
-        if candidate_marks:
-            marks = pd.DataFrame(candidate_marks)
-            marks["Observed"] = pd.to_datetime(marks["observed_at"], errors="coerce")
-
-            validated = marks[
-                pd.to_numeric(
-                    marks["outcome_eligible"],
-                    errors="coerce",
-                ).fillna(0).astype(int) == 1
-            ].copy()
-            validated["Validated economic P&L (€)"] = (
-                pd.to_numeric(
-                    validated["validated_net_pnl_eur_minor"],
-                    errors="coerce",
-                ) / 100.0
+        if lifecycle.get("state") == "WARN":
+            st.warning(
+                f"{_fmt_count(lifecycle.get('stale_tracked_count', 0))} candidate(s) remain "
+                "SHADOW_TRACKED after expiration relative to the latest completed research session "
+                f"({lifecycle.get('latest_completed_session_date') or '—'})."
             )
-            plot = (
-                validated
-                .dropna(subset=["Observed", "Validated economic P&L (€)"])
-                .set_index("Observed")[["Validated economic P&L (€)"]]
-                .sort_index()
-            )
-            if not plot.empty:
-                st.line_chart(plot, height=300)
-                chart_note(
-                    "Only independently validated, outcome-eligible package evidence appears in this economic P&L chart."
-                )
-            else:
-                st.info(
-                    "No validated economic P&L outcome exists for this candidate yet. "
-                    "Recorded independent-leg values below are liquidity-stress diagnostics only."
-                )
-
             _show_table(
-                candidate_marks,
+                lifecycle.get("stale_candidates", []),
                 columns=[
-                    "observed_at",
-                    "provider",
-                    "liquidation_stress_eur_minor",
-                    "validated_net_pnl_eur_minor",
-                    "quality_state",
+                    "candidate_id",
+                    "underlying",
+                    "expiration",
+                    "current_state",
+                    "state_at",
+                    "state_reason",
+                ],
+            )
+
+        replay_latest = snapshot.get("historical_replay_latest", [])
+        if replay_latest:
+            section_heading(
+                "Historical wallet-policy replay",
+                "Counterfactual admission evidence. Latest leg-cross marks are liquidity stress, not ordinary P&L.",
+            )
+            st.warning(
+                "Replay values below are independent-leg liquidation stress. They are not "
+                "validated economic outcomes and are never eligible as trading P&L."
+            )
+            _show_table(
+                replay_latest,
+                columns=[
+                    "policy_replay_id",
+                    "proposal_id",
+                    "underlying",
+                    "expiration",
+                    "structure_id",
+                    "package_coherence_state",
+                    "conservative_stress_net_eur_minor",
+                    "midpoint_diagnostic_net_eur_minor",
+                    "spread_crossing_penalty_eur_minor",
+                    "stress_loss_to_intrinsic_risk",
+                    "midpoint_loss_to_intrinsic_risk",
+                    "max_leg_spread_to_mid",
+                    "quote_time_span_seconds",
                     "measurement_role",
                     "outcome_eligible",
                 ],
             )
+            _visual_note(
+                "The midpoint value is a diagnostic only, not an executable quote. A midpoint outside "
+                "the no-arbitrage butterfly bounds is a package-coherence warning. The leg-cross value "
+                "measures forced spread crossing and may exceed hold-to-expiry defined risk."
+            )
+
+            if snapshot.get("replay_outcome_recovery"):
+                with st.expander("Replay / original expiry recovery status", expanded=False):
+                    _show_table(snapshot["replay_outcome_recovery"])
+
+        followup = snapshot.get("shadow_candidate_followup", [])
+        if followup:
+            choices = {
+                f"#{row['candidate_id']} · {row['underlying']} · {hypothesis_label(row.get('hypothesis_family'))}": row
+                for row in followup
+            }
+            selected_label = st.selectbox(
+                "Shadow candidate",
+                list(choices),
+                key="shadow_candidate_selector",
+            )
+            selected = choices[selected_label]
+            candidate_id = int(selected["candidate_id"])
+
+            section_heading("Candidate lifecycle")
+            a, b, c, d = st.columns(4)
+            a.metric("Underlying", selected.get("underlying") or "—")
+            b.metric("Current state", _status_label(selected.get("current_state")))
+            c.metric("Thesis assessment", selected.get("thesis_assessment") or "NOT YET SCORED")
+            d.metric("Validated trade result", selected.get("validated_trade_result") or "NOT YET VALIDATED")
+            _visual_note(
+                "Thesis assessment asks whether the original market idea was right. Validated trade result asks whether the "
+                "hypothetical structure made money after the allowed outcome rules. Those are deliberately different questions."
+            )
+
+            details = pd.DataFrame([selected])
+            _show_table(
+                details.to_dict("records"),
+                columns=[
+                    "candidate_id",
+                    "underlying",
+                    "surfaced_at",
+                    "hypothesis_family",
+                    "hypothesis_version",
+                    "scanner_family_id",
+                    "scanner_version",
+                    "structure_id",
+                    "anomaly_direction",
+                    "admission_label",
+                    "current_state",
+                    "mark_count",
+                    "validated_outcomes",
+                    "latest_mark_at",
+                    "latest_measurement_role",
+                    "latest_outcome_eligible",
+                    "validated_net_pnl_eur_minor",
+                    "thesis_assessment",
+                    "validated_trade_result",
+                ],
+            )
+
+            candidate_marks = [
+                row for row in snapshot.get("shadow_mark_history", [])
+                if int(row.get("candidate_id")) == candidate_id
+            ]
+            if candidate_marks:
+                marks = pd.DataFrame(candidate_marks)
+                marks["Observed"] = pd.to_datetime(marks["observed_at"], errors="coerce")
+
+                validated = marks[
+                    pd.to_numeric(
+                        marks["outcome_eligible"],
+                        errors="coerce",
+                    ).fillna(0).astype(int) == 1
+                ].copy()
+                validated["Validated economic P&L (€)"] = (
+                    pd.to_numeric(
+                        validated["validated_net_pnl_eur_minor"],
+                        errors="coerce",
+                    ) / 100.0
+                )
+                plot = (
+                    validated
+                    .dropna(subset=["Observed", "Validated economic P&L (€)"])
+                    .set_index("Observed")[["Validated economic P&L (€)"]]
+                    .sort_index()
+                )
+                if not plot.empty:
+                    st.line_chart(plot, height=300)
+                    chart_note(
+                        "Only independently validated, outcome-eligible package evidence appears in this economic P&L chart."
+                    )
+                else:
+                    st.info(
+                        "No validated economic P&L outcome exists for this candidate yet. "
+                        "Recorded independent-leg values below are liquidity-stress diagnostics only."
+                    )
+
+                _show_table(
+                    candidate_marks,
+                    columns=[
+                        "observed_at",
+                        "provider",
+                        "liquidation_stress_eur_minor",
+                        "validated_net_pnl_eur_minor",
+                        "quality_state",
+                        "measurement_role",
+                        "outcome_eligible",
+                    ],
+                )
+            else:
+                st.info("This candidate has no follow-up marks yet.")
+
+            st.caption(
+                "Thesis assessment and validated trade profitability are deliberately separate. "
+                "Christiania does not infer thesis correctness from a profitable mark. "
+                "Historical non-outcome marks remain independent-leg liquidation stress marks."
+            )
+
+            section_heading("All candidate follow-up")
+            _show_table(
+                followup,
+                columns=[
+                    "candidate_id",
+                    "underlying",
+                    "hypothesis_family",
+                    "current_state",
+                    "mark_count",
+                    "validated_outcomes",
+                    "thesis_assessment",
+                    "validated_trade_result",
+                    "latest_mark_at",
+                ],
+            )
         else:
-            st.info("This candidate has no follow-up marks yet.")
+            st.info("No admitted shadow candidate has follow-up data yet.")
 
-        st.caption(
-            "Thesis assessment and validated trade profitability are deliberately separate. "
-            "Christiania does not infer thesis correctness from a profitable mark. "
-            "Historical non-outcome marks remain independent-leg liquidation stress marks."
-        )
+        section_heading("Recent structure proposals")
+        if snapshot.get("recent_proposals"):
+            _show_table(snapshot["recent_proposals"])
+        else:
+            st.info("No structure proposals recorded.")
 
-        section_heading("All candidate follow-up")
-        _show_table(
-            followup,
-            columns=[
-                "candidate_id",
-                "underlying",
-                "hypothesis_family",
-                "current_state",
-                "mark_count",
-                "validated_outcomes",
-                "thesis_assessment",
-                "validated_trade_result",
-                "latest_mark_at",
-            ],
-        )
-    else:
-        st.info("No admitted shadow candidate has follow-up data yet.")
+        section_heading("Recent shadow candidates")
+        if snapshot.get("recent_candidates"):
+            _show_table(snapshot["recent_candidates"])
+        else:
+            st.info("No shadow candidates recorded.")
 
-    section_heading("Recent structure proposals")
-    if snapshot.get("recent_proposals"):
-        _show_table(snapshot["recent_proposals"])
-    else:
-        st.info("No structure proposals recorded.")
 
-    section_heading("Recent shadow candidates")
-    if snapshot.get("recent_candidates"):
-        _show_table(snapshot["recent_candidates"])
-    else:
-        st.info("No shadow candidates recorded.")
+    _render_shadow_lab_page()
 
 elif page == "Quant Models":
     section_heading("Quantitative model bench", "Measure. Understand. Disagree constructively.")
@@ -1543,194 +1629,254 @@ elif page == "Storm Cellar / 0DTE Lab":
     )
 
 elif page == "Ops":
-    section_heading(
-        "Operations",
-        "Deployment, scientific/product readiness and runtime diagnostics in one operator surface.",
-    )
-    ops_view = st.radio(
-        "Ops view",
-        ["Readiness", "Release", "System"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="ops_view",
-    )
-
-    if ops_view == "Readiness":
-        with st.spinner(
-            "Running deep database and backup verification for V1 readiness…"
-        ):
-            deep_snapshot, deep_backup_inventory, readiness = (
-                _cached_deep_ops_readiness()
-            )
-        quality = deep_snapshot.get("data_quality", {})
-
+    @st.fragment
+    def _render_ops_page():
         section_heading(
-            "V1 readiness",
-            "Operational readiness is deliberately separate from scientific maturity. "
-            "This view performs deep verification and may take time on multi-gigabyte data.",
+            "Operations",
+            "Deployment, scientific/product readiness and runtime diagnostics in one operator surface.",
         )
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Product state", _status_label(readiness["product_state"]))
-        c2.metric(
-            "Scientific state",
-            _status_label(readiness["scientific_state"]),
-            f"{_fmt_count(readiness['independent_prospective_dates'])} prospective date(s)",
-        )
-        c3.metric(
-            "Latest verified backup",
-            "None"
-            if deep_backup_inventory["latest_valid_age_hours"] is None
-            else f"{_fmt_number(deep_backup_inventory['latest_valid_age_hours'], decimals=1)}h ago",
-            f"{_fmt_count(deep_backup_inventory['valid_files'])} valid / {_fmt_count(deep_backup_inventory['invalid_files'])} invalid",
+        ops_view = st.radio(
+            "Ops view",
+            ["Readiness", "Release", "System"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="ops_view",
         )
 
-        _show_table(readiness["checks"])
-        _visual_note(
-            "This is the pre-flight checklist for the product. Passing operational checks does not promote the science or enable trading decisions."
-        )
-
-        section_heading("Data-quality pulse")
-        iterations = quality.get("iteration_window", {})
-        underlyings = quality.get("underlying_totals", {})
-        failed_or_orphaned = int(iterations.get("failed", 0)) + int(iterations.get("orphaned", 0))
-        underlying_failures = int(underlyings.get("failed", 0) or 0)
-
-        q1, q2, q3, q4 = st.columns(4)
-        with q1:
-            card(
-                "Recent completed",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(iterations.get('completed', 0))}</div>',
-                badge_label="Operational",
-                badge_tone="info",
+        if ops_view == "Readiness":
+            if st.session_state.pop("_chr_ops_deep_verification_clicked", False):
+                st.session_state[DEEP_OPS_VERIFICATION_STATE_KEY] = time.time()
+            requested_at = st.session_state.get(DEEP_OPS_VERIFICATION_STATE_KEY)
+            # A request is valid only for the deep cache window. After that the
+            # view returns to metadata-only, so revisiting Ops can never re-run
+            # the O(database-size) scan without a fresh explicit click.
+            deep_requested = (
+                isinstance(requested_at, (int, float))
+                and 0 <= time.time() - requested_at < DEEP_OPS_VERIFICATION_TTL_SECONDS
             )
-        with q2:
-            card(
-                "Failed / orphaned",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(failed_or_orphaned)}</div>'
-                '<div style="margin-top:.35rem;color:#C6D2D9">Recent daemon iterations requiring review.</div>',
-                badge_label="Review" if failed_or_orphaned else "None",
-                badge_tone="warn" if failed_or_orphaned else "good",
-            )
-        with q3:
-            card(
-                "Underlying failures",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(underlying_failures)}</div>'
-                '<div style="margin-top:.35rem;color:#C6D2D9">Failed underlying collections in the quality window.</div>',
-                badge_label="Review" if underlying_failures else "None",
-                badge_tone="warn" if underlying_failures else "good",
-            )
-        with q4:
-            card(
-                "Recovered underlyings",
-                f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(underlyings.get('recovered', 0))}</div>'
-                '<div style="margin-top:.35rem;color:#C6D2D9">Recovery provenance remains retained.</div>',
-                badge_label="Provenance",
-                badge_tone="info",
-            )
-        _visual_note(
-            "Failures are warnings, not hidden noise. Recovered samples stay labelled so later analysis can test whether recovery status changes their behaviour."
-        )
+            if not deep_requested:
+                # Opening Ops must never trigger O(database-size) work. PRAGMA
+                # quick_check / foreign_key_check on the live database plus a full
+                # verification of every backup run only on explicit operator request.
+                section_heading(
+                    "V1 readiness",
+                    "Deep verification has not been run in this session. "
+                    "The facts below are metadata only and are not an integrity verdict.",
+                )
+                fast_db = snapshot.get("database", {})
+                fast_backups = inventory_backups_fast().as_dict()
+                f1, f2, f3 = st.columns(3)
+                f1.metric(
+                    "Schema version",
+                    f"v{_safe(fast_db.get('schema_version'))}",
+                    f"expected v{_safe(fast_db.get('expected_schema_version'))}",
+                )
+                f2.metric("Journal mode", str(_safe(fast_db.get("journal_mode"))).upper())
+                f3.metric(
+                    "Backup files (unverified)",
+                    _fmt_count(fast_backups.get("total_files", 0)),
+                )
+                st.info(
+                    "Integrity, foreign keys and backup validity are UNVERIFIED until "
+                    "deep verification runs. It scans the full database and every backup "
+                    "and can take many minutes on production data."
+                )
+                # on_click runs before the next script pass, so the deep view
+                # renders in that same pass: no st.rerun(), which would raise
+                # outside a fragment rerun.
+                st.button(
+                    "Run deep verification",
+                    key="run_deep_ops_verification",
+                    type="primary",
+                    on_click=st.session_state.__setitem__,
+                    args=("_chr_ops_deep_verification_clicked", True),
+                )
+            else:
+                with st.spinner(
+                    "Running deep database and backup verification for V1 readiness…"
+                ):
+                    deep_snapshot, deep_backup_inventory, readiness = (
+                        _cached_deep_ops_readiness()
+                    )
+                quality = deep_snapshot.get("data_quality", {})
 
-        if quality.get("failure_types"):
-            _show_table(quality["failure_types"])
+                section_heading(
+                    "V1 readiness",
+                    "Operational readiness is deliberately separate from scientific maturity. "
+                    "This view performs deep verification and may take time on multi-gigabyte data.",
+                )
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Product state", _status_label(readiness["product_state"]))
+                c2.metric(
+                    "Scientific state",
+                    _status_label(readiness["scientific_state"]),
+                    f"{_fmt_count(readiness['independent_prospective_dates'])} prospective date(s)",
+                )
+                c3.metric(
+                    "Latest verified backup",
+                    "None"
+                    if deep_backup_inventory["latest_valid_age_hours"] is None
+                    else f"{_fmt_number(deep_backup_inventory['latest_valid_age_hours'], decimals=1)}h ago",
+                    f"{_fmt_count(deep_backup_inventory['valid_files'])} valid / {_fmt_count(deep_backup_inventory['invalid_files'])} invalid",
+                )
 
-        section_heading("Backup inventory")
-        if deep_backup_inventory["entries"]:
-            _show_table(deep_backup_inventory["entries"])
+                _show_table(readiness["checks"])
+                _visual_note(
+                    "This is the pre-flight checklist for the product. Passing operational checks does not promote the science or enable trading decisions."
+                )
+
+                section_heading("Data-quality pulse")
+                iterations = quality.get("iteration_window", {})
+                underlyings = quality.get("underlying_totals", {})
+                failed_or_orphaned = int(iterations.get("failed", 0)) + int(iterations.get("orphaned", 0))
+                underlying_failures = int(underlyings.get("failed", 0) or 0)
+
+                q1, q2, q3, q4 = st.columns(4)
+                with q1:
+                    card(
+                        "Recent completed",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(iterations.get('completed', 0))}</div>',
+                        badge_label="Operational",
+                        badge_tone="info",
+                    )
+                with q2:
+                    card(
+                        "Failed / orphaned",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(failed_or_orphaned)}</div>'
+                        '<div style="margin-top:.35rem;color:#C6D2D9">Recent daemon iterations requiring review.</div>',
+                        badge_label="Review" if failed_or_orphaned else "None",
+                        badge_tone="warn" if failed_or_orphaned else "good",
+                    )
+                with q3:
+                    card(
+                        "Underlying failures",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(underlying_failures)}</div>'
+                        '<div style="margin-top:.35rem;color:#C6D2D9">Failed underlying collections in the quality window.</div>',
+                        badge_label="Review" if underlying_failures else "None",
+                        badge_tone="warn" if underlying_failures else "good",
+                    )
+                with q4:
+                    card(
+                        "Recovered underlyings",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(underlyings.get('recovered', 0))}</div>'
+                        '<div style="margin-top:.35rem;color:#C6D2D9">Recovery provenance remains retained.</div>',
+                        badge_label="Provenance",
+                        badge_tone="info",
+                    )
+                _visual_note(
+                    "Failures are warnings, not hidden noise. Recovered samples stay labelled so later analysis can test whether recovery status changes their behaviour."
+                )
+
+                if quality.get("failure_types"):
+                    _show_table(quality["failure_types"])
+
+                section_heading("Backup inventory")
+                if deep_backup_inventory["entries"]:
+                    _show_table(deep_backup_inventory["entries"])
+                else:
+                    st.warning("No verified backup files have been created yet.")
+
+        elif ops_view == "Release":
+            section_heading(
+                "V1.0 release candidate",
+                "Release engineering state and unattended burn-in evidence.",
+            )
+            manifest = build_release_manifest().as_dict()
+            burn = summarize_burn_in(read_burn_in_samples()).as_dict()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Version", CHRISTIANIA_VERSION)
+            c2.metric("Git state", "Clean" if manifest["git_clean"] else "Dirty / unavailable")
+            c3.metric("Burn-in", _status_label(burn["state"]), f"{_fmt_number(burn['duration_hours'], decimals=1)}h")
+            section_heading("Release fingerprint")
+            st.json(manifest)
+            section_heading("Burn-in report")
+            st.json(burn)
+            st.info(
+                "Final V1.0 promotion requires clean-VM deployment, HTTPS/OIDC, real reboot/autostart, "
+                "72h unattended burn-in, and independent live Theta timestamp validation."
+            )
+
         else:
-            st.warning("No verified backup files have been created yet.")
-
-    elif ops_view == "Release":
-        section_heading(
-            "V1.0 release candidate",
-            "Release engineering state and unattended burn-in evidence.",
-        )
-        manifest = build_release_manifest().as_dict()
-        burn = summarize_burn_in(read_burn_in_samples()).as_dict()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Version", CHRISTIANIA_VERSION)
-        c2.metric("Git state", "Clean" if manifest["git_clean"] else "Dirty / unavailable")
-        c3.metric("Burn-in", _status_label(burn["state"]), f"{_fmt_number(burn['duration_hours'], decimals=1)}h")
-        section_heading("Release fingerprint")
-        st.json(manifest)
-        section_heading("Burn-in report")
-        st.json(burn)
-        st.info(
-            "Final V1.0 promotion requires clean-VM deployment, HTTPS/OIDC, real reboot/autostart, "
-            "72h unattended burn-in, and independent live Theta timestamp validation."
-        )
-
-    else:
-        section_heading("System", "Runtime, database and provider diagnostics.")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Schema", f"v{database['schema_version']}")
-        c2.metric("Journal", str(database["journal_mode"]).upper())
-        c3.metric(
-            "Quick check",
-            "Not run interactively"
-            if database["quick_check"] is None
-            else _status_label(database["quick_check"]),
-        )
-        c4.metric(
-            "FK violations",
-            "Not run interactively"
-            if database["foreign_key_violation_count"] is None
-            else _fmt_count(database["foreign_key_violation_count"]),
-        )
-
-        theta_display = dict(theta_health)
-        if theta_display.get("latency_ms") is not None:
-            try:
-                theta_display["latency_ms"] = round(float(theta_display["latency_ms"]), 1)
-            except (TypeError, ValueError):
-                theta_display["latency_ms"] = None
-
-        left, right = st.columns(2)
-        with left:
-            section_heading("Runtime clock")
-            st.json(
-                {
-                    "market_clock": market_clock,
-                    "daemon_health": daemon_health,
-                    "theta_health": theta_display,
-                }
+            section_heading("System", "Runtime, database and provider diagnostics.")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Schema", f"v{database['schema_version']}")
+            c2.metric("Journal", str(database["journal_mode"]).upper())
+            c3.metric(
+                "Quick check",
+                "Not run interactively"
+                if database["quick_check"] is None
+                else _status_label(database["quick_check"]),
             )
-        with right:
-            section_heading("Theta timestamp semantics")
-            st.json(snapshot.get("theta_timestamp_semantics"))
+            c4.metric(
+                "FK violations",
+                "Not run interactively"
+                if database["foreign_key_violation_count"] is None
+                else _fmt_count(database["foreign_key_violation_count"]),
+            )
 
-        section_heading(
-            "Provider roles",
-            "Real configured provider names; no exchange/tape names are substituted for vendors.",
-        )
-        _show_table(
-            [
-                {
-                    "provider": "Massive",
-                    "role": "Listing/reference frame and snapshot/model enrichment",
-                    "runtime_state": "Not independently probed on this screen",
-                },
-                {
-                    "provider": "ThetaData",
-                    "role": "Local live options NBBO / Greeks / IV provider",
-                    "runtime_state": _status_label(theta_health.get("state")),
-                },
-                {
-                    "provider": "Saxo",
-                    "role": "Broker identity/reference; V1 has no order path",
-                    "runtime_state": "Execution disabled",
-                },
-            ]
-        )
-        st.caption(
-            "Provider labels identify vendors. Exchange or tape names appear only when the stored source field actually represents one."
-        )
+            theta_display = dict(theta_health)
+            if theta_display.get("latency_ms") is not None:
+                try:
+                    theta_display["latency_ms"] = round(float(theta_display["latency_ms"]), 1)
+                except (TypeError, ValueError):
+                    theta_display["latency_ms"] = None
 
-        section_heading("Database path")
-        st.code(database["path"], language=None)
+            left, right = st.columns(2)
+            with left:
+                section_heading("Runtime clock")
+                st.json(
+                    {
+                        "market_clock": market_clock,
+                        "daemon_health": daemon_health,
+                        "theta_health": theta_display,
+                    }
+                )
+            with right:
+                section_heading("Theta timestamp semantics")
+                st.json(snapshot.get("theta_timestamp_semantics"))
 
-        section_heading("Daemon lease")
-        if snapshot["daemon_lock"]:
-            st.json(snapshot["daemon_lock"])
-        else:
-            st.warning("No active daemon lease is recorded.")
+            section_heading(
+                "Provider roles",
+                "Real configured provider names; no exchange/tape names are substituted for vendors.",
+            )
+            _show_table(
+                [
+                    {
+                        "provider": "Massive",
+                        "role": "Listing/reference frame and snapshot/model enrichment",
+                        "runtime_state": "Not independently probed on this screen",
+                    },
+                    {
+                        "provider": "ThetaData",
+                        "role": "Local live options NBBO / Greeks / IV provider",
+                        "runtime_state": _status_label(theta_health.get("state")),
+                    },
+                    {
+                        "provider": "Saxo",
+                        "role": "Broker identity/reference; V1 has no order path",
+                        "runtime_state": "Execution disabled",
+                    },
+                ]
+            )
+            st.caption(
+                "Provider labels identify vendors. Exchange or tape names appear only when the stored source field actually represents one."
+            )
+
+            section_heading("Read-model timings")
+            st.json(snapshot.get("read_model_timings_ms", {}))
+            st.caption(
+                "These timings are page-scoped read costs from the current cached snapshot. "
+                "They are diagnostics, not hard release budgets until production baselines are established."
+            )
+
+            section_heading("Database path")
+            st.code(database["path"], language=None)
+
+            section_heading("Daemon lease")
+            if snapshot["daemon_lock"]:
+                st.json(snapshot["daemon_lock"])
+            else:
+                st.warning("No active daemon lease is recorded.")
+
+
+    _render_ops_page()

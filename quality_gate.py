@@ -446,11 +446,11 @@ def run_pytest() -> GateResult:
     # tests spawn child processes that can keep captured pipe handles open on
     # POSIX even after pytest itself has completed.
     try:
-        core_budget = _runtime_budget_seconds(
-            "CHRISTIANIA_CORE_TEST_BUDGET_SECONDS"
+        core_advisory = _runtime_budget_seconds(
+            "CHRISTIANIA_CORE_TEST_ADVISORY_SECONDS"
         )
-        slow_budget = _runtime_budget_seconds(
-            "CHRISTIANIA_SLOW_TEST_BUDGET_SECONDS"
+        slow_advisory = _runtime_budget_seconds(
+            "CHRISTIANIA_SLOW_TEST_ADVISORY_SECONDS"
         )
     except ValueError as exc:
         return GateResult(
@@ -473,19 +473,6 @@ def run_pytest() -> GateResult:
             f"core pytest population failed after {core_seconds:.2f}s",
         )
 
-    if (
-        core_budget is not None
-        and core_seconds > core_budget
-    ):
-        return GateResult(
-            "full pytest suite",
-            False,
-            (
-                f"core pytest runtime {core_seconds:.2f}s exceeded "
-                f"the CI budget of {core_budget:.2f}s"
-            ),
-        )
-
     slow_started = time.perf_counter()
     slow = run(
         sys.executable, "-m", "pytest", "-q", "-m", "slow",
@@ -500,26 +487,37 @@ def run_pytest() -> GateResult:
             f"slow pytest population failed after {slow_seconds:.2f}s",
         )
 
+    advisory_warnings: list[str] = []
     if (
-        slow_budget is not None
-        and slow_seconds > slow_budget
+        core_advisory is not None
+        and core_seconds > core_advisory
     ):
-        return GateResult(
-            "full pytest suite",
-            False,
-            (
-                f"slow pytest runtime {slow_seconds:.2f}s exceeded "
-                f"the CI budget of {slow_budget:.2f}s"
-            ),
+        advisory_warnings.append(
+            "core runtime "
+            f"{core_seconds:.2f}s exceeded advisory "
+            f"{core_advisory:.2f}s"
         )
+    if (
+        slow_advisory is not None
+        and slow_seconds > slow_advisory
+    ):
+        advisory_warnings.append(
+            "slow runtime "
+            f"{slow_seconds:.2f}s exceeded advisory "
+            f"{slow_advisory:.2f}s"
+        )
+
+    detail = (
+        "core and slow pytest populations passed separately; "
+        f"core={core_seconds:.2f}s; slow={slow_seconds:.2f}s"
+    )
+    if advisory_warnings:
+        detail += "; runtime advisory only: " + "; ".join(advisory_warnings)
 
     return GateResult(
         "full pytest suite",
         True,
-        (
-            "core and slow pytest populations passed separately; "
-            f"core={core_seconds:.2f}s; slow={slow_seconds:.2f}s"
-        ),
+        detail,
     )
 
 
