@@ -70,7 +70,7 @@ deployment_status_phase() {
 
   [[ -n "${status_file}" ]] || return 0
 
-  tmp="${status_file}.receiver.$"
+  tmp="${status_file}.receiver.$$"
   umask 027
   {
     printf 'state=RUNNING\n'
@@ -81,7 +81,20 @@ deployment_status_phase() {
     printf 'started_at=%s\n' "${CHRISTIANIA_DEPLOY_STARTED_AT:-unknown}"
     printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'finished_at=\n'
-    printf 'detail=%s\n' "${detail//
+    printf 'detail=%s\n' "${detail//$'\n'/ }"
+  } > "${tmp}"
+  chmod 0640 "${tmp}"
+  mv -f "${tmp}" "${status_file}"
+}
+
+phase_start() {
+  PHASE_NAME="$1"
+  PHASE_STARTED_AT="$(date +%s)"
+  deployment_status_phase "${PHASE_NAME}" "Receiver phase started: ${PHASE_NAME}."
+  echo
+  echo "==> ${PHASE_NAME}"
+}
+
 resolve_python_313() {
   local candidate=""
   local version=""
