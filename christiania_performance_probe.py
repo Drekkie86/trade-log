@@ -80,6 +80,59 @@ def _sqlite_metadata(path: Path) -> dict[str, object]:
     }
 
 
+def _runtime_activity_metadata(path: Path) -> dict[str, object]:
+    connection = open_readonly_connection(path)
+    try:
+        latest_iteration_row = connection.execute(
+            """
+            SELECT
+                id,
+                scheduled_for,
+                started_at,
+                completed_at,
+                status,
+                research_run_id
+            FROM research_daemon_iterations
+            ORDER BY id DESC
+            LIMIT 1;
+            """
+        ).fetchone()
+        daemon_lock_row = connection.execute(
+            """
+            SELECT
+                owner_token,
+                acquired_at,
+                heartbeat_at
+            FROM research_daemon_lock
+            WHERE singleton_id = 1;
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+
+    latest_iteration = (
+        None
+        if latest_iteration_row is None
+        else dict(latest_iteration_row)
+    )
+    daemon_lock = (
+        None
+        if daemon_lock_row is None
+        else dict(daemon_lock_row)
+    )
+    cycle_active = bool(
+        latest_iteration
+        and latest_iteration.get("started_at")
+        and not latest_iteration.get("completed_at")
+    )
+
+    return {
+        "cycle_active": cycle_active,
+        "latest_iteration": latest_iteration,
+        "daemon_lock": daemon_lock,
+    }
+
+
 def _measure_page(
     path: Path,
     page: str | None,
@@ -87,6 +140,19 @@ def _measure_page(
     warmups: int,
     runs: int,
 ) -> dict[str, object]:
+    cold_started = time.perf_counter()
+    cold_deck = load_command_deck(
+        path,
+        include_provider_health=False,
+        deep_integrity=False,
+        page=page,
+    )
+    cold_wall_ms = (time.perf_counter() - cold_started) * 1000.0
+    if cold_deck.get("ready") is not True:
+        raise RuntimeError(
+            f"{page} cold measurement failed: {cold_deck.get('reason')}"
+        )
+
     for _ in range(warmups):
         warm = load_command_deck(
             path,
@@ -172,6 +238,7 @@ def _measure_page(
         "page": page or "FULL",
         "warmups": warmups,
         "runs": runs,
+        "cold_wall_ms": round(cold_wall_ms, 3),
         "cache_payload_bytes": len(cached_payload),
         "pickle_dump_ms": round(pickle_dump_ms, 3),
         "pickle_load_ms": {
@@ -276,6 +343,7 @@ def main() -> int:
         pages = (*pages, None)
 
     database_before = _sqlite_metadata(path)
+    runtime_activity_before = _runtime_activity_metadata(path)
     measurements = [
         _measure_page(
             path,
@@ -285,6 +353,7 @@ def main() -> int:
         )
         for page in pages
     ]
+    runtime_activity_after = _runtime_activity_metadata(path)
     database_after = _sqlite_metadata(path)
 
     medians = {
@@ -301,7 +370,7 @@ def main() -> int:
         }
 
     payload = {
-        "probe_version": 2,
+        "probe_version": 3,
         "release_commit": (
             None
             if args.release_commit is None
@@ -310,6 +379,8 @@ def main() -> int:
         "read_only": True,
         "database_before": database_before,
         "database_after": database_after,
+        "runtime_activity_before": runtime_activity_before,
+        "runtime_activity_after": runtime_activity_after,
         "wal_delta_bytes": (
             int(database_after["wal_bytes"])
             - int(database_before["wal_bytes"])
