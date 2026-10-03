@@ -313,9 +313,15 @@ def _show_observation_filter_strip(filters: dict[str, str]) -> None:
         labels.append(f"{_human_column_name(field)}: {value}")
     left, right = st.columns([5, 1])
     left.caption("Active filters · " + " · ".join(labels))
-    if right.button("Clear filters", key="clear_observation_filters", width="stretch"):
-        _clear_observation_filters()
-        st.rerun()
+    # on_click clears state before the next pass, so neither a whole-app rerun
+    # nor a fragment-scoped st.rerun() (which raises outside fragment reruns)
+    # is needed.
+    right.button(
+        "Clear filters",
+        key="clear_observation_filters",
+        width="stretch",
+        on_click=_clear_observation_filters,
+    )
 
 
 def _show_full_text_details(frame: pd.DataFrame) -> None:
@@ -478,6 +484,8 @@ def _html_rows(items: list[tuple[str, str, str | None]]) -> str:
 
 
 RUNTIME_REFRESH_SECONDS = 180
+DEEP_OPS_VERIFICATION_STATE_KEY = "_chr_ops_deep_verification_requested_at"
+DEEP_OPS_VERIFICATION_TTL_SECONDS = 300
 
 
 @st.cache_data(
@@ -513,7 +521,7 @@ def _load_runtime_state(page: str, *, force: bool = False):
     return _cached_page_runtime_state(page)
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=DEEP_OPS_VERIFICATION_TTL_SECONDS)
 def _cached_deep_ops_readiness():
     deep_snapshot = load_command_deck(
         include_provider_health=True,
@@ -1636,89 +1644,137 @@ elif page == "Ops":
         )
 
         if ops_view == "Readiness":
-            with st.spinner(
-                "Running deep database and backup verification for V1 readiness…"
-            ):
-                deep_snapshot, deep_backup_inventory, readiness = (
-                    _cached_deep_ops_readiness()
-                )
-            quality = deep_snapshot.get("data_quality", {})
-
-            section_heading(
-                "V1 readiness",
-                "Operational readiness is deliberately separate from scientific maturity. "
-                "This view performs deep verification and may take time on multi-gigabyte data.",
+            if st.session_state.pop("_chr_ops_deep_verification_clicked", False):
+                st.session_state[DEEP_OPS_VERIFICATION_STATE_KEY] = time.time()
+            requested_at = st.session_state.get(DEEP_OPS_VERIFICATION_STATE_KEY)
+            # A request is valid only for the deep cache window. After that the
+            # view returns to metadata-only, so revisiting Ops can never re-run
+            # the O(database-size) scan without a fresh explicit click.
+            deep_requested = (
+                isinstance(requested_at, (int, float))
+                and 0 <= time.time() - requested_at < DEEP_OPS_VERIFICATION_TTL_SECONDS
             )
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Product state", _status_label(readiness["product_state"]))
-            c2.metric(
-                "Scientific state",
-                _status_label(readiness["scientific_state"]),
-                f"{_fmt_count(readiness['independent_prospective_dates'])} prospective date(s)",
-            )
-            c3.metric(
-                "Latest verified backup",
-                "None"
-                if deep_backup_inventory["latest_valid_age_hours"] is None
-                else f"{_fmt_number(deep_backup_inventory['latest_valid_age_hours'], decimals=1)}h ago",
-                f"{_fmt_count(deep_backup_inventory['valid_files'])} valid / {_fmt_count(deep_backup_inventory['invalid_files'])} invalid",
-            )
-
-            _show_table(readiness["checks"])
-            _visual_note(
-                "This is the pre-flight checklist for the product. Passing operational checks does not promote the science or enable trading decisions."
-            )
-
-            section_heading("Data-quality pulse")
-            iterations = quality.get("iteration_window", {})
-            underlyings = quality.get("underlying_totals", {})
-            failed_or_orphaned = int(iterations.get("failed", 0)) + int(iterations.get("orphaned", 0))
-            underlying_failures = int(underlyings.get("failed", 0) or 0)
-
-            q1, q2, q3, q4 = st.columns(4)
-            with q1:
-                card(
-                    "Recent completed",
-                    f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(iterations.get('completed', 0))}</div>',
-                    badge_label="Operational",
-                    badge_tone="info",
+            if not deep_requested:
+                # Opening Ops must never trigger O(database-size) work. PRAGMA
+                # quick_check / foreign_key_check on the live database plus a full
+                # verification of every backup run only on explicit operator request.
+                section_heading(
+                    "V1 readiness",
+                    "Deep verification has not been run in this session. "
+                    "The facts below are metadata only and are not an integrity verdict.",
                 )
-            with q2:
-                card(
-                    "Failed / orphaned",
-                    f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(failed_or_orphaned)}</div>'
-                    '<div style="margin-top:.35rem;color:#C6D2D9">Recent daemon iterations requiring review.</div>',
-                    badge_label="Review" if failed_or_orphaned else "None",
-                    badge_tone="warn" if failed_or_orphaned else "good",
+                fast_db = snapshot.get("database", {})
+                fast_backups = inventory_backups_fast().as_dict()
+                f1, f2, f3 = st.columns(3)
+                f1.metric(
+                    "Schema version",
+                    f"v{_safe(fast_db.get('schema_version'))}",
+                    f"expected v{_safe(fast_db.get('expected_schema_version'))}",
                 )
-            with q3:
-                card(
-                    "Underlying failures",
-                    f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(underlying_failures)}</div>'
-                    '<div style="margin-top:.35rem;color:#C6D2D9">Failed underlying collections in the quality window.</div>',
-                    badge_label="Review" if underlying_failures else "None",
-                    badge_tone="warn" if underlying_failures else "good",
+                f2.metric("Journal mode", str(_safe(fast_db.get("journal_mode"))).upper())
+                f3.metric(
+                    "Backup files (unverified)",
+                    _fmt_count(fast_backups.get("total_files", 0)),
                 )
-            with q4:
-                card(
-                    "Recovered underlyings",
-                    f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(underlyings.get('recovered', 0))}</div>'
-                    '<div style="margin-top:.35rem;color:#C6D2D9">Recovery provenance remains retained.</div>',
-                    badge_label="Provenance",
-                    badge_tone="info",
+                st.info(
+                    "Integrity, foreign keys and backup validity are UNVERIFIED until "
+                    "deep verification runs. It scans the full database and every backup "
+                    "and can take many minutes on production data."
                 )
-            _visual_note(
-                "Failures are warnings, not hidden noise. Recovered samples stay labelled so later analysis can test whether recovery status changes their behaviour."
-            )
-
-            if quality.get("failure_types"):
-                _show_table(quality["failure_types"])
-
-            section_heading("Backup inventory")
-            if deep_backup_inventory["entries"]:
-                _show_table(deep_backup_inventory["entries"])
+                # on_click runs before the next script pass, so the deep view
+                # renders in that same pass: no st.rerun(), which would raise
+                # outside a fragment rerun.
+                st.button(
+                    "Run deep verification",
+                    key="run_deep_ops_verification",
+                    type="primary",
+                    on_click=st.session_state.__setitem__,
+                    args=("_chr_ops_deep_verification_clicked", True),
+                )
             else:
-                st.warning("No verified backup files have been created yet.")
+                with st.spinner(
+                    "Running deep database and backup verification for V1 readiness…"
+                ):
+                    deep_snapshot, deep_backup_inventory, readiness = (
+                        _cached_deep_ops_readiness()
+                    )
+                quality = deep_snapshot.get("data_quality", {})
+
+                section_heading(
+                    "V1 readiness",
+                    "Operational readiness is deliberately separate from scientific maturity. "
+                    "This view performs deep verification and may take time on multi-gigabyte data.",
+                )
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Product state", _status_label(readiness["product_state"]))
+                c2.metric(
+                    "Scientific state",
+                    _status_label(readiness["scientific_state"]),
+                    f"{_fmt_count(readiness['independent_prospective_dates'])} prospective date(s)",
+                )
+                c3.metric(
+                    "Latest verified backup",
+                    "None"
+                    if deep_backup_inventory["latest_valid_age_hours"] is None
+                    else f"{_fmt_number(deep_backup_inventory['latest_valid_age_hours'], decimals=1)}h ago",
+                    f"{_fmt_count(deep_backup_inventory['valid_files'])} valid / {_fmt_count(deep_backup_inventory['invalid_files'])} invalid",
+                )
+
+                _show_table(readiness["checks"])
+                _visual_note(
+                    "This is the pre-flight checklist for the product. Passing operational checks does not promote the science or enable trading decisions."
+                )
+
+                section_heading("Data-quality pulse")
+                iterations = quality.get("iteration_window", {})
+                underlyings = quality.get("underlying_totals", {})
+                failed_or_orphaned = int(iterations.get("failed", 0)) + int(iterations.get("orphaned", 0))
+                underlying_failures = int(underlyings.get("failed", 0) or 0)
+
+                q1, q2, q3, q4 = st.columns(4)
+                with q1:
+                    card(
+                        "Recent completed",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(iterations.get('completed', 0))}</div>',
+                        badge_label="Operational",
+                        badge_tone="info",
+                    )
+                with q2:
+                    card(
+                        "Failed / orphaned",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(failed_or_orphaned)}</div>'
+                        '<div style="margin-top:.35rem;color:#C6D2D9">Recent daemon iterations requiring review.</div>',
+                        badge_label="Review" if failed_or_orphaned else "None",
+                        badge_tone="warn" if failed_or_orphaned else "good",
+                    )
+                with q3:
+                    card(
+                        "Underlying failures",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F0B36A">{_fmt_count(underlying_failures)}</div>'
+                        '<div style="margin-top:.35rem;color:#C6D2D9">Failed underlying collections in the quality window.</div>',
+                        badge_label="Review" if underlying_failures else "None",
+                        badge_tone="warn" if underlying_failures else "good",
+                    )
+                with q4:
+                    card(
+                        "Recovered underlyings",
+                        f'<div style="font-size:2rem;font-family:Georgia,serif;color:#F1D08A">{_fmt_count(underlyings.get('recovered', 0))}</div>'
+                        '<div style="margin-top:.35rem;color:#C6D2D9">Recovery provenance remains retained.</div>',
+                        badge_label="Provenance",
+                        badge_tone="info",
+                    )
+                _visual_note(
+                    "Failures are warnings, not hidden noise. Recovered samples stay labelled so later analysis can test whether recovery status changes their behaviour."
+                )
+
+                if quality.get("failure_types"):
+                    _show_table(quality["failure_types"])
+
+                section_heading("Backup inventory")
+                if deep_backup_inventory["entries"]:
+                    _show_table(deep_backup_inventory["entries"])
+                else:
+                    st.warning("No verified backup files have been created yet.")
 
         elif ops_view == "Release":
             section_heading(

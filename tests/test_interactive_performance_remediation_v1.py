@@ -153,18 +153,10 @@ def test_candidate_window_queries_are_bounded_before_history_ranking():
     assert follow.index("LIMIT 100") < follow.index("ROW_NUMBER() OVER")
 
 
-def test_prospective_recovered_sample_count_avoids_string_distinct():
-    source = (
-        ROOT / "src/dashboard/read_model.py"
-    ).read_text(encoding="utf-8")
-
-    prospective_start = source.index("WITH prospective_rows AS")
-    counts_start = source.index('if _needs("counts")', prospective_start)
-    block = source[prospective_start:counts_start]
-
-    assert "CAST(research_run_id AS TEXT)" not in block
-    assert "GROUP BY research_run_id, underlying" in block
-    assert "FROM recovered_pairs" in block
+# test_prospective_recovered_sample_count_avoids_string_distinct was a source-
+# substring check. Its invariant (recovered samples are distinct run/underlying
+# pairs, counted without string DISTINCT) is now verified behaviourally against
+# the legacy query in tests/test_prospective_summary_incremental_v1.py.
 
 
 def test_replay_latest_mark_uses_indexable_correlated_lookup():

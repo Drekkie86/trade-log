@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,286 @@ def _decode_json_object(value: Any) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError, ValueError):
         return {"state": "INVALID_METRICS_JSON"}
     return parsed if isinstance(parsed, dict) else {"state": "INVALID_METRICS_JSON"}
+
+
+# ---------------------------------------------------------------------------
+# Incremental prospective-evidence summary
+#
+# The Dashboard/Calibration "prospective" counters were previously computed by
+# aggregating the entire v_local_surface_v2_prospective_partition_v2 view on
+# every read: O(all V2 observations ever recorded), growing every trading day.
+#
+# Prospective evidence is append-only (immutability triggers, migration 028),
+# and a research run's recovery provenance is final once the run is terminal.
+# Aggregates for terminal runs are therefore accumulated once per process and
+# each refresh scans only runs newer than a watermark. The original view stays
+# the single definition of which rows count; the range predicate on
+# research_run_id is pushed down to an index seek.
+#
+# Correctness guards (any failure forces a full recompute, never a stale value):
+#   * cache key includes the latest freeze run id and frozen_through date;
+#   * the watermark only advances over runs that are all terminal;
+#   * new V2 observation or THETADATA provider rows attached to an already
+#     cached run (backfill, late fan-out row) invalidate the cache.
+# ---------------------------------------------------------------------------
+
+_TERMINAL_RUN_STATES = ("COMPLETED", "FAILED", "INVALID")
+_prospective_cache: dict[tuple, dict[str, Any]] = {}
+_prospective_cache_lock = threading.Lock()
+
+
+def _empty_prospective_part() -> dict[str, Any]:
+    return {
+        "observation_rows": 0,
+        "dates": set(),
+        "recovered_rows": 0,
+        "recovered_samples": 0,
+        "prospective_start_session_date": None,
+    }
+
+
+def _prospective_range_part(
+    conn,
+    *,
+    low_exclusive: int | None = None,
+    high_inclusive: int | None = None,
+    include_ids: frozenset[int] | None = None,
+    exclude_ids: frozenset[int] = frozenset(),
+) -> dict[str, Any]:
+    if include_ids is not None and not include_ids:
+        return _empty_prospective_part()
+    clauses = ["evidence_phase = 'POST_FREEZE_PROSPECTIVE'"]
+    params: list[Any] = []
+    if low_exclusive is not None:
+        clauses.append("research_run_id > ?")
+        params.append(low_exclusive)
+    if high_inclusive is not None:
+        clauses.append("research_run_id <= ?")
+        params.append(high_inclusive)
+    if include_ids is not None:
+        clauses.append(f"research_run_id IN ({','.join('?' for _ in include_ids)})")
+        params.extend(sorted(include_ids))
+    if exclude_ids:
+        clauses.append(f"research_run_id NOT IN ({','.join('?' for _ in exclude_ids)})")
+        params.extend(sorted(exclude_ids))
+    where = " AND ".join(clauses)
+    rows = conn.execute(
+        f'''
+        WITH prospective_rows AS (
+            SELECT
+                us_session_date,
+                was_recovered,
+                research_run_id,
+                underlying,
+                prospective_start_session_date
+            FROM v_local_surface_v2_prospective_partition_v2
+            WHERE {where}
+        )
+        SELECT
+            us_session_date,
+            COUNT(*) AS observation_rows,
+            SUM(CASE WHEN was_recovered = 1 THEN 1 ELSE 0 END) AS recovered_rows,
+            MIN(prospective_start_session_date) AS prospective_start_session_date
+        FROM prospective_rows
+        GROUP BY us_session_date;
+        ''',
+        params,
+    ).fetchall()
+    pairs = conn.execute(
+        f'''
+        SELECT COUNT(*) FROM (
+            SELECT research_run_id, underlying
+            FROM v_local_surface_v2_prospective_partition_v2
+            WHERE {where} AND was_recovered = 1
+            GROUP BY research_run_id, underlying
+        );
+        ''',
+        params,
+    ).fetchone()[0]
+    part = _empty_prospective_part()
+    for row in rows:
+        part["observation_rows"] += int(row["observation_rows"] or 0)
+        part["recovered_rows"] += int(row["recovered_rows"] or 0)
+        if row["us_session_date"] is not None:
+            part["dates"].add(row["us_session_date"])
+        start = row["prospective_start_session_date"]
+        if start is not None and (
+            part["prospective_start_session_date"] is None
+            or start < part["prospective_start_session_date"]
+        ):
+            part["prospective_start_session_date"] = start
+    part["recovered_samples"] = int(pairs or 0)
+    return part
+
+
+def _merge_prospective(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    starts = [
+        x for x in (a["prospective_start_session_date"], b["prospective_start_session_date"])
+        if x is not None
+    ]
+    return {
+        "observation_rows": a["observation_rows"] + b["observation_rows"],
+        "dates": a["dates"] | b["dates"],
+        "recovered_rows": a["recovered_rows"] + b["recovered_rows"],
+        "recovered_samples": a["recovered_samples"] + b["recovered_samples"],
+        "prospective_start_session_date": min(starts) if starts else None,
+    }
+
+
+def _max_id(conn, table: str) -> int:
+    value = conn.execute(f"SELECT MAX(id) FROM {table};").fetchone()[0]
+    return int(value or 0)
+
+
+def _late_evidence_for_cached_runs(conn, state: dict[str, Any]) -> bool:
+    """True if evidence was attached to a run already folded into the cache."""
+    cached_high = state["max_seen_run_id"]
+    open_ids = state["open_run_ids"]
+    exclusion = ""
+    params: list[Any] = [state["max_observation_id"], cached_high]
+    if open_ids:
+        exclusion = f" AND r.research_run_id NOT IN ({','.join('?' for _ in open_ids)})"
+        params.extend(sorted(open_ids))
+    late_observation = conn.execute(
+        f'''
+        SELECT 1
+        FROM local_surface_residual_v2_observations AS o
+        -- CROSS JOIN pins the join order: the rowid range over rows newer than
+        -- the last refresh is the outer loop, so this check is O(new rows).
+        CROSS JOIN local_surface_residual_v2_runs AS r ON r.id = o.model_run_id
+        WHERE o.id > ? AND r.research_run_id <= ?{exclusion}
+        LIMIT 1;
+        ''',
+        params,
+    ).fetchone()
+    if late_observation is not None:
+        return True
+    params[0] = state["max_provider_id"]
+    late_provider_row = conn.execute(
+        f'''
+        SELECT 1
+        FROM provider_model_observations AS pmo
+        -- CROSS JOIN pins pmo's rowid range (new rows only) as the outer loop.
+        CROSS JOIN local_surface_residual_v2_observations AS o ON o.option_quote_id = pmo.option_quote_id
+        CROSS JOIN local_surface_residual_v2_runs AS r ON r.id = o.model_run_id
+        WHERE pmo.id > ? AND r.research_run_id <= ?{exclusion}
+          AND pmo.provider = 'THETADATA'
+        LIMIT 1;
+        ''',
+        params,
+    ).fetchone()
+    return late_provider_row is not None
+
+
+def _open_run_ids(conn) -> frozenset[int]:
+    placeholders = ",".join("?" for _ in _TERMINAL_RUN_STATES)
+    rows = conn.execute(
+        f'''
+        SELECT id FROM research_runs
+        WHERE status IS NULL OR status NOT IN ({placeholders});
+        ''',
+        _TERMINAL_RUN_STATES,
+    ).fetchall()
+    return frozenset(int(row[0]) for row in rows)
+
+
+def _load_prospective_summary(conn, path: Path) -> dict[str, Any]:
+    # One read transaction: every statement below sees the same snapshot, so a
+    # run created or closed mid-refresh cannot be miscounted or cached open.
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN;")
+    try:
+        return _load_prospective_summary_in_snapshot(conn, path)
+    finally:
+        if owns_transaction:
+            conn.execute("COMMIT;")
+
+
+def _load_prospective_summary_in_snapshot(conn, path: Path) -> dict[str, Any]:
+    freeze = conn.execute(
+        '''
+        SELECT id, frozen_through_session_date
+        FROM prospective_research_freeze_v1_runs
+        ORDER BY id DESC
+        LIMIT 1;
+        '''
+    ).fetchone()
+    if freeze is None:
+        part = _empty_prospective_part()
+    else:
+        key = (str(Path(path).resolve()), int(freeze["id"]), freeze["frozen_through_session_date"])
+        open_now = _open_run_ids(conn)
+        with _prospective_cache_lock:
+            state = _prospective_cache.get(key)
+            if state is not None:
+                reopened = {
+                    run_id for run_id in open_now
+                    if run_id <= state["max_seen_run_id"]
+                    and run_id not in state["open_run_ids"]
+                }
+                if reopened or _late_evidence_for_cached_runs(conn, state):
+                    state = None
+            max_observation_id = _max_id(conn, "local_surface_residual_v2_observations")
+            max_provider_id = _max_id(conn, "provider_model_observations")
+            max_run_id = _max_id(conn, "research_runs")
+            if state is None:
+                state = {
+                    "max_seen_run_id": 0,
+                    "open_run_ids": frozenset(),
+                    "part": _empty_prospective_part(),
+                }
+            # Runs that were open at the last refresh and are terminal now.
+            newly_closed = state["open_run_ids"] - open_now
+            part_acc = state["part"]
+            if newly_closed:
+                part_acc = _merge_prospective(
+                    part_acc,
+                    _prospective_range_part(conn, include_ids=frozenset(newly_closed)),
+                )
+            # Runs created since the last refresh that are already terminal.
+            if max_run_id > state["max_seen_run_id"]:
+                part_acc = _merge_prospective(
+                    part_acc,
+                    _prospective_range_part(
+                        conn,
+                        low_exclusive=state["max_seen_run_id"],
+                        high_inclusive=max_run_id,
+                        exclude_ids=frozenset(
+                            run_id for run_id in open_now
+                            if run_id > state["max_seen_run_id"]
+                        ),
+                    ),
+                )
+            state = {
+                "max_seen_run_id": max(max_run_id, state["max_seen_run_id"]),
+                "open_run_ids": frozenset(
+                    run_id for run_id in open_now
+                    if run_id <= max(max_run_id, state["max_seen_run_id"])
+                ),
+                "part": part_acc,
+                "max_observation_id": max_observation_id,
+                "max_provider_id": max_provider_id,
+            }
+            _prospective_cache[key] = state
+            cached = state["part"]
+        # Non-terminal runs are never cached; they are recomputed live.
+        part = _merge_prospective(
+            cached,
+            _prospective_range_part(conn, include_ids=state["open_run_ids"]),
+        )
+    return {
+        "observation_rows": part["observation_rows"],
+        "independent_dates": len(part["dates"]),
+        "recovered_rows": part["recovered_rows"],
+        "recovered_samples": part["recovered_samples"],
+        "prospective_start_session_date": part["prospective_start_session_date"],
+    }
+
+
+def _clear_prospective_summary_cache() -> None:
+    with _prospective_cache_lock:
+        _prospective_cache.clear()
 
 
 _PAGE_SECTIONS: dict[str, frozenset[str]] = {
@@ -368,76 +649,7 @@ def load_command_deck(
 
         if _needs("prospective"):
             _section_started = time.perf_counter()
-            prospective_row = conn.execute(
-                '''
-                WITH prospective_rows AS (
-                    SELECT
-                        us_session_date,
-                        was_recovered,
-                        research_run_id,
-                        underlying,
-                        prospective_start_session_date
-                    FROM v_local_surface_v2_prospective_partition_v2
-                    WHERE evidence_phase = 'POST_FREEZE_PROSPECTIVE'
-                ),
-                recovered_pairs AS (
-                    SELECT
-                        research_run_id,
-                        underlying
-                    FROM prospective_rows
-                    WHERE was_recovered = 1
-                    GROUP BY research_run_id, underlying
-                )
-                SELECT
-                    COUNT(*) AS observation_rows,
-                    COUNT(DISTINCT us_session_date) AS independent_dates,
-                    SUM(
-                        CASE
-                            WHEN was_recovered = 1
-                            THEN 1 ELSE 0
-                        END
-                    ) AS recovered_rows,
-                    (
-                        SELECT COUNT(*)
-                        FROM recovered_pairs
-                    ) AS recovered_samples,
-                    MIN(
-                        prospective_start_session_date
-                    ) AS prospective_start_session_date
-                FROM prospective_rows;
-                '''
-            ).fetchone()
-
-            prospective = {
-                "observation_rows":
-                    int(
-                        prospective_row[
-                            "observation_rows"
-                        ] or 0
-                    ),
-                "independent_dates":
-                    int(
-                        prospective_row[
-                            "independent_dates"
-                        ] or 0
-                    ),
-                "recovered_rows":
-                    int(
-                        prospective_row[
-                            "recovered_rows"
-                        ] or 0
-                    ),
-                "recovered_samples":
-                    int(
-                        prospective_row[
-                            "recovered_samples"
-                        ] or 0
-                    ),
-                "prospective_start_session_date":
-                    prospective_row[
-                        "prospective_start_session_date"
-                    ],
-            }
+            prospective = _load_prospective_summary(conn, path)
 
             timings["prospective_ms"] = round(
                 (time.perf_counter() - _section_started) * 1000.0,
