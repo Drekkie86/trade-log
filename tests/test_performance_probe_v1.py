@@ -4,6 +4,7 @@ from pathlib import Path
 
 from christiania_performance_probe import (
     _measure_page,
+    _runtime_activity_metadata,
     _sqlite_metadata,
 )
 
@@ -30,6 +31,7 @@ def test_performance_probe_records_cache_copy_cost_for_page(db_path):
     )
 
     assert result["page"] == "Dashboard"
+    assert result["cold_wall_ms"] >= 0
     assert result["cache_payload_bytes"] > 0
     assert result["pickle_dump_ms"] >= 0
     assert result["pickle_load_ms"]["median"] >= 0
@@ -49,3 +51,11 @@ def test_performance_probe_can_measure_legacy_full_deck(db_path):
     assert result["cache_payload_bytes"] > 0
     assert "decision_ms" in result["section_median_ms"]
     assert "shadow_detail_ms" in result["section_median_ms"]
+
+
+def test_performance_probe_records_daemon_activity_context(db_path):
+    activity = _runtime_activity_metadata(Path(db_path))
+
+    assert isinstance(activity["cycle_active"], bool)
+    assert "latest_iteration" in activity
+    assert "daemon_lock" in activity
