@@ -59,13 +59,56 @@ actual_sha="$(sha256sum "${ARCHIVE}" | awk '{print tolower($1)}')"
 [[ "${actual_sha}" == "${EXPECTED_SHA256}" ]] || fail "archive SHA-256 mismatch"
 
 STATE_ROOT="/var/lib/christiania/deployments"
+
+reconcile_stale_deployments() {
+  local status_file=""
+  local state=""
+  local unit=""
+  local now=""
+  local tmp=""
+
+  shopt -s nullglob
+  for status_file in "${STATE_ROOT}"/*/status.env; do
+    state="$(awk -F= '$1 == "state" { print substr($0, index($0, "=") + 1); exit }' "${status_file}")"
+    [[ "${state}" == "RUNNING" || "${state}" == "QUEUED" ]] || continue
+
+    unit="$(awk -F= '$1 == "unit" { print substr($0, index($0, "=") + 1); exit }' "${status_file}")"
+    [[ "${unit}" =~ ^christiania-deploy-[A-Za-z0-9._-]+[.]service$ ]] || continue
+
+    if systemctl is-active --quiet "${unit}"; then
+      continue
+    fi
+
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    tmp="${status_file}.reconcile.$"
+    awk -v now="${now}" '
+      BEGIN { FS="=" }
+      $1 == "state" { print "state=FAILED"; next }
+      $1 == "phase" { print "phase=STALE_RECONCILED"; next }
+      $1 == "updated_at" { print "updated_at=" now; next }
+      $1 == "finished_at" { print "finished_at=" now; next }
+      $1 == "detail" {
+        print "detail=Previous deployment status was active but its systemd unit is inactive; reconciled before new launch."
+        next
+      }
+      { print }
+    ' "${status_file}" > "${tmp}"
+    chmod 0640 "${tmp}"
+    mv -f "${tmp}" "${status_file}"
+    echo "Reconciled stale deployment status: ${status_file}"
+  done
+  shopt -u nullglob
+}
+
+install -d -m 0750 -o root -g christiania "${STATE_ROOT}"
+reconcile_stale_deployments
+
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ACTIVATION_ID="$(date -u +%Y%m%dT%H%M%SZ)-${EXPECTED_COMMIT:0:12}"
 DEPLOY_DIR="${STATE_ROOT}/${ACTIVATION_ID}"
 STATUS_FILE="${DEPLOY_DIR}/status.env"
 UNIT="christiania-deploy-${ACTIVATION_ID}.service"
 
-install -d -m 0750 -o root -g christiania "${STATE_ROOT}"
 install -d -m 0750 -o root -g christiania "${DEPLOY_DIR}"
 cp -f "${ARCHIVE}" "${DEPLOY_DIR}/release.tar.gz"
 cp -f "${RECEIVER}" "${DEPLOY_DIR}/receive_release.sh"
