@@ -107,6 +107,9 @@ def test_release_performance_probe_never_mutates_live_runtime():
     assert 'PRAGMA wal_checkpoint' not in probe
     assert 'ANALYZE' not in probe
     assert 'VACUUM' not in probe
+    assert '/run/lock/christiania-deploy.lock' in probe
+    assert 'flock -n 8' in probe
+    assert '--deployment-lock-held' in probe
 
 
 def test_release_activation_requires_recent_exact_sha_performance_evidence():
@@ -119,7 +122,10 @@ def test_release_activation_requires_recent_exact_sha_performance_evidence():
     assert "Run deploy/probe_release_performance.ps1 first." in deployer
     assert "performanceReport.release_commit -ne $head" in deployer
     assert "performanceReport.read_only" in deployer
-    assert "performanceReport.probe_version -lt 2" in deployer
+    assert "performanceReport.probe_version -lt 3" in deployer
+    assert "performanceReport.deployment_lock_held" in deployer
+    assert "performanceReport.runtime_activity_before" in deployer
+    assert "performanceReport.runtime_activity_after" in deployer
     assert '"Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL"' in deployer
 
 
@@ -152,3 +158,35 @@ def test_release_and_probe_refuse_heavy_maintenance_conflicts():
         assert "christiania-restore-drill.service" in source
         assert "systemctl is-active --quiet" in source
         assert "heavy maintenance is active" in source
+
+
+def test_server_release_runner_forwards_signals_to_receiver():
+    runner = (
+        ROOT / "deploy/run_server_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "forward_signal()" in runner
+    assert "kill -s" in runner
+    for signal in ("TERM", "INT", "HUP"):
+        assert f"trap 'forward_signal {signal}' {signal}" in runner
+
+
+def test_receiver_persists_real_phase_progress():
+    receiver = (
+        ROOT / "deploy/receive_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "deployment_status_phase()" in receiver
+    assert "CHRISTIANIA_DEPLOY_STATUS_FILE" in receiver
+    assert "Receiver phase started:" in receiver
+    assert "Receiver phase completed in" in receiver
+
+
+def test_launcher_reconciles_stale_deployment_status():
+    launcher = (
+        ROOT / "deploy/start_release.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "reconcile_stale_deployments()" in launcher
+    assert "STALE_RECONCILED" in launcher
+    assert 'systemctl is-active --quiet "${unit}"' in launcher
