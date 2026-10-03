@@ -6,6 +6,7 @@ PROBE_ROOT="/opt/christiania-probes"
 ENV_FILE="/etc/christiania/christiania.env"
 STATE_ROOT="/var/lib/christiania"
 SERVICE_USER="christiania"
+LOCK_FILE="/run/lock/christiania-deploy.lock"
 
 fail() {
   echo "PERFORMANCE PROBE FAILED: $*" >&2
@@ -52,6 +53,11 @@ REPORT_PATH="$4"
 [[ -f "${ENV_FILE}" ]] || fail "runtime environment file missing: ${ENV_FILE}"
 id "${SERVICE_USER}" >/dev/null 2>&1 || fail "service account missing: ${SERVICE_USER}"
 
+exec 8>"${LOCK_FILE}"
+if ! flock -n 8; then
+  fail "deployment lock is held: ${LOCK_FILE}; refuse performance probe during deployment"
+fi
+
 HEAVY_MAINTENANCE_UNITS=(
   "christiania-backup.service"
   "christiania-backup-compress.service"
@@ -63,7 +69,7 @@ for unit in "${HEAVY_MAINTENANCE_UNITS[@]}"; do
   fi
 done
 
-for required in awk chmod chown date grep install mktemp rm sha256sum sort sudo tar; do
+for required in awk chmod chown date flock grep install mktemp rm sha256sum sort sudo systemctl tar; do
   command -v "${required}" >/dev/null 2>&1 || fail "required command missing: ${required}"
 done
 
@@ -117,6 +123,7 @@ trap 'rm -f "${TMP_REPORT}"; cleanup' EXIT
     "${PROBE_DIR}/christiania_performance_probe.py" \
     --env-file "${ENV_FILE}" \
     --release-commit "${EXPECTED_COMMIT}" \
+    --deployment-lock-held \
     --include-full \
     --warmups 1 \
     --runs 3
