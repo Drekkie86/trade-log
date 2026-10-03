@@ -1,0 +1,40 @@
+name: Temporary PR69 review export
+
+on:
+  push:
+    branches:
+      - review-export-pr69-3ce6b093
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact review SHA
+        uses: actions/checkout@v4
+        with:
+          ref: 3ce6b0932c1e6943e7a68efee65d99f91fed822c
+          fetch-depth: 1
+
+      - name: Verify exact source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3ce6b0932c1e6943e7a68efee65d99f91fed822c"
+
+      - name: Package exact source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --exclude=.git -czf christiania-pr69-source-3ce6b093.tar.gz .
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: christiania-pr69-source-3ce6b093
+          path: christiania-pr69-source-3ce6b093.tar.gz
+          if-no-files-found: error
+          retention-days: 1
