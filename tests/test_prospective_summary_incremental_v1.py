@@ -8,6 +8,7 @@ that are still in progress.
 """
 from __future__ import annotations
 
+import json
 import random
 import re
 import shutil
@@ -326,3 +327,55 @@ def test_late_evidence_guards_scan_only_new_rows(seeded):
             assert first.startswith("SEARCH") and "rowid>?" in first, plan
     finally:
         conn.close()
+
+
+def test_persisted_probe_seed_avoids_cold_history_rebuild(
+    seeded,
+    tmp_path,
+    monkeypatch,
+):
+    path, _ = seeded
+    expected = _summary(path)
+    seed = read_model.export_prospective_summary_seed(path)
+    assert seed is not None
+
+    commit = "a" * 40
+    marker = tmp_path / "DEPLOYED_COMMIT"
+    marker.write_text(commit + "\n", encoding="utf-8")
+    report_dir = tmp_path / "performance-probes"
+    report_dir.mkdir()
+    (report_dir / f"{commit}-seed.json").write_text(
+        json.dumps(
+            {
+                "probe_version": 4,
+                "release_commit": commit,
+                "read_only": True,
+                "deployment_lock_held": True,
+                "prospective_cache_seed": seed,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    read_model._clear_prospective_summary_cache()
+    monkeypatch.setattr(read_model, "_DEPLOYED_COMMIT_PATH", marker)
+    monkeypatch.setattr(read_model, "_PERFORMANCE_PROBE_DIR", report_dir)
+
+    calls = []
+    original = read_model._prospective_range_part
+
+    def spy(conn, **kwargs):
+        calls.append(kwargs)
+        return original(conn, **kwargs)
+
+    monkeypatch.setattr(read_model, "_prospective_range_part", spy)
+
+    assert _summary(path) == expected
+
+    history_scans = [
+        kwargs
+        for kwargs in calls
+        if kwargs.get("include_ids") is None
+        and kwargs.get("low_exclusive") in (None, 0)
+    ]
+    assert history_scans == []
