@@ -163,7 +163,7 @@ try {
             if ([string]$report.release_commit -ne $head -or -not [bool]$report.read_only) {
                 throw "Performance report identity/read-only contract does not match target SHA."
             }
-            if ([int]$report.probe_version -lt 4 -or -not [bool]$report.deployment_lock_held) {
+            if ([int]$report.probe_version -lt 5 -or -not [bool]$report.deployment_lock_held) {
                 throw "Performance report does not prove serialized deployment-lock measurement."
             }
             if ($null -eq $report.runtime_activity_before -or $null -eq $report.runtime_activity_after) {
@@ -174,6 +174,9 @@ try {
             }
             if ([int]$report.prospective_cache_seed.seed_version -ne 1) {
                 throw "Performance report prospective cache seed version is unsupported."
+            }
+            if ($null -eq $report.seeded_cold_dashboard -or -not [bool]$report.seeded_cold_dashboard.history_rebuild_avoided) {
+                throw "Performance report does not prove seeded Dashboard cold-start behavior."
             }
 
             $measuredPages = @($report.pages | ForEach-Object { [string]$_.page })
@@ -189,6 +192,7 @@ try {
                 Write-Host ("{0}: median={1}ms cache={2} bytes unpickle={3}ms" -f `
                     $page.page, $page.wall_ms.median, $page.cache_payload_bytes, $page.pickle_load_ms.median)
             }
+            Write-Host "seeded_dashboard_cold=$($report.seeded_cold_dashboard.wall_ms)ms history_rebuild_avoided=$($report.seeded_cold_dashboard.history_rebuild_avoided)"
             Write-Host "wal_delta_bytes=$($report.wal_delta_bytes)"
             Write-Host "performance_report=$reportPath"
             break
