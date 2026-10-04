@@ -662,9 +662,8 @@ def load_command_deck(
                 '''
                 SELECT
                     (
-                        SELECT COUNT(*)
-                        FROM hypothesis_scanner_evaluations
-                        WHERE evaluation_state = 'SURFACED'
+                        SELECT COALESCE(SUM(surfaced_count), 0)
+                        FROM hypothesis_scanner_runs
                     ) AS surfaced_total,
                     (
                         SELECT COUNT(*)
