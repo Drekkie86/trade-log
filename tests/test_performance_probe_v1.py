@@ -7,6 +7,7 @@ from christiania_performance_probe import (
     _runtime_activity_metadata,
     _sqlite_metadata,
 )
+from src.dashboard.read_model import export_prospective_summary_seed
 
 
 def test_performance_probe_metadata_is_readonly_and_tuning_aware(db_path):
@@ -59,3 +60,20 @@ def test_performance_probe_records_daemon_activity_context(db_path):
     assert isinstance(activity["cycle_active"], bool)
     assert "latest_iteration" in activity
     assert "daemon_lock" in activity
+
+
+def test_dashboard_probe_exports_serializable_prospective_seed(db_path):
+    _measure_page(
+        Path(db_path),
+        "Dashboard",
+        warmups=0,
+        runs=1,
+    )
+
+    seed = export_prospective_summary_seed(Path(db_path))
+
+    assert seed is not None
+    assert seed["seed_version"] == 1
+    assert seed["database_path"] == str(Path(db_path).resolve())
+    assert isinstance(seed["open_run_ids"], list)
+    assert isinstance(seed["part"]["dates"], list)
