@@ -81,3 +81,20 @@ def test_quant_models_page_does_not_run_research_population_queries(
         "market_clock_ms",
         "total_ms",
     }
+
+
+@pytest.mark.slow
+def test_dashboard_surfaced_count_uses_scanner_run_summary(
+    monkeypatch,
+    db_path,
+):
+    deck, sql = _trace_page(
+        monkeypatch,
+        db_path,
+        "Dashboard",
+    )
+
+    assert deck["ready"] is True
+    sql_text = "\n".join(sql)
+    assert "SUM(surfaced_count)" in sql_text
+    assert "FROM hypothesis_scanner_evaluations" not in sql_text
