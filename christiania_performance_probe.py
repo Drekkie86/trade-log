@@ -8,7 +8,10 @@ import time
 from pathlib import Path
 
 from src.config import load_runtime_env_file
-from src.dashboard.read_model import load_command_deck
+from src.dashboard.read_model import (
+    export_prospective_summary_seed,
+    load_command_deck,
+)
 from src.database.repository import resolve_db_path
 from src.operations.sqlite_runtime import open_readonly_connection
 
@@ -146,6 +149,7 @@ def _measure_page(
         include_provider_health=False,
         deep_integrity=False,
         page=page,
+        allow_persisted_prospective_seed=False,
     )
     cold_wall_ms = (time.perf_counter() - cold_started) * 1000.0
     if cold_deck.get("ready") is not True:
@@ -159,6 +163,7 @@ def _measure_page(
             include_provider_health=False,
             deep_integrity=False,
             page=page,
+            allow_persisted_prospective_seed=False,
         )
         if warm.get("ready") is not True:
             raise RuntimeError(
@@ -176,6 +181,7 @@ def _measure_page(
             include_provider_health=False,
             deep_integrity=False,
             page=page,
+            allow_persisted_prospective_seed=False,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
@@ -363,6 +369,11 @@ def main() -> int:
     ]
     runtime_activity_after = _runtime_activity_metadata(path)
     database_after = _sqlite_metadata(path)
+    prospective_cache_seed = export_prospective_summary_seed(path)
+    if prospective_cache_seed is None:
+        raise RuntimeError(
+            "Performance probe did not produce a prospective cache seed."
+        )
 
     medians = {
         str(item["page"]): float(item["wall_ms"]["median"])
@@ -378,7 +389,7 @@ def main() -> int:
         }
 
     payload = {
-        "probe_version": 3,
+        "probe_version": 4,
         "release_commit": (
             None
             if args.release_commit is None
@@ -386,6 +397,7 @@ def main() -> int:
         ),
         "read_only": True,
         "deployment_lock_held": bool(args.deployment_lock_held),
+        "prospective_cache_seed": prospective_cache_seed,
         "database_before": database_before,
         "database_after": database_after,
         "runtime_activity_before": runtime_activity_before,
