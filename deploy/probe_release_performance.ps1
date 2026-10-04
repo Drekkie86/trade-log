@@ -163,11 +163,17 @@ try {
             if ([string]$report.release_commit -ne $head -or -not [bool]$report.read_only) {
                 throw "Performance report identity/read-only contract does not match target SHA."
             }
-            if ([int]$report.probe_version -lt 3 -or -not [bool]$report.deployment_lock_held) {
+            if ([int]$report.probe_version -lt 4 -or -not [bool]$report.deployment_lock_held) {
                 throw "Performance report does not prove serialized deployment-lock measurement."
             }
             if ($null -eq $report.runtime_activity_before -or $null -eq $report.runtime_activity_after) {
                 throw "Performance report is missing daemon activity context."
+            }
+            if ($null -eq $report.prospective_cache_seed) {
+                throw "Performance report is missing prospective cold-start cache seed."
+            }
+            if ([int]$report.prospective_cache_seed.seed_version -ne 1) {
+                throw "Performance report prospective cache seed version is unsupported."
             }
 
             $measuredPages = @($report.pages | ForEach-Object { [string]$_.page })
