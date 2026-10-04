@@ -182,7 +182,7 @@ if ([string]$performanceReport.release_commit -ne $head) {
 if (-not [bool]$performanceReport.read_only) {
     throw "Refusing deployment: performance report does not assert read-only execution."
 }
-if ([int]$performanceReport.probe_version -lt 4) {
+if ([int]$performanceReport.probe_version -lt 5) {
     throw "Refusing deployment: performance report format is too old."
 }
 if (-not [bool]$performanceReport.deployment_lock_held) {
@@ -197,6 +197,9 @@ if ($null -eq $performanceReport.prospective_cache_seed) {
 if ([int]$performanceReport.prospective_cache_seed.seed_version -ne 1) {
     throw "Refusing deployment: prospective cold-start cache seed version is unsupported."
 }
+if ($null -eq $performanceReport.seeded_cold_dashboard -or -not [bool]$performanceReport.seeded_cold_dashboard.history_rebuild_avoided) {
+    throw "Refusing deployment: performance evidence does not prove seeded Dashboard cold-start behavior."
+}
 
 $measuredPages = @($performanceReport.pages | ForEach-Object { [string]$_.page })
 foreach ($requiredPage in @("Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL")) {
@@ -210,6 +213,7 @@ Write-Host "Production timing summary:"
 foreach ($page in $performanceReport.pages) {
     Write-Host ("  {0}: median={1}ms cache={2} bytes unpickle={3}ms" -f $page.page, $page.wall_ms.median, $page.cache_payload_bytes, $page.pickle_load_ms.median)
 }
+Write-Host "  seeded_dashboard_cold=$($performanceReport.seeded_cold_dashboard.wall_ms)ms history_rebuild_avoided=$($performanceReport.seeded_cold_dashboard.history_rebuild_avoided)"
 Write-Host "  wal_delta_bytes=$($performanceReport.wal_delta_bytes)"
 
 $tempRoot = Join-Path $env:TEMP "christiania-release-$head"
