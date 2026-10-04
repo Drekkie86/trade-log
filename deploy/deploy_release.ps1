@@ -182,7 +182,7 @@ if ([string]$performanceReport.release_commit -ne $head) {
 if (-not [bool]$performanceReport.read_only) {
     throw "Refusing deployment: performance report does not assert read-only execution."
 }
-if ([int]$performanceReport.probe_version -lt 3) {
+if ([int]$performanceReport.probe_version -lt 4) {
     throw "Refusing deployment: performance report format is too old."
 }
 if (-not [bool]$performanceReport.deployment_lock_held) {
@@ -190,6 +190,12 @@ if (-not [bool]$performanceReport.deployment_lock_held) {
 }
 if ($null -eq $performanceReport.runtime_activity_before -or $null -eq $performanceReport.runtime_activity_after) {
     throw "Refusing deployment: performance evidence is missing daemon activity context."
+}
+if ($null -eq $performanceReport.prospective_cache_seed) {
+    throw "Refusing deployment: performance evidence is missing prospective cold-start cache seed."
+}
+if ([int]$performanceReport.prospective_cache_seed.seed_version -ne 1) {
+    throw "Refusing deployment: prospective cold-start cache seed version is unsupported."
 }
 
 $measuredPages = @($performanceReport.pages | ForEach-Object { [string]$_.page })
