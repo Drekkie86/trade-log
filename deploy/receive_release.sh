@@ -707,9 +707,18 @@ phase_done
 echo "Deep database integrity is not repeated here. If the target release requires a schema migration, the release database safety step fully verifies a fresh rollback copy before migration SQL and then fully verifies the migrated database. If schema is unchanged, both O(database-size) scans are skipped."
 
 TEMP_SYSTEMD_ROOT="$(mktemp -d)"
+chmod 0755 "${TEMP_SYSTEMD_ROOT}"
 "${RELEASE_DIR}/.venv/bin/python" \
   "${RELEASE_DIR}/christiania_resource_policy.py" \
   render \
+  --systemd-root "${TEMP_SYSTEMD_ROOT}"
+
+# Prove before activation that the exact service identity used by
+# christiania-status can traverse and read every generated resource drop-in.
+sudo -u "${SERVICE_USER}" \
+  "${RELEASE_DIR}/.venv/bin/python" \
+  "${RELEASE_DIR}/christiania_resource_policy.py" \
+  check \
   --systemd-root "${TEMP_SYSTEMD_ROOT}"
 
 for existing in \
@@ -831,7 +840,10 @@ for dropin_dir in "${TEMP_SYSTEMD_ROOT}"/christiania-*.service.d; do
   if [[ -d "${dropin_dir}" ]]; then
     destination="${SYSTEMD_ROOT}/$(basename "${dropin_dir}")"
     rm -rf "${destination}"
-    cp -a "${dropin_dir}" "${destination}"
+    install -d -m 0755 "${destination}"
+    install -m 0644 \
+      "${dropin_dir}/10-christiania-resources.conf" \
+      "${destination}/10-christiania-resources.conf"
   fi
 done
 
@@ -839,7 +851,8 @@ rm -rf "${TEMP_SYSTEMD_ROOT}"
 TEMP_SYSTEMD_ROOT=""
 systemctl daemon-reload
 
-"${APP_LINK}/.venv/bin/python" \
+sudo -u "${SERVICE_USER}" \
+  "${APP_LINK}/.venv/bin/python" \
   "${APP_LINK}/christiania_resource_policy.py" \
   check \
   --systemd-root "${SYSTEMD_ROOT}"
