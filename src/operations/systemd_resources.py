@@ -64,11 +64,16 @@ def write_resource_dropins(
             parents=True,
             exist_ok=True,
         )
+        # These files live under /etc/systemd/system in production and are
+        # inspected by christiania-status while running as the unprivileged
+        # service account. Never inherit a restrictive deployment umask.
+        path.parent.chmod(0o755)
         path.write_text(
             expected_dropin_text(unit),
             encoding="utf-8",
             newline="\n",
         )
+        path.chmod(0o644)
         written.append(path)
 
     return tuple(written)
@@ -85,7 +90,24 @@ def check_resource_dropins(
             unit,
         )
 
-        if not path.is_file():
+        try:
+            is_file = path.is_file()
+        except OSError as exc:
+            checks.append(
+                ResourcePolicyCheck(
+                    unit=unit,
+                    path=path,
+                    state="FAIL",
+                    detail=(
+                        "Cannot inspect installed Christiania "
+                        "resource-policy drop-in: "
+                        f"{exc.__class__.__name__}."
+                    ),
+                )
+            )
+            continue
+
+        if not is_file:
             checks.append(
                 ResourcePolicyCheck(
                     unit=unit,
@@ -99,9 +121,25 @@ def check_resource_dropins(
             )
             continue
 
-        actual = path.read_text(
-            encoding="utf-8",
-        )
+        try:
+            actual = path.read_text(
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            checks.append(
+                ResourcePolicyCheck(
+                    unit=unit,
+                    path=path,
+                    state="FAIL",
+                    detail=(
+                        "Cannot read installed Christiania "
+                        "resource-policy drop-in: "
+                        f"{exc.__class__.__name__}."
+                    ),
+                )
+            )
+            continue
+
         expected = expected_dropin_text(unit)
 
         if actual != expected:
