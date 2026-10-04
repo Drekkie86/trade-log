@@ -262,7 +262,11 @@ def _load_persisted_prospective_seed(
             continue
         if not isinstance(payload, dict):
             continue
-        if int(payload.get("probe_version", 0) or 0) < 4:
+        try:
+            probe_version = int(payload.get("probe_version", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if probe_version < 4:
             continue
         if str(payload.get("release_commit") or "").lower() != commit:
             continue
