@@ -1,4 +1,8 @@
+import os
 from pathlib import Path
+import stat
+
+import pytest
 
 from src.operations.service_resources import (
     MIB,
@@ -222,3 +226,68 @@ def test_backup_allows_large_database_copy_window():
     )
 
     assert backup.timeout_start_seconds == 7200
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX permission modes are required for this regression.",
+)
+def test_write_resource_dropins_overrides_restrictive_umask(
+    tmp_path: Path,
+):
+    previous_umask = os.umask(0o077)
+    try:
+        written = write_resource_dropins(
+            tmp_path
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert written
+    for path in written:
+        assert stat.S_IMODE(
+            path.parent.stat().st_mode
+        ) == 0o755
+        assert stat.S_IMODE(
+            path.stat().st_mode
+        ) == 0o644
+
+
+def test_resource_check_reports_permission_error_instead_of_crashing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    write_resource_dropins(
+        tmp_path
+    )
+    blocked = dropin_path(
+        tmp_path,
+        "christiania-app.service",
+    )
+    original_is_file = Path.is_file
+
+    def guarded_is_file(path: Path) -> bool:
+        if path == blocked:
+            raise PermissionError(
+                "simulated service-user traversal denial"
+            )
+        return original_is_file(path)
+
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        guarded_is_file,
+    )
+
+    checks = {
+        check.unit: check
+        for check in check_resource_dropins(
+            tmp_path
+        )
+    }
+
+    blocked_check = checks[
+        "christiania-app.service"
+    ]
+    assert blocked_check.state == "FAIL"
+    assert "PermissionError" in blocked_check.detail

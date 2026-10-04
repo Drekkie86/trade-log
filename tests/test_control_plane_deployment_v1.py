@@ -399,3 +399,50 @@ def test_receiver_does_not_lock_current_backend_out_of_release_root():
     )
 
     assert root_permission < quiesce
+
+
+def test_receiver_installs_resource_dropins_with_explicit_readable_modes():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    assert 'chmod 0755 "${TEMP_SYSTEMD_ROOT}"' in script
+    assert 'install -d -m 0755 "${destination}"' in script
+    assert (
+        'install -m 0644 \\\n'
+        '      "${dropin_dir}/10-christiania-resources.conf"'
+        in script
+    )
+    assert 'cp -a "${dropin_dir}" "${destination}"' not in script
+
+
+def test_receiver_proves_resource_policy_as_service_user_before_and_after_activation():
+    script = _read(
+        "deploy/receive_release.sh"
+    )
+
+    render = script.index(
+        'christiania_resource_policy.py" \\\n  render'
+    )
+    activation = script.index(
+        "Preparing atomic activation."
+    )
+    pre_activation_check = script.index(
+        'sudo -u "${SERVICE_USER}"',
+        render,
+    )
+
+    assert render < pre_activation_check < activation
+
+    post_activation = script.index(
+        'systemctl daemon-reload'
+    )
+    post_activation_check = script.index(
+        'sudo -u "${SERVICE_USER}"',
+        post_activation,
+    )
+    status_gate = script.index(
+        "Running deployment-safety control-plane status."
+    )
+
+    assert post_activation < post_activation_check < status_gate
