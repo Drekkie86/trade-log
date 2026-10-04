@@ -4,8 +4,11 @@ import argparse
 import json
 import pickle
 import statistics
+import tempfile
 import time
 from pathlib import Path
+
+import src.dashboard.read_model as dashboard_read_model
 
 from src.config import load_runtime_env_file
 from src.dashboard.read_model import (
@@ -260,6 +263,87 @@ def _measure_page(
     }
 
 
+def _measure_seeded_dashboard_cold(
+    path: Path,
+    *,
+    release_commit: str,
+    seed: dict[str, object],
+) -> dict[str, object]:
+    """Measure a fresh-process-equivalent Dashboard read from persisted seed."""
+    history_rebuild_attempted = False
+    original_range_part = dashboard_read_model._prospective_range_part
+    original_commit_path = dashboard_read_model._DEPLOYED_COMMIT_PATH
+    original_probe_dir = dashboard_read_model._PERFORMANCE_PROBE_DIR
+
+    def traced_range_part(conn, **kwargs):
+        nonlocal history_rebuild_attempted
+        if (
+            kwargs.get("include_ids") is None
+            and kwargs.get("low_exclusive") in (None, 0)
+        ):
+            history_rebuild_attempted = True
+        return original_range_part(conn, **kwargs)
+
+    with tempfile.TemporaryDirectory(prefix="christiania-seeded-cold-") as temp_root:
+        root = Path(temp_root)
+        marker = root / "DEPLOYED_COMMIT"
+        report_dir = root / "performance-probes"
+        report_dir.mkdir()
+        marker.write_text(release_commit + "\n", encoding="utf-8")
+        report = report_dir / f"{release_commit}-seeded-cold.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "probe_version": 5,
+                    "release_commit": release_commit,
+                    "read_only": True,
+                    "deployment_lock_held": True,
+                    "prospective_cache_seed": seed,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+        try:
+            dashboard_read_model._clear_prospective_summary_cache()
+            dashboard_read_model._DEPLOYED_COMMIT_PATH = marker
+            dashboard_read_model._PERFORMANCE_PROBE_DIR = report_dir
+            dashboard_read_model._prospective_range_part = traced_range_part
+
+            started = time.perf_counter()
+            deck = load_command_deck(
+                path,
+                include_provider_health=False,
+                deep_integrity=False,
+                page="Dashboard",
+                allow_persisted_prospective_seed=True,
+            )
+            wall_ms = (time.perf_counter() - started) * 1000.0
+        finally:
+            dashboard_read_model._prospective_range_part = original_range_part
+            dashboard_read_model._DEPLOYED_COMMIT_PATH = original_commit_path
+            dashboard_read_model._PERFORMANCE_PROBE_DIR = original_probe_dir
+            dashboard_read_model._clear_prospective_summary_cache()
+
+    if deck.get("ready") is not True:
+        raise RuntimeError(
+            "Seeded Dashboard cold measurement failed: "
+            f"{deck.get('reason')}"
+        )
+
+    return {
+        "wall_ms": round(wall_ms, 3),
+        "history_rebuild_avoided": not history_rebuild_attempted,
+        "section_ms": {
+            key: float(value)
+            for key, value in (
+                deck.get("read_model_timings_ms") or {}
+            ).items()
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -374,6 +458,19 @@ def main() -> int:
         raise RuntimeError(
             "Performance probe did not produce a prospective cache seed."
         )
+    if args.release_commit is None:
+        raise RuntimeError(
+            "Release-bound performance probe is required for seeded cold proof."
+        )
+    seeded_cold_dashboard = _measure_seeded_dashboard_cold(
+        path,
+        release_commit=args.release_commit.lower(),
+        seed=prospective_cache_seed,
+    )
+    if not seeded_cold_dashboard["history_rebuild_avoided"]:
+        raise RuntimeError(
+            "Persisted prospective seed did not avoid the historical rebuild."
+        )
 
     medians = {
         str(item["page"]): float(item["wall_ms"]["median"])
@@ -389,7 +486,7 @@ def main() -> int:
         }
 
     payload = {
-        "probe_version": 4,
+        "probe_version": 5,
         "release_commit": (
             None
             if args.release_commit is None
@@ -398,6 +495,7 @@ def main() -> int:
         "read_only": True,
         "deployment_lock_held": bool(args.deployment_lock_held),
         "prospective_cache_seed": prospective_cache_seed,
+        "seeded_cold_dashboard": seeded_cold_dashboard,
         "database_before": database_before,
         "database_after": database_after,
         "runtime_activity_before": runtime_activity_before,

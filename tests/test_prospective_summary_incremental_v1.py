@@ -16,6 +16,7 @@ import sqlite3
 
 import pytest
 
+from christiania_performance_probe import _measure_seeded_dashboard_cold
 from src.dashboard import read_model
 from src.operations.sqlite_runtime import open_readonly_connection
 
@@ -379,3 +380,20 @@ def test_persisted_probe_seed_avoids_cold_history_rebuild(
         and kwargs.get("low_exclusive") in (None, 0)
     ]
     assert history_scans == []
+
+
+def test_seeded_cold_probe_proves_history_rebuild_is_avoided(seeded):
+    path, _ = seeded
+    assert _summary(path) == _oracle(path)
+    seed = read_model.export_prospective_summary_seed(path)
+    assert seed is not None
+
+    measured = _measure_seeded_dashboard_cold(
+        path,
+        release_commit="b" * 40,
+        seed=seed,
+    )
+
+    assert measured["history_rebuild_avoided"] is True
+    assert measured["wall_ms"] >= 0
+    assert "prospective_ms" in measured["section_ms"]
