@@ -69,8 +69,12 @@ def _decode_json_object(value: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _TERMINAL_RUN_STATES = ("COMPLETED", "FAILED", "INVALID")
+_PROSPECTIVE_SEED_VERSION = 1
+_DEPLOYED_COMMIT_PATH = Path("/opt/christiania/DEPLOYED_COMMIT")
+_PERFORMANCE_PROBE_DIR = Path("/var/lib/christiania/audit/performance-probes")
 _prospective_cache: dict[tuple, dict[str, Any]] = {}
 _prospective_cache_lock = threading.Lock()
+_prospective_seed_attempted: set[tuple] = set()
 
 
 def _empty_prospective_part() -> dict[str, Any]:
@@ -157,6 +161,157 @@ def _prospective_range_part(
     return part
 
 
+def _prospective_state_from_seed(
+    seed: Any,
+    key: tuple[str, int, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(seed, dict):
+        return None
+    try:
+        if int(seed.get("seed_version", -1)) != _PROSPECTIVE_SEED_VERSION:
+            return None
+        if str(seed.get("database_path") or "") != key[0]:
+            return None
+        if int(seed.get("freeze_run_id", -1)) != key[1]:
+            return None
+        if seed.get("frozen_through_session_date") != key[2]:
+            return None
+
+        max_seen_run_id = int(seed["max_seen_run_id"])
+        max_observation_id = int(seed["max_observation_id"])
+        max_provider_id = int(seed["max_provider_id"])
+        open_run_ids = frozenset(int(value) for value in seed.get("open_run_ids", []))
+        raw_part = seed["part"]
+        if not isinstance(raw_part, dict):
+            return None
+        observation_rows = int(raw_part["observation_rows"])
+        recovered_rows = int(raw_part["recovered_rows"])
+        recovered_samples = int(raw_part["recovered_samples"])
+        dates = {
+            str(value)
+            for value in raw_part.get("dates", [])
+            if value is not None
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if min(
+        max_seen_run_id,
+        max_observation_id,
+        max_provider_id,
+        observation_rows,
+        recovered_rows,
+        recovered_samples,
+    ) < 0:
+        return None
+    if any(run_id < 0 or run_id > max_seen_run_id for run_id in open_run_ids):
+        return None
+
+    return {
+        "max_seen_run_id": max_seen_run_id,
+        "open_run_ids": open_run_ids,
+        "part": {
+            "observation_rows": observation_rows,
+            "dates": dates,
+            "recovered_rows": recovered_rows,
+            "recovered_samples": recovered_samples,
+            "prospective_start_session_date": raw_part.get(
+                "prospective_start_session_date"
+            ),
+        },
+        "max_observation_id": max_observation_id,
+        "max_provider_id": max_provider_id,
+    }
+
+
+def _deployed_commit_for_seed() -> str | None:
+    try:
+        value = _DEPLOYED_COMMIT_PATH.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return None
+    if len(value) != 40 or any(ch not in "0123456789abcdef" for ch in value):
+        return None
+    return value
+
+
+def _load_persisted_prospective_seed(
+    path: Path,
+    key: tuple[str, int, Any],
+) -> dict[str, Any] | None:
+    if key in _prospective_seed_attempted:
+        return None
+    _prospective_seed_attempted.add(key)
+
+    commit = _deployed_commit_for_seed()
+    if commit is None or not _PERFORMANCE_PROBE_DIR.is_dir():
+        return None
+
+    try:
+        reports = sorted(
+            _PERFORMANCE_PROBE_DIR.glob(f"{commit}-*.json"),
+            key=lambda candidate: candidate.stat().st_mtime_ns,
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    for report in reports:
+        try:
+            payload = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if int(payload.get("probe_version", 0) or 0) < 4:
+            continue
+        if str(payload.get("release_commit") or "").lower() != commit:
+            continue
+        if payload.get("read_only") is not True:
+            continue
+        if payload.get("deployment_lock_held") is not True:
+            continue
+        state = _prospective_state_from_seed(
+            payload.get("prospective_cache_seed"),
+            key,
+        )
+        if state is not None:
+            return state
+    return None
+
+
+def export_prospective_summary_seed(path: str | Path) -> dict[str, Any] | None:
+    resolved = str(Path(path).resolve())
+    with _prospective_cache_lock:
+        candidates = [
+            (key, state)
+            for key, state in _prospective_cache.items()
+            if key[0] == resolved
+        ]
+        if not candidates:
+            return None
+        key, state = max(candidates, key=lambda item: int(item[0][1]))
+        part = state["part"]
+        return {
+            "seed_version": _PROSPECTIVE_SEED_VERSION,
+            "database_path": key[0],
+            "freeze_run_id": int(key[1]),
+            "frozen_through_session_date": key[2],
+            "max_seen_run_id": int(state["max_seen_run_id"]),
+            "open_run_ids": sorted(int(value) for value in state["open_run_ids"]),
+            "max_observation_id": int(state["max_observation_id"]),
+            "max_provider_id": int(state["max_provider_id"]),
+            "part": {
+                "observation_rows": int(part["observation_rows"]),
+                "dates": sorted(str(value) for value in part["dates"]),
+                "recovered_rows": int(part["recovered_rows"]),
+                "recovered_samples": int(part["recovered_samples"]),
+                "prospective_start_session_date": part[
+                    "prospective_start_session_date"
+                ],
+            },
+        }
+
+
 def _merge_prospective(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     starts = [
         x for x in (a["prospective_start_session_date"], b["prospective_start_session_date"])
@@ -228,20 +383,34 @@ def _open_run_ids(conn) -> frozenset[int]:
     return frozenset(int(row[0]) for row in rows)
 
 
-def _load_prospective_summary(conn, path: Path) -> dict[str, Any]:
+def _load_prospective_summary(
+    conn,
+    path: Path,
+    *,
+    allow_persisted_seed: bool = True,
+) -> dict[str, Any]:
     # One read transaction: every statement below sees the same snapshot, so a
     # run created or closed mid-refresh cannot be miscounted or cached open.
     owns_transaction = not conn.in_transaction
     if owns_transaction:
         conn.execute("BEGIN;")
     try:
-        return _load_prospective_summary_in_snapshot(conn, path)
+        return _load_prospective_summary_in_snapshot(
+            conn,
+            path,
+            allow_persisted_seed=allow_persisted_seed,
+        )
     finally:
         if owns_transaction:
             conn.execute("COMMIT;")
 
 
-def _load_prospective_summary_in_snapshot(conn, path: Path) -> dict[str, Any]:
+def _load_prospective_summary_in_snapshot(
+    conn,
+    path: Path,
+    *,
+    allow_persisted_seed: bool = True,
+) -> dict[str, Any]:
     freeze = conn.execute(
         '''
         SELECT id, frozen_through_session_date
@@ -257,6 +426,8 @@ def _load_prospective_summary_in_snapshot(conn, path: Path) -> dict[str, Any]:
         open_now = _open_run_ids(conn)
         with _prospective_cache_lock:
             state = _prospective_cache.get(key)
+            if state is None and allow_persisted_seed:
+                state = _load_persisted_prospective_seed(path, key)
             if state is not None:
                 reopened = {
                     run_id for run_id in open_now
@@ -325,6 +496,7 @@ def _load_prospective_summary_in_snapshot(conn, path: Path) -> dict[str, Any]:
 def _clear_prospective_summary_cache() -> None:
     with _prospective_cache_lock:
         _prospective_cache.clear()
+        _prospective_seed_attempted.clear()
 
 
 _PAGE_SECTIONS: dict[str, frozenset[str]] = {
@@ -391,6 +563,7 @@ def load_command_deck(
     include_provider_health: bool = False,
     deep_integrity: bool = True,
     page: str | None = None,
+    allow_persisted_prospective_seed: bool = True,
 ) -> dict[str, Any]:
     total_started = time.perf_counter()
     timings: dict[str, float] = {}
@@ -649,7 +822,11 @@ def load_command_deck(
 
         if _needs("prospective"):
             _section_started = time.perf_counter()
-            prospective = _load_prospective_summary(conn, path)
+            prospective = _load_prospective_summary(
+                conn,
+                path,
+                allow_persisted_seed=allow_persisted_prospective_seed,
+            )
 
             timings["prospective_ms"] = round(
                 (time.perf_counter() - _section_started) * 1000.0,
