@@ -629,7 +629,12 @@ if page == "Dashboard":
                     ("Storage & backups", f"{_fmt_count(backup_inventory.get('total_files', 0))} file(s)", "INFO"),
                 ]
             ),
-            badge_label="Healthy" if daemon_health.get("state") in {"HEALTHY", "NO_DAEMON_LEASE"} else daemon_health.get("state", "Unknown"),
+            badge_label=(
+                "Healthy"
+                if daemon_health.get("state") == "HEALTHY"
+                else _status_label(daemon_health.get("state"))
+            ),
+            badge_tone="good" if daemon_health.get("state") == "HEALTHY" else "bad",
         )
 
     with c2:
