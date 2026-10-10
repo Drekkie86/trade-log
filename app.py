@@ -19,6 +19,13 @@ import streamlit as st
 
 from src.dashboard.daemon_activity_presentation import summarize_daemon_activity
 from src.dashboard.read_model import load_command_deck
+from src.ui.datetime_display import (
+    TIMEZONE_LABEL,
+    format_calendar_date,
+    format_local_datetime,
+    is_operator_date_column,
+    is_operator_datetime_column,
+)
 from src.operations.backup_recovery import (
     inventory_backups,
     inventory_backups_fast,
@@ -211,6 +218,14 @@ def _humanize_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
 
     if "provider" in frame.columns:
         frame["provider"] = frame["provider"].map(provider_label)
+
+    # Operator presentation only. The source frame (used for selections,
+    # evidence and chronological sorting) remains in its original UTC form.
+    for column in frame.columns:
+        if is_operator_datetime_column(column):
+            frame[column] = frame[column].map(format_local_datetime)
+        elif is_operator_date_column(column):
+            frame[column] = frame[column].map(format_calendar_date)
 
     labels = {
         name: _human_column_name(str(name))
@@ -574,6 +589,7 @@ with st.sidebar:
 snapshot, backup_inventory = _load_runtime_state(page)
 
 hero()
+st.caption(f"All displayed times: {TIMEZONE_LABEL}. Stored research evidence remains in UTC.")
 
 if not snapshot["ready"]:
     st.error(
@@ -627,7 +643,7 @@ if page == "Dashboard":
                 [
                     ("Research daemon", _status_label(daemon_health.get("state")), daemon_health.get("state")),
                     ("Last recorded cycle", _status_label(latest_iteration.get("status") if latest_iteration else None), latest_iteration.get("status") if latest_iteration else None),
-                    ("Last scheduled", str(latest_iteration.get("scheduled_for") or "—") if latest_iteration else "—", "INFO"),
+                    ("Last scheduled", format_local_datetime(latest_iteration.get("scheduled_for")) if latest_iteration else "—", "INFO"),
                     ("Storage & backups", f"{_fmt_count(backup_inventory.get('total_files', 0))} file(s)", "INFO"),
                 ]
             ),
@@ -657,8 +673,8 @@ if page == "Dashboard":
             "Market clock",
             (
                 f'<div style="font-size:2.15rem;font-family:Georgia,serif;color:#F1D08A">{_status_label(market_clock.get("state"))}</div>'
-                f'<div style="margin-top:.45rem;color:#9EB4C3">Session date: {_safe((market_clock.get("session") or {}).get("session_date"))}</div>'
-                f'<div style="margin-top:.2rem">Next sample: <strong>{_safe(market_clock.get("next_sample_at"))}</strong></div>'
+                f'<div style="margin-top:.45rem;color:#9EB4C3">Session date: {format_calendar_date((market_clock.get("session") or {}).get("session_date"))}</div>'
+                f'<div style="margin-top:.2rem">Next sample: <strong>{format_local_datetime(market_clock.get("next_sample_at"))}</strong></div>'
             ),
             badge_label="XNYS",
             badge_tone="info",
@@ -714,13 +730,13 @@ if page == "Dashboard":
             st.warning(
                 f"{prefix}{len(missing_sessions)} completed US market session(s) "
                 "with no recorded daemon cycles in the retained session history: "
-                f"{', '.join(missing_sessions[-8:])}"
+                f"{', '.join(format_calendar_date(day) for day in missing_sessions[-8:])}"
                 + (" (last 8 shown)" if len(missing_sessions) > 8 else "")
             )
         last_at = activity["last_scheduled_at"]
         if last_at:
             st.caption(
-                f"Last scheduled cycle: {last_at} UTC timestamp; "
+                f"Last scheduled cycle: {format_local_datetime(last_at)}; "
                 f"last recorded result: {_status_label(activity['latest_recorded_status'])}. "
                 "This is not a live heartbeat."
             )
@@ -728,7 +744,7 @@ if page == "Dashboard":
             df = pd.DataFrame(recent[::-1])
             df["scheduled_time"] = pd.to_datetime(
                 df["scheduled_for"], utc=True, errors="coerce"
-            )
+            ).dt.tz_convert("Europe/Brussels")
             df = df.dropna(subset=["scheduled_time"])
             if df.empty:
                 st.warning("Recorded cycles have no valid timestamps.")
@@ -747,7 +763,7 @@ if page == "Dashboard":
                     height=275,
                 )
                 chart_note(
-                    "Each point is one recorded cycle at its real time. Gaps are "
+                    "Each point is one recorded cycle in Antwerp local time (CET/CEST). Gaps are "
                     "not connected or filled with invented activity; counts "
                     "measure workflow, not trading performance."
                 )
