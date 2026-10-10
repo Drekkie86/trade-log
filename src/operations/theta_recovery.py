@@ -9,6 +9,11 @@ import subprocess
 from typing import Callable
 
 from src.operations.audit_export import resolve_audit_dir
+from src.operations.theta_restart_intent import (
+    clear_daemon_restart,
+    remember_daemon_restart,
+    restart_intent_pending,
+)
 from src.operations.theta_watchdog import reset_watchdog_state
 from src.providers.thetadata_control import (
     ThetaTerminalHealth,
@@ -95,9 +100,14 @@ def recover_theta(
     if not reason:
         raise ValueError("Recovery reason cannot be blank.")
 
+    # Maintenance is an intentional stop, never an invitation to recover services.
+    if Path("/run/christiania/maintenance.state").exists():
+        raise RuntimeError("Theta recovery is forbidden during managed maintenance.")
+
     observed = _utc_now().isoformat().replace("+00:00", "Z")
     daemon_was_active = active(DAEMON_UNIT)
     daemon_was_failed = False
+    prior_restart_intent = restart_intent_pending(audit_dir)
 
     if not daemon_was_active:
         failed_state = systemctl(
@@ -119,14 +129,18 @@ def recover_theta(
             "reason": reason,
             "daemon_was_active": daemon_was_active,
             "daemon_was_failed": daemon_was_failed,
+            "prior_restart_intent": prior_restart_intent,
         },
         audit_dir=audit_dir,
     )
 
-    if daemon_was_active:
-        systemctl("stop", DAEMON_UNIT)
-
     try:
+        # Persist the obligation BEFORE the stop, so failure in any later
+        # recovery attempt cannot strand an otherwise healthy research daemon.
+        if daemon_was_active or daemon_was_failed:
+            remember_daemon_restart(reason=reason, audit_dir=audit_dir)
+        if daemon_was_active:
+            systemctl("stop", DAEMON_UNIT)
         systemctl("restart", THETA_UNIT)
         health = wait_ready(
             wait_seconds=wait_seconds,
@@ -153,9 +167,11 @@ def recover_theta(
                 check=False,
             )
 
-        if daemon_was_active or daemon_was_failed:
+        if daemon_was_active or daemon_was_failed or prior_restart_intent:
             systemctl("start", DAEMON_UNIT)
             daemon_started = True
+            # Clear the obligation only once the restart command succeeds.
+            clear_daemon_restart(audit_dir=audit_dir)
 
         result = ThetaRecoveryResult(
             observed_at=_utc_now().isoformat().replace("+00:00", "Z"),

@@ -7,10 +7,16 @@ import streamlit as st
 
 def _tone_for_state(state: str | None) -> str:
     value = str(state or "").upper()
+    # Negative states must take priority: "UNHEALTHY" contains "HEALTHY",
+    # and "NOT_READY" contains "READY".
+    if any(token in value for token in (
+        "FAIL", "ERROR", "BLOCKED", "INVALID", "ORPHAN", "DOWN",
+        "UNREACHABLE", "UNHEALTHY", "NOT_READY", "NO_DAEMON_LEASE",
+        "STALE_DAEMON_LEASE",
+    )):
+        return "bad"
     if any(token in value for token in ("READY", "PASS", "HEALTHY", "COMPLETED", "SUCCESS", "VALID", "OPEN")):
         return "good"
-    if any(token in value for token in ("FAIL", "ERROR", "BLOCKED", "INVALID", "ORPHAN", "DOWN", "UNREACHABLE")):
-        return "bad"
     if any(token in value for token in ("WARN", "STALE", "RETRY", "PENDING", "ACCUMULATING", "CLOSED")):
         return "warn"
     return "info"
