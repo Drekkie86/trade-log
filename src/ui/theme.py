@@ -142,40 +142,6 @@ h1, h2, h3 {
   color: #fff;
 }
 
-.chr-hero {
-  border: 1px solid rgba(217,168,78,0.45);
-  border-radius: 14px;
-  padding: 0.75rem 1.25rem;
-  margin-bottom: 0.75rem;
-  background:
-    radial-gradient(circle at 90% 20%, rgba(46,196,214,0.10), transparent 28%),
-    linear-gradient(135deg, rgba(8,40,62,0.97), rgba(3,21,34,0.97));
-  box-shadow: 0 12px 28px rgba(0,0,0,0.22);
-}
-
-.chr-hero-kicker {
-  color: var(--chr-gold);
-  font-size: 0.72rem;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-  font-weight: 700;
-}
-
-.chr-hero-title {
-  color: var(--chr-gold-soft);
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: clamp(1.8rem, 3vw, 2.9rem);
-  line-height: 1.05;
-  letter-spacing: 0.06em;
-  margin: 0.15rem 0 0.35rem;
-}
-
-.chr-hero-subtitle {
-  color: var(--chr-muted);
-  max-width: 900px;
-  font-size: 0.95rem;
-}
-
 .chr-observation {
   border: 1px solid rgba(217,168,78,0.68);
   background: rgba(5, 29, 43, 0.92);

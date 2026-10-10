@@ -63,4 +63,4 @@ def test_dashboard_displays_local_time_without_changing_source_data():
     assert 'format_local_datetime(market_clock.get("next_sample_at"))' in app
     assert 'format_local_datetime(last_at)' in app
     assert 'dt.tz_convert("Europe/Brussels")' in app
-    assert "st.caption(f\"All displayed times: {TIMEZONE_LABEL}" in app
+    assert "All displayed times:" not in app

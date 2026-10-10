@@ -35,6 +35,7 @@ recovered_pairs AS (
 )
 SELECT COUNT(*) AS observation_rows,
        COUNT(DISTINCT us_session_date) AS independent_dates,
+       MAX(us_session_date) AS latest_prospective_session_date,
        SUM(CASE WHEN was_recovered = 1 THEN 1 ELSE 0 END) AS recovered_rows,
        (SELECT COUNT(*) FROM recovered_pairs) AS recovered_samples,
        MIN(prospective_start_session_date) AS prospective_start_session_date
@@ -168,6 +169,7 @@ def _oracle(path):
         return {
             "observation_rows": int(row["observation_rows"] or 0),
             "independent_dates": int(row["independent_dates"] or 0),
+            "latest_prospective_session_date": row["latest_prospective_session_date"],
             "recovered_rows": int(row["recovered_rows"] or 0),
             "recovered_samples": int(row["recovered_samples"] or 0),
             "prospective_start_session_date": row["prospective_start_session_date"],
@@ -281,7 +283,8 @@ def test_new_freeze_resets_partition(seeded):
 def test_empty_database_matches_legacy(db_path):
     read_model._clear_prospective_summary_cache()
     assert _summary(db_path) == {
-        "observation_rows": 0, "independent_dates": 0, "recovered_rows": 0,
+        "observation_rows": 0, "independent_dates": 0,
+        "latest_prospective_session_date": None, "recovered_rows": 0,
         "recovered_samples": 0, "prospective_start_session_date": None,
     }
 
