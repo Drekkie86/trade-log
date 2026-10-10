@@ -64,10 +64,17 @@ def _dependency_version(name: str) -> str | None:
         return None
 
 
-def build_release_manifest(db_path: str | Path | None = None) -> ReleaseManifest:
+def build_release_manifest(
+    db_path: str | Path | None = None,
+    *,
+    deep_integrity: bool = True,
+) -> ReleaseManifest:
     rc, sha = _git("rev-parse", "HEAD")
     rc_status, status = _git("status", "--porcelain")
-    health = inspect_database(db_path)
+    # Release/deployment checks retain strict validation by default.
+    # Interactive operator views may request only schema metadata; deep
+    # integrity and FK verification are expensive on the production DB.
+    health = inspect_database(db_path, deep_integrity=deep_integrity)
     migrations = sorted(MIGRATIONS.glob("*.sql"))
     return ReleaseManifest(
         version=CHRISTIANIA_VERSION,

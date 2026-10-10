@@ -17,6 +17,37 @@ from src.dashboard.read_model import (
 )
 from src.database.repository import resolve_db_path
 from src.operations.sqlite_runtime import open_readonly_connection
+from src.operations.release_manifest import build_release_manifest
+
+
+OPS_RELEASE_MANIFEST_BUDGET_MS = 1000.0
+
+
+def _measure_ops_release_manifest(path: Path, *, runs: int = 3) -> dict[str, object]:
+    """Production-size read-only Ops Release manifest measurement.
+
+    This covers the expensive path that normal read-model page benchmarks miss.
+    Full integrity checks belong solely to explicit readiness and release gates.
+    """
+    if runs < 1:
+        raise ValueError("runs must be positive")
+    timings: list[float] = []
+    for i in range(runs + 1):
+        started = time.perf_counter()
+        manifest = build_release_manifest(path, deep_integrity=False)
+        elapsed = (time.perf_counter() - started) * 1000.0
+        if manifest.schema_version != manifest.expected_schema_version:
+            raise RuntimeError("Ops Release manifest schema does not match.")
+        if i:
+            timings.append(elapsed)
+    median_ms = round(statistics.median(timings), 3)
+    return {
+        "median_ms": median_ms,
+        "budget_ms": OPS_RELEASE_MANIFEST_BUDGET_MS,
+        "within_budget": median_ms <= OPS_RELEASE_MANIFEST_BUDGET_MS,
+        "deep_integrity": False,
+        "runs": runs,
+    }
 
 
 PAGES = (
@@ -451,6 +482,13 @@ def main() -> int:
         )
         for page in pages
     ]
+    ops_release_manifest = _measure_ops_release_manifest(path, runs=args.runs)
+    if not ops_release_manifest["within_budget"]:
+        raise RuntimeError(
+            "Ops Release manifest exceeded interactive performance budget: "
+            f"{ops_release_manifest['median_ms']}ms > "
+            f"{ops_release_manifest['budget_ms']}ms"
+        )
     runtime_activity_after = _runtime_activity_metadata(path)
     database_after = _sqlite_metadata(path)
     prospective_cache_seed = export_prospective_summary_seed(path)
@@ -505,6 +543,7 @@ def main() -> int:
             - int(database_before["wal_bytes"])
         ),
         "pages": measurements,
+        "ops_release_manifest": ops_release_manifest,
         "relative_median_to_full": relative_to_full,
     }
 
