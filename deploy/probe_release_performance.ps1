@@ -192,6 +192,10 @@ try {
                 Write-Host ("{0}: median={1}ms cache={2} bytes unpickle={3}ms" -f `
                     $page.page, $page.wall_ms.median, $page.cache_payload_bytes, $page.pickle_load_ms.median)
             }
+            if ($null -eq $report.ops_release_manifest -or -not [bool]$report.ops_release_manifest.within_budget -or [bool]$report.ops_release_manifest.deep_integrity) {
+                throw "Performance report is missing bounded, metadata-only Ops Release evidence."
+            }
+            Write-Host "ops_release_manifest_median=$($report.ops_release_manifest.median_ms)ms budget=$($report.ops_release_manifest.budget_ms)ms deep_integrity=$($report.ops_release_manifest.deep_integrity)"
             Write-Host "seeded_dashboard_cold=$($report.seeded_cold_dashboard.wall_ms)ms history_rebuild_avoided=$($report.seeded_cold_dashboard.history_rebuild_avoided)"
             Write-Host "wal_delta_bytes=$($report.wal_delta_bytes)"
             Write-Host "performance_report=$reportPath"

@@ -1848,7 +1848,11 @@ elif page == "Ops":
                 "V1.0 release candidate",
                 "Release engineering state and unattended burn-in evidence.",
             )
-            manifest = build_release_manifest().as_dict()
+            # Switching Ops views is an interactive action; the release
+            # fingerprint only needs schema metadata, never a full SQLite
+            # quick_check / foreign_key_check. Explicit deep readiness and
+            # deployment preflights retain their own strict checks.
+            manifest = build_release_manifest(deep_integrity=False).as_dict()
             burn = summarize_burn_in(read_burn_in_samples()).as_dict()
             c1, c2, c3 = st.columns(3)
             c1.metric("Version", CHRISTIANIA_VERSION)

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from christiania_performance_probe import (
     _measure_page,
+    _measure_ops_release_manifest,
     _runtime_activity_metadata,
     _sqlite_metadata,
 )
@@ -59,3 +60,25 @@ def test_performance_probe_records_daemon_activity_context(db_path):
     assert isinstance(activity["cycle_active"], bool)
     assert "latest_iteration" in activity
     assert "daemon_lock" in activity
+
+
+
+def test_performance_probe_includes_bounded_ops_release_manifest(db_path, monkeypatch):
+    from src.operations import release_manifest
+
+    actual = release_manifest.inspect_database
+    depths = []
+
+    def spy(path=None, *, deep_integrity=True):
+        depths.append(deep_integrity)
+        assert not deep_integrity, "Interactive perf proof must not scan full SQLite DB"
+        return actual(path, deep_integrity=False)
+
+    monkeypatch.setattr(release_manifest, "inspect_database", spy)
+    result = _measure_ops_release_manifest(Path(db_path), runs=2)
+    assert result["deep_integrity"] is False
+    assert result["within_budget"] is True
+    assert result["median_ms"] >= 0
+    assert result["budget_ms"] == 1000.0
+    assert result["runs"] == 2
+    assert depths == [False, False, False]

@@ -116,3 +116,40 @@ def test_clear_observation_filters_clears_state_without_crashing(recorded, monke
     clear[0].click().run(timeout=60)
     assert not app.exception, app.exception
     assert app.session_state["_chr_observation_filters"] == {}
+
+
+def test_switching_ops_release_view_never_runs_deep_sqlite_integrity(
+    recorded, monkeypatch,
+):
+    """The UI path must be bounded, not just the read-model benchmark."""
+    from src.operations import release_manifest
+
+    actual_inspect = release_manifest.inspect_database
+    inspections = []
+
+    def manifest_inspect(path=None, *, deep_integrity=True):
+        inspections.append(deep_integrity)
+        if deep_integrity:
+            raise AssertionError(
+                "Ops Release ran PRAGMA quick_check/foreign_key_check"
+            )
+        return actual_inspect(path, deep_integrity=False)
+
+    monkeypatch.setattr(release_manifest, "inspect_database", manifest_inspect)
+    app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    _open_ops(app)
+    release_tab = next(radio for radio in app.radio if radio.label == "Ops view")
+    release_tab.set_value("Release").run(timeout=60)
+    assert not app.exception, app.exception
+    assert inspections == [False]
+    assert recorded["deep_integrity"] == 0
+    assert recorded["deep_backup_inventory"] == 0
+    system_tab = next(radio for radio in app.radio if radio.label == "Ops view")
+    system_tab.set_value("System").run(timeout=60)
+    assert not app.exception, app.exception
+    assert inspections == [False], "System should not rebuild release manifest"
+    readiness_tab = next(radio for radio in app.radio if radio.label == "Ops view")
+    readiness_tab.set_value("Readiness").run(timeout=60)
+    assert not app.exception, app.exception
+    assert recorded["deep_integrity"] == 0
+    assert recorded["deep_backup_inventory"] == 0

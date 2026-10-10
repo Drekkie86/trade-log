@@ -35,3 +35,35 @@ def test_release_manifest_hash_changes_when_migration_bytes_change(db_path, monk
     path.write_text("SELECT 9;", encoding="utf-8")
     second = rm.build_release_manifest(db_path).migration_chain_sha256
     assert first != second
+
+
+def test_interactive_release_manifest_never_performs_integrity_scan(
+    db_path, monkeypatch,
+):
+    """The metadata view must not trigger table-wide PRAGMA scans."""
+    actual = rm.inspect_database
+    called = []
+
+    def spy(path=None, *, deep_integrity=True):
+        called.append(deep_integrity)
+        if deep_integrity:
+            raise AssertionError("Release UI triggered a full database scan")
+        return actual(path, deep_integrity=False)
+
+    monkeypatch.setattr(rm, "inspect_database", spy)
+    manifest = rm.build_release_manifest(db_path, deep_integrity=False)
+    assert manifest.schema_version == EXPECTED_SCHEMA_VERSION
+    assert called == [False]
+
+
+def test_release_manifest_retains_strict_default(db_path, monkeypatch):
+    actual = rm.inspect_database
+    called = []
+
+    def spy(path=None, *, deep_integrity=True):
+        called.append(deep_integrity)
+        return actual(path, deep_integrity=deep_integrity)
+
+    monkeypatch.setattr(rm, "inspect_database", spy)
+    rm.build_release_manifest(db_path)
+    assert called == [True]
