@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from src.config import get_runtime_setting
+from src.operations.theta_mutable_runtime import theta_runtime_jar
 
 
 def theta_auth_mode() -> str:
@@ -18,13 +19,9 @@ def theta_auth_mode() -> str:
     )
 
     if configured:
-        creds = (
-            Path(configured)
-            .expanduser()
-            .resolve()
-            .parent
-            / "creds.txt"
-        )
+        creds = theta_runtime_jar(
+            Path(configured).expanduser()
+        ).parent / "creds.txt"
 
         if creds.is_file():
             return "CREDS_FILE"
@@ -45,12 +42,7 @@ def theta_command() -> list[str]:
             "CHRISTIANIA_THETA_JAR is not configured."
         )
 
-    jar = Path(configured).expanduser()
-
-    if not jar.is_file():
-        raise RuntimeError(
-            f"Theta Terminal jar not found: {jar}"
-        )
+    jar = theta_runtime_jar(Path(configured).expanduser())
 
     java = shutil.which("java")
 
