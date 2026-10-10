@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
+import sys
 import tempfile
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from src.database.repository import EXPECTED_SCHEMA_VERSION
-from src.operations.sqlite_runtime import resolve_backup_dir
+from src.operations.sqlite_runtime import (
+    DEFAULT_BACKUP_MIN_FREE_BYTES,
+    resolve_backup_dir,
+)
 from src.operations.backup_compression import (
     backup_data_files,
     load_compressed_manifest,
@@ -272,7 +278,65 @@ def resolve_restore_drill_backup(
         if compressed:
             return compressed[0]
 
-    return resolve_latest_valid_backup(directory)
+    # Metadata-only current-schema candidate selection. The expensive
+    # SQLite verification belongs to the restored copy, not a deep inventory
+    # of every 15+ GiB backup before the drill even starts.
+    plain: list[Path] = []
+    for path in backup_data_files(directory):
+        if not path.name.endswith(".db"):
+            continue
+        try:
+            with closing(sqlite3.connect(
+                path.resolve().as_uri() + "?mode=ro",
+                uri=True,
+                timeout=5.0,
+            )) as conn:
+                row = conn.execute(
+                    "SELECT MAX(version) FROM schema_version"
+                ).fetchone()
+            if row and int(row[0]) == EXPECTED_SCHEMA_VERSION:
+                plain.append(path)
+        except (sqlite3.Error, TypeError, ValueError, OSError):
+            continue
+    if not plain:
+        raise FileNotFoundError("No current-schema backup candidate is available.")
+    return max(plain, key=lambda path: path.stat().st_mtime)
+
+
+def _restore_drill_capacity_preflight(source: Path) -> int:
+    """Budget the restored database plus reserve before expensive verification.
+
+    This is deliberately read-only. Full recovery evidence is proved only by
+    the subsequent restore and checks, never by this capacity estimate.
+    """
+    source_bytes = (
+        load_compressed_manifest(source).source_size_bytes
+        if source.name.endswith(".db.gz")
+        else source.stat().st_size
+    )
+    if source_bytes <= 0:
+        raise RuntimeError("Restore drill source has no valid positive size.")
+    disk = shutil.disk_usage(tempfile.gettempdir())
+    # 15 GiB reserve on a 150 GiB production disk. On smaller CI runners
+    # retain a proportional reserve rather than demanding more than the disk.
+    reserve_bytes = min(
+        DEFAULT_BACKUP_MIN_FREE_BYTES,
+        max(512 * 1024**2, int(disk.total * 0.10)),
+    )
+    required_bytes = source_bytes + reserve_bytes
+    if disk.free < required_bytes:
+        raise RuntimeError(
+            "RESTORE_DRILL_INSUFFICIENT_SCRATCH_HEADROOM:"
+            f"available={disk.free} required={required_bytes} "
+            f"restored_bytes={source_bytes} reserve_bytes={reserve_bytes}"
+        )
+    print(
+        "[restore-drill] preflight: "
+        f"source_size={source_bytes} scratch_available={disk.free} "
+        f"reserved={reserve_bytes}",
+        file=sys.stderr, flush=True,
+    )
+    return source_bytes
 
 
 def run_restore_drill(backup_path: str | Path) -> RestoreDrillResult:
@@ -280,10 +344,12 @@ def run_restore_drill(backup_path: str | Path) -> RestoreDrillResult:
     if not source.is_file():
         raise FileNotFoundError(f"Backup not found: {source}")
 
+    expected_size = _restore_drill_capacity_preflight(source)
     with tempfile.TemporaryDirectory(prefix="christiania_restore_drill_") as td:
         restored = Path(td) / "restored.db"
 
         if source.name.endswith(".db.gz"):
+            print("[restore-drill] compressed restore and verification: starting", file=sys.stderr, flush=True)
             try:
                 manifest = restore_compressed_backup_to(
                     source,
@@ -294,38 +360,65 @@ def run_restore_drill(backup_path: str | Path) -> RestoreDrillResult:
                     "Compressed backup is not valid for restore drill: "
                     f"{type(exc).__name__}:{exc}"
                 ) from exc
+            # restore_compressed_backup_to() already performs a deep payload
+            # hash and verifies restored schema, integrity and foreign keys.
+            # Avoid repeating another whole-database verification scan.
             source_version = manifest.schema_version
+            restored_version = manifest.schema_version
+            integrity = manifest.integrity_check
+            fk_count = manifest.foreign_key_violation_count
         else:
-            source_version, source_integrity, source_fk, state, detail = (
-                _inspect_sqlite(source)
-            )
-            if state != "VALID" or source_version is None:
-                raise RuntimeError(
-                    f"Backup is not valid for restore drill: {detail}"
-                )
-
-            source_uri = source.resolve().as_uri() + "?mode=ro"
-            source_conn = sqlite3.connect(
-                source_uri,
-                uri=True,
-                timeout=30.0,
-            )
-            target_conn = sqlite3.connect(restored)
+            print("[restore-drill] plain SQLite copy: starting", file=sys.stderr, flush=True)
             try:
-                source_conn.backup(target_conn)
-                target_conn.commit()
-            finally:
-                target_conn.close()
-                source_conn.close()
+                source_uri = source.resolve().as_uri() + "?mode=ro"
+                source_conn = sqlite3.connect(
+                    source_uri, uri=True, timeout=30.0,
+                )
+                try:
+                    row = source_conn.execute(
+                        "SELECT MAX(version) FROM schema_version"
+                    ).fetchone()
+                    source_version = None if not row else row[0]
+                    if source_version != EXPECTED_SCHEMA_VERSION:
+                        raise RuntimeError(
+                            "Backup is not valid for restore drill: SCHEMA_VERSION_MISMATCH"
+                        )
+                    target_conn = sqlite3.connect(restored)
+                    try:
+                        source_conn.backup(target_conn)
+                        target_conn.commit()
+                    finally:
+                        target_conn.close()
+                finally:
+                    source_conn.close()
+            except sqlite3.Error as exc:
+                raise RuntimeError(
+                    "Backup is not valid for restore drill: "
+                    f"{type(exc).__name__}"
+                ) from exc
 
-        restored_version, integrity, fk_count, restored_state, restored_detail = (
-            _inspect_sqlite(restored)
-        )
-        if restored_state != "VALID" or restored_version is None:
-            raise RuntimeError(
-                f"Restored copy failed verification: {restored_detail}"
+            # Fully verify the restored copy once. Both corruption of the
+            # original source and copy failure fail closed here.
+            print("[restore-drill] restored SQLite integrity/FK verification: starting", file=sys.stderr, flush=True)
+            restored_version, integrity, fk_count, state, detail = (
+                _inspect_sqlite(restored)
             )
+            if state != "VALID" or restored_version is None:
+                raise RuntimeError(
+                    f"Restored copy failed verification: {detail}"
+                )
         restored_size = restored.stat().st_size
+        if restored_size != expected_size:
+            raise RuntimeError(
+                "RESTORE_DRILL_SIZE_MISMATCH:"
+                f"expected={expected_size} observed={restored_size}"
+            )
+        print(
+            "[restore-drill] restored SQLite: VERIFIED "
+            f"size={restored_size} schema={restored_version} "
+            f"integrity={integrity} foreign_keys={fk_count}",
+            file=sys.stderr, flush=True,
+        )
 
     return RestoreDrillResult(
         source_backup=str(source), source_schema_version=source_version,
