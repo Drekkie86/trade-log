@@ -713,7 +713,7 @@ if page == "Dashboard":
             prefix = "At least " if activity["window_truncated"] else ""
             st.warning(
                 f"{prefix}{len(missing_sessions)} completed US market session(s) "
-                "with no recorded daemon cycles since the latest observation: "
+                "with no recorded daemon cycles in the retained session history: "
                 f"{', '.join(missing_sessions[-8:])}"
                 + (" (last 8 shown)" if len(missing_sessions) > 8 else "")
             )
