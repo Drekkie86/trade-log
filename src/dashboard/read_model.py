@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -668,6 +668,7 @@ def load_command_deck(
     lifecycle_health: dict[str, Any] = {}
     theta_timestamp_semantics = None
     recent_iterations: list[dict[str, Any]] = []
+    recorded_daemon_session_dates: list[str] = []
     universe_coverage: dict[str, Any] = {}
     recent_anomalies: list[dict[str, Any]] = []
     recent_proposals: list[dict[str, Any]] = []
@@ -1243,6 +1244,23 @@ def load_command_deck(
                     '''
                 ).fetchall()
             )
+
+            # The 25 plotted cycles alone cannot retain a four-day outage
+            # once research resumes. One index-bounded historical date scan
+            # keeps missing completed sessions visible for 35 calendar days.
+            since = (datetime.now(UTC) - timedelta(days=35)).date().isoformat()
+            recorded_daemon_session_dates = [
+                str(row["session_date"])
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT substr(scheduled_for, 1, 10) AS session_date
+                    FROM research_daemon_iterations
+                    WHERE scheduled_for >= ?
+                    ORDER BY scheduled_for;
+                    """,
+                    (since,),
+                ).fetchall()
+            ]
 
             universe_symbols: set[str] = set()
             universe_profile = None
@@ -2038,6 +2056,7 @@ def load_command_deck(
         "replay_outcome_recovery": replay_outcome_recovery,
         "lifecycle_health": lifecycle_health,
         "recent_iterations": recent_iterations,
+        "recorded_daemon_session_dates": recorded_daemon_session_dates,
         "universe_coverage": universe_coverage,
         "recent_anomalies": recent_anomalies,
         "recent_proposals": recent_proposals,

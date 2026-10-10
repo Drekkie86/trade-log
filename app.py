@@ -17,6 +17,7 @@ from src.decision import (
 import pandas as pd
 import streamlit as st
 
+from src.dashboard.daemon_activity_presentation import summarize_daemon_activity
 from src.dashboard.read_model import load_command_deck
 from src.operations.backup_recovery import (
     inventory_backups,
@@ -625,7 +626,8 @@ if page == "Dashboard":
             _html_rows(
                 [
                     ("Research daemon", _status_label(daemon_health.get("state")), daemon_health.get("state")),
-                    ("Latest cycle", _status_label(latest_iteration.get("status") if latest_iteration else None), latest_iteration.get("status") if latest_iteration else None),
+                    ("Last recorded cycle", _status_label(latest_iteration.get("status") if latest_iteration else None), latest_iteration.get("status") if latest_iteration else None),
+                    ("Last scheduled", str(latest_iteration.get("scheduled_for") or "—") if latest_iteration else "—", "INFO"),
                     ("Storage & backups", f"{_fmt_count(backup_inventory.get('total_files', 0))} file(s)", "INFO"),
                 ]
             ),
@@ -691,17 +693,64 @@ if page == "Dashboard":
 
     chart_left, chart_right = st.columns([1, 1.35])
     with chart_left:
-        section_heading("Recent daemon activity")
+        section_heading(
+            "Last recorded daemon cycles",
+            "Historical cycle counts by actual scheduled time, not service uptime.",
+        )
         recent = snapshot.get("recent_iterations", [])
+        activity = summarize_daemon_activity(
+            recent,
+            daemon_state=daemon_health.get("state", "UNKNOWN"),
+            recorded_session_dates=snapshot.get("recorded_daemon_session_dates", []),
+        )
+        if not activity["live_healthy"]:
+            st.error(
+                "Research daemon is not currently confirmed healthy "
+                f"({activity['daemon_state']}). Recorded cycles below may be old."
+            )
+        missing_sessions = activity["missing_completed_sessions"]
+        if missing_sessions:
+            prefix = "At least " if activity["window_truncated"] else ""
+            st.warning(
+                f"{prefix}{len(missing_sessions)} completed US market session(s) "
+                "with no recorded daemon cycles in the retained session history: "
+                f"{', '.join(missing_sessions[-8:])}"
+                + (" (last 8 shown)" if len(missing_sessions) > 8 else "")
+            )
+        last_at = activity["last_scheduled_at"]
+        if last_at:
+            st.caption(
+                f"Last scheduled cycle: {last_at} UTC timestamp; "
+                f"last recorded result: {_status_label(activity['latest_recorded_status'])}. "
+                "This is not a live heartbeat."
+            )
         if recent:
             df = pd.DataFrame(recent[::-1])
-            df["cycle"] = range(1, len(df) + 1)
-            chart_df = df.set_index("cycle")[["proposals_count", "blocked_count", "outcome_mark_count"]].fillna(0)
-            st.line_chart(chart_df, height=275)
-            chart_note(
-                "Shows proposal, block and shadow-mark counts across the most recent daemon cycles; "
-                "it is operational activity, not performance."
+            df["scheduled_time"] = pd.to_datetime(
+                df["scheduled_for"], utc=True, errors="coerce"
             )
+            df = df.dropna(subset=["scheduled_time"])
+            if df.empty:
+                st.warning("Recorded cycles have no valid timestamps.")
+            else:
+                chart_df = df.melt(
+                    id_vars=["scheduled_time"],
+                    value_vars=["proposals_count", "blocked_count", "outcome_mark_count"],
+                    var_name="Metric",
+                    value_name="Count",
+                )
+                chart_df["Count"] = pd.to_numeric(
+                    chart_df["Count"], errors="coerce"
+                ).fillna(0)
+                st.scatter_chart(
+                    chart_df, x="scheduled_time", y="Count", color="Metric",
+                    height=275,
+                )
+                chart_note(
+                    "Each point is one recorded cycle at its real time. Gaps are "
+                    "not connected or filled with invented activity; counts "
+                    "measure workflow, not trading performance."
+                )
         else:
             st.info("No daemon iterations recorded.")
 
