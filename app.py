@@ -30,7 +30,7 @@ from src.operations.backup_recovery import (
     inventory_backups_fast,
 )
 from src.operations.burn_in import read_burn_in_samples, summarize_burn_in
-from src.operations.release_manifest import build_release_manifest
+from src.operations.release_manifest import build_release_manifest, read_deployed_commit
 from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
 from src.research.cash_settled_universe import cash_settled_research_universe
@@ -1845,27 +1845,69 @@ elif page == "Ops":
 
         elif ops_view == "Release":
             section_heading(
-                "V1.0 release candidate",
-                "Release engineering state and unattended burn-in evidence.",
+                "Current deployment",
+                "Deployed revision and historical release evidence.",
             )
-            # Switching Ops views is an interactive action; the release
-            # fingerprint only needs schema metadata, never a full SQLite
-            # quick_check / foreign_key_check. Explicit deep readiness and
-            # deployment preflights retain their own strict checks.
+            # Never re-run deep SQLite scans when changing an interactive
+            # Ops view. Actual release/deployment gates remain strict.
             manifest = build_release_manifest(deep_integrity=False).as_dict()
+            deployed_commit = read_deployed_commit()
             burn = summarize_burn_in(read_burn_in_samples()).as_dict()
+
             c1, c2, c3 = st.columns(3)
-            c1.metric("Version", CHRISTIANIA_VERSION)
-            c2.metric("Git state", "Clean" if manifest["git_clean"] else "Dirty / unavailable")
-            c3.metric("Burn-in", _status_label(burn["state"]), f"{_fmt_number(burn['duration_hours'], decimals=1)}h")
-            section_heading("Release fingerprint")
-            st.json(manifest)
-            section_heading("Burn-in report")
-            st.json(burn)
-            st.info(
-                "Final V1.0 promotion requires clean-VM deployment, HTTPS/OIDC, real reboot/autostart, "
-                "72h unattended burn-in, and independent live Theta timestamp validation."
+            c1.metric(
+                "Deployed revision",
+                deployed_commit[:12] if deployed_commit else "Unavailable",
             )
+            actual_schema = manifest.get("schema_version")
+            expected_schema = manifest.get("expected_schema_version")
+            c2.metric(
+                "Database schema",
+                f"v{actual_schema}" if actual_schema is not None else "Unknown",
+                f"expected v{expected_schema}",
+            )
+            c3.metric(
+                "Historical unhealthy samples",
+                _fmt_count(burn["unhealthy_samples"])
+                if burn["sample_count"] else "No record",
+            )
+            if deployed_commit:
+                st.caption("Full deployed commit (read from the release marker):")
+                st.code(deployed_commit, language=None)
+            else:
+                st.warning(
+                    "Deployed commit marker is unavailable or invalid. "
+                    "Do not infer release identity from the product version."
+                )
+            st.caption(
+                f"Product version: {CHRISTIANIA_VERSION} "
+                f"({manifest['release_channel']}). "
+                "This static label is not a deployment identifier. "
+                "Git working-tree status is not meaningful for packaged production releases."
+            )
+
+            section_heading(
+                "Historical burn-in",
+                "Collected observations, not current uptime or release approval.",
+            )
+            if burn["sample_count"]:
+                st.caption(
+                    f"{_fmt_count(burn['sample_count'])} recorded samples from "
+                    f"{format_local_datetime(burn['first_observed_at'])} "
+                    f"to {format_local_datetime(burn['last_observed_at'])}. "
+                    f"Historical status: {_status_label(burn['state'])}. "
+                    "See System for current runtime diagnostics."
+                )
+            else:
+                st.info("No historical burn-in observations are recorded.")
+
+            with st.expander("Historical burn-in details"):
+                st.json(burn)
+            with st.expander("Technical release fingerprint"):
+                st.json({
+                    key: value for key, value in manifest.items()
+                    if key not in {"git_sha", "git_clean"}
+                })
 
         else:
             section_heading("System", "Runtime, database and provider diagnostics.")
