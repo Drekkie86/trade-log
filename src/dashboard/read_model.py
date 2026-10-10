@@ -491,6 +491,7 @@ def _load_prospective_summary_in_snapshot(
     return {
         "observation_rows": part["observation_rows"],
         "independent_dates": len(part["dates"]),
+        "latest_prospective_session_date": max(part["dates"], default=None),
         "recovered_rows": part["recovered_rows"],
         "recovered_samples": part["recovered_samples"],
         "prospective_start_session_date": part["prospective_start_session_date"],
@@ -646,6 +647,7 @@ def load_command_deck(
     prospective = {
         "observation_rows": 0,
         "independent_dates": 0,
+        "latest_prospective_session_date": None,
         "recovered_rows": 0,
         "recovered_samples": 0,
         "prospective_start_session_date": None,

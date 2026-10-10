@@ -20,7 +20,6 @@ import streamlit as st
 from src.dashboard.daemon_activity_presentation import summarize_daemon_activity
 from src.dashboard.read_model import load_command_deck
 from src.ui.datetime_display import (
-    TIMEZONE_LABEL,
     format_calendar_date,
     format_local_datetime,
     is_operator_date_column,
@@ -42,7 +41,6 @@ from src.quant.types import QuantInputError, VanillaOption
 from src.ui import (
     badge,
     card,
-    hero,
     inject_christiania_theme,
     section_heading,
     status_dot,
@@ -555,10 +553,6 @@ def _cached_deep_ops_readiness():
 with st.sidebar:
     if LOGO_PATH.exists():
         st.image(str(LOGO_PATH), width="stretch")
-    st.markdown(
-        '<div class="chr-side-caption">NO CRYING IN THE CASINO</div>',
-        unsafe_allow_html=True,
-    )
     st.divider()
 
     page = st.radio(
@@ -587,9 +581,6 @@ with st.sidebar:
     st.caption(f"Christiania {CHRISTIANIA_VERSION}")
 
 snapshot, backup_inventory = _load_runtime_state(page)
-
-hero()
-st.caption(f"All displayed times: {TIMEZONE_LABEL}. Stored research evidence remains in UTC.")
 
 if not snapshot["ready"]:
     st.error(
@@ -1181,15 +1172,21 @@ elif page == "Calibration":
             "Decision and admission flags remain authoritative."
         )
         c1, c2, c3 = st.columns(3)
-        c1.metric("Independent dates", _fmt_count(prospective["independent_dates"]), "first descriptive review at 5")
+        c1.metric("Independent prospective dates", _fmt_count(prospective["independent_dates"]), "first descriptive review at 5")
         c2.metric("Prospective rows", _fmt_count(prospective["observation_rows"]))
         c3.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "visible covariate")
+        last_eligible_date = prospective.get("latest_prospective_session_date")
+        st.caption(
+            "Latest eligible prospective research session: "
+            f"{format_calendar_date(last_eligible_date)}. "
+            "Retrospectively retrieved historical quotes do not count as new prospective dates."
+        )
         _visual_note(
             "This is evidence maturity, not a trading score. Independent dates are the main clock because repeated rows "
             "inside one market day are not independent new days."
         )
 
-        st.progress(_pct(prospective["independent_dates"], 20), text=f"{prospective['independent_dates']}/20 dates toward preregistration review")
+        st.progress(_pct(prospective["independent_dates"], 20), text=f"{prospective['independent_dates']}/20 prospective dates toward preregistration review")
 
         section_heading("Frozen hypotheses")
         _show_table(snapshot.get("hypotheses", []))

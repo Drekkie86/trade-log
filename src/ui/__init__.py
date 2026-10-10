@@ -5,7 +5,6 @@ from .components import (
     badge,
     chart_note,
     card,
-    hero,
     section_heading,
     status_dot,
 )
@@ -16,7 +15,6 @@ __all__ = [
     "badge",
     "chart_note",
     "card",
-    "hero",
     "section_heading",
     "status_dot",
 ]

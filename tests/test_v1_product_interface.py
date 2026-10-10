@@ -104,10 +104,10 @@ def test_ui_polish_keeps_navigation_fast_and_explanatory():
     assert "padding-top: 5.75rem" in theme
 
 
-def test_sidebar_uses_new_motto_and_removes_old_quote():
+def test_sidebar_motto_is_removed():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
 
-    assert "NO CRYING IN THE CASINO" in app
+    assert "NO CRYING IN THE CASINO" not in app
     assert "BETTER QUESTIONS" not in app
     assert "LEAD TO CALMER SEAS" not in app
 
@@ -141,7 +141,7 @@ def test_global_header_copy_is_minimal_and_not_patronizing():
     assert "V1 Research Workstation" not in components
     assert "one disciplined deck" not in app
     assert "Surfaced anomalies and model disagreement are not trade signals" not in components
-    assert "<div class=\"chr-hero-title\">CHRISTIANIA</div>" in components
+    assert "<div class=\"chr-hero-title\">CHRISTIANIA</div>" not in components
 
 
 def test_shadow_lab_separates_thesis_and_validated_trade_result():
@@ -269,8 +269,8 @@ def test_speculative_lab_name_does_not_brand_feature_as_casino():
     assert "Storm Cellar / 0DTE Lab" in app
     assert "<h3>🎲 Casino / 0DTE Lab" not in app
     assert "Casino in spirit, quant in discipline" not in app
-    # The intentionally retained sidebar motto is branding, not the feature name.
-    assert "NO CRYING IN THE CASINO" in app
+    # The old sidebar motto is intentionally removed.
+    assert "NO CRYING IN THE CASINO" not in app
 
 
 def test_ops_failure_counts_have_warning_semantics():

@@ -38,17 +38,6 @@ def status_dot(state: str | None) -> str:
     return f'<span class="chr-dot" style="color:{color};background:{color}"></span>'
 
 
-def hero() -> None:
-    st.markdown(
-        """
-        <div class="chr-hero">
-          <div class="chr-hero-title">CHRISTIANIA</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def section_heading(title: str, caption: str | None = None) -> None:
     caption_html = f"<p>{escape(caption)}</p>" if caption else ""
     st.markdown(
