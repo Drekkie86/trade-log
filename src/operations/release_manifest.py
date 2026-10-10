@@ -64,6 +64,23 @@ def _dependency_version(name: str) -> str | None:
         return None
 
 
+def read_deployed_commit(
+    path: str | Path = "/opt/christiania/DEPLOYED_COMMIT",
+) -> str | None:
+    """The release receiver's authoritative, immutable SHA marker.
+
+    A missing/malformed marker is *unknown*, never a dirty Git checkout.
+    Reading this file does not invoke Git or inspect the database.
+    """
+    try:
+        candidate = Path(path).read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return None
+    if len(candidate) != 40 or any(c not in "0123456789abcdef" for c in candidate):
+        return None
+    return candidate
+
+
 def build_release_manifest(
     db_path: str | Path | None = None,
     *,

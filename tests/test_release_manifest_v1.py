@@ -67,3 +67,43 @@ def test_release_manifest_retains_strict_default(db_path, monkeypatch):
     monkeypatch.setattr(rm, "inspect_database", spy)
     rm.build_release_manifest(db_path)
     assert called == [True]
+
+
+
+def test_deployed_marker_reads_full_validated_sha_without_git(tmp_path, monkeypatch):
+    marker = tmp_path / "DEPLOYED_COMMIT"
+    sha = "376cba5ad8d30d2dbe9a8673a9bd3933644cf6af"
+    marker.write_text(sha.upper() + "\n", encoding="utf-8")
+
+    def unexpected_git(*_args):
+        raise AssertionError("Release marker must not invoke Git")
+
+    monkeypatch.setattr(rm, "_git", unexpected_git)
+    assert rm.read_deployed_commit(marker) == sha
+
+
+def test_missing_or_malformed_marker_fails_as_unknown(tmp_path):
+    marker = tmp_path / "DEPLOYED_COMMIT"
+    assert rm.read_deployed_commit(marker) is None
+    for content in ("", "1.0.0-rc1", "a" * 39, "z" * 40):
+        marker.write_text(content, encoding="utf-8")
+        assert rm.read_deployed_commit(marker) is None
+
+
+def test_ops_release_shows_deployed_revision_not_checkout_status():
+    app = (Path(__file__).resolve().parents[1] / "app.py").read_text(
+        encoding="utf-8"
+    )
+    ops = app.split('elif page == "Ops":', 1)[1]
+    release = ops.split('elif ops_view == "Release":', 1)[1].split(
+        '        else:\n            section_heading("System"', 1
+    )[0]
+    assert 'read_deployed_commit()' in release
+    assert '"Deployed revision"' in release
+    assert '"Historical unhealthy samples"' in release
+    assert 'build_release_manifest(deep_integrity=False)' in release
+    assert 'with st.expander("Technical release fingerprint")' in release
+    assert 'f"Product version: {CHRISTIANIA_VERSION} "' in release
+    assert '"Git state"' not in release
+    assert 'c1.metric("Version"' not in release
+    assert 'Dirty / unavailable' not in release
