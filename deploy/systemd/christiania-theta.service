@@ -9,6 +9,9 @@ Wants=network-online.target
 Type=simple
 User=christiania
 Group=christiania
+# Only Theta's state (not the immutable application release) is writable.
+StateDirectory=christiania-theta
+StateDirectoryMode=0700
 WorkingDirectory=/opt/christiania
 EnvironmentFile=/etc/christiania/christiania.env
 ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_theta_terminal.py
