@@ -89,7 +89,7 @@ def theta_runtime_jar(source_jar: Path) -> Path:
     state_path = os.environ.get("STATE_DIRECTORY", "").strip()
     if not state_path:
         if not _checked_regular_file(source_jar):
-            raise FileNotFoundError(f"Theta Terminal jar not found: {source_jar}")
+            raise RuntimeError(f"Theta Terminal jar not found: {source_jar}")
         return source_jar
 
     if os.pathsep in state_path:
