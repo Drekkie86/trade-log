@@ -15,6 +15,7 @@ def seed_proposal(
     db_path,
     *,
     max_loss_usd_minor=20_000,
+    lower_wing_quote_at: str | None = None,
 ):
     conn = get_connection(db_path)
 
@@ -213,6 +214,45 @@ def seed_proposal(
             ).lastrowid
         )
 
+        # Three distinct quote identities; never reuse the target quote
+        # for synthetic lower/upper butterfly wings.
+        wing_quote_ids = {}
+        for strike, symbol in ((95, "THETA:LOWER"), (105, "THETA:UPPER")):
+            wing_timestamp = (
+                lower_wing_quote_at if strike == 95 and lower_wing_quote_at is not None
+                else "2026-09-01T14:00:00"
+            )
+            wing_quote_ids[strike] = int(conn.execute(
+                """
+                INSERT INTO option_quotes (
+                    snapshot_id, provider_contract_id, right, strike,
+                    expiration, quote_at, bid, bid_source, bid_at,
+                    ask, ask_source, ask_at, last_source, iv_source,
+                    delta_source, gamma_source, theta_source, vega_source,
+                    volume_source, open_interest_source
+                )
+                SELECT snapshot_id, ?, right, ?, expiration, ?,
+                    bid, bid_source, ?, ask, ask_source, ?,
+                    last_source, iv_source, delta_source, gamma_source,
+                    theta_source, vega_source, volume_source, open_interest_source
+                FROM option_quotes WHERE id = ?;
+                """, (symbol, strike, wing_timestamp, wing_timestamp, wing_timestamp, option_quote_id)
+            ).lastrowid)
+
+        conn.execute(
+            """
+            INSERT INTO thetadata_timestamp_semantics_v1_runs (
+                semantics_version, validated_at, documented_market_timezone,
+                summer_offset_hours, winter_offset_hours, aware_conversion_pass,
+                dst_contract_pass, documentation_contract_pass,
+                live_probe_state, confidence_state, evidence_json, decision_enabled
+            )
+            VALUES ('1.0.0', '2026-09-01T18:00:00Z', 'America/New_York',
+                    -4, -5, 1, 1, 1, 'PASSED',
+                    'DOCUMENTED_AND_LIVE_VALIDATED', '{"synthetic_test":true}', 0);
+            """
+        )
+
         conn.execute(
             """
             INSERT INTO provider_model_observations (
@@ -397,7 +437,7 @@ def seed_proposal(
                                     "reference_contract_id":
                                         reference_id,
                                     "option_quote_id":
-                                        option_quote_id,
+                                        wing_quote_ids[95],
                                     "strike": 95.0,
                                     "right": "C",
                                     "quantity": 1,
@@ -419,7 +459,7 @@ def seed_proposal(
                                     "reference_contract_id":
                                         reference_id,
                                     "option_quote_id":
-                                        option_quote_id,
+                                        wing_quote_ids[105],
                                     "strike": 105.0,
                                     "right": "C",
                                     "quantity": 1,

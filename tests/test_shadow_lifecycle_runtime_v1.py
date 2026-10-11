@@ -3,6 +3,18 @@ from src.research.shadow_admission import admit_shadow_proposals
 from src.research.shadow_lifecycle_runtime import advance_shadow_lifecycle
 from tests._shadow_admission_seed import fx, seed_proposal
 
+import pytest
+import src.research.shadow_intrinsic_admission_v1 as active_shadow_admission
+
+
+@pytest.fixture(autouse=True)
+def _freeze_synthetic_admission_clock(monkeypatch):
+    """Only these archived synthetic fixtures run at a frozen session clock."""
+    monkeypatch.setattr(
+        active_shadow_admission, "_now_utc",
+        lambda: "2026-09-01T18:00:10.000Z",
+    )
+
 
 def _candidate(db_path):
     seeded = seed_proposal(db_path, max_loss_usd_minor=20_000)
