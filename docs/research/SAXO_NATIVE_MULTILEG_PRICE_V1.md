@@ -40,7 +40,10 @@ No subscription or broker session mutation is implemented here.
 - Validate response exact UIC/amount/side/asset-type set, avoid
   duplicate legs, market open and short-trade enabled. Require
   actual Saxo quote source, as-of timestamp within 15 seconds,
-  realtime delay=0, Firm source type and Tradable bid/ask type.
+  realtime delay=0 and Tradable bid/ask quality. The documented
+  native TradableQuote has no PriceSourceType field; requiring the
+  unrelated InfoPrices-only Firm classifier incorrectly blocks
+  legitimate native package responses.
 - Price may legitimately be *signed* for net-credit strategies.
   Do not reject negative package values; require finite bid<=ask.
 - Require package bid and ask size >=1 to mark the reference

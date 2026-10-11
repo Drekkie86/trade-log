@@ -33,7 +33,7 @@ def sample_response(**changes):
         "Quote":{
             "Bid":-1.8,"Ask":-1.5, # signed credit spread is allowed
             "BidSize":2,"AskSize":2,
-            "PriceSource":"OPRA","PriceSourceType":"Firm",
+            "PriceSource":"OPRA",
             "PriceTypeAsk":"Tradable","PriceTypeBid":"Tradable",
             "DelayedByMinutes":0,"ErrorCode":"None",
         },
@@ -131,7 +131,7 @@ def test_delayed_broker_package_quote_is_not_firm():
     resp["Quote"]["DelayedByMinutes"]=15
     resp["Quote"]["PriceTypeAsk"]="OldIndicative"
     r,c,t=run(transport=CapturedTransport(resp))
-    assert "PACKAGE_QUOTE_NOT_FIRM_OR_NOT_REALTIME" in r.reasons
+    assert "PACKAGE_QUOTE_NOT_TRADABLE_OR_NOT_REALTIME" in r.reasons
     assert r.status=="UNVERIFIED_OR_UNAVAILABLE_PACKAGE_PRICE"
 
 

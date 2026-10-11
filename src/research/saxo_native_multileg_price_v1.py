@@ -243,12 +243,13 @@ def observe_multileg_strategy_price(
         if not 0<=age<=MAX_ASOF_AGE_SECONDS:
             failures.add("PACKAGE_QUOTE_STALE_OR_FUTURE")
         info["age"]=round(age,3)
-        if (str(top_quote.get("PriceSourceType","")).strip().upper()!="FIRM"
-                or str(top_quote.get("PriceTypeBid","")).strip().upper()!="TRADABLE"
+        # Saxo TradableQuote has PriceTypeBid / PriceTypeAsk, not the
+        # InfoPrices-only PriceSourceType classification.
+        if (str(top_quote.get("PriceTypeBid","")).strip().upper()!="TRADABLE"
                 or str(top_quote.get("PriceTypeAsk","")).strip().upper()!="TRADABLE"
                 or top_quote.get("DelayedByMinutes") != 0 or
                 top_quote.get("ErrorCode")!="None"):
-            failures.add("PACKAGE_QUOTE_NOT_FIRM_OR_NOT_REALTIME")
+            failures.add("PACKAGE_QUOTE_NOT_TRADABLE_OR_NOT_REALTIME")
         source=top_quote.get("PriceSource") or response.get("PriceSource")
         if not source:
             failures.add("PACKAGE_PRICE_SOURCE_MISSING")
