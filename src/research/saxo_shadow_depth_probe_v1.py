@@ -27,6 +27,7 @@ VERSION = "BOUNDED_SAXO_CANDIDATE_LEG_SAMPLE_V1"
 MAX_LEGS = 4
 MAX_SOURCE_AGE_SECONDS = 15
 MAX_CROSS_LEG_SKEW_SECONDS = 15
+MAX_GROUP_WALL_SECONDS = 15
 MAX_SQL_TIME_SECONDS = 1.0
 
 
@@ -249,19 +250,39 @@ def capture_candidate_saxo_depth(
     evidence: list[SaxoLegEvidence] = []
     reasons: set[str] = set()
     quote_moments: list[datetime] = []
-    for leg in legs:
+    try:
+        # One root lookup and one shared option-space lookup per expiry.
+        # No prices are requested until ALL frozen contract identities resolve.
+        contracts = saxo_client.find_option_contracts_batch(
+            underlying=legs[0].underlying,
+            requests=[
+                (l.expiration, l.strike, "Call" if l.right == "C" else "Put")
+                for l in legs
+            ],
+        )
+        if len(contracts) != len(legs):
+            return _finish(candidate_id, now, len(legs), [], {
+                "SAXO_BATCH_INCOMPLETE_CONTRACT_RESOLUTION"})
+        after_resolution = now_fn()
+        if (after_resolution.tzinfo is None or
+                after_resolution.utcoffset() is None or
+                (after_resolution.astimezone(UTC)-now).total_seconds() < 0 or
+                (after_resolution.astimezone(UTC)-now).total_seconds()
+                > MAX_GROUP_WALL_SECONDS):
+            return _finish(candidate_id, now, len(legs), [], {
+                "SAXO_SAMPLE_TIME_BUDGET_EXCEEDED"})
+    except Exception:
+        # Do not print Saxo provider exception bodies, tokens or responses.
+        return _finish(candidate_id, now, len(legs), [], {
+            "SAXO_BATCH_CONTRACT_RESOLUTION_FAILED"})
+    for leg, contract in zip(legs, contracts):
         began = now_fn()
         if began.tzinfo is None or began.utcoffset() is None:
             reasons.add("SAMPLING_CLOCK_UNVERIFIED")
             break
         began = began.astimezone(UTC)
         try:
-            contract, quote = saxo_client.get_option_contract_and_quote(
-                underlying=leg.underlying,
-                expiration=leg.expiration,
-                strike=leg.strike,
-                put_call="Call" if leg.right == "C" else "Put",
-            )
+            quote = saxo_client.get_option_quote(contract.uic)
         except Exception:
             # Failure type only: exception bodies may contain provider secrets.
             reasons.add("SAXO_PROVIDER_READ_OR_RESOLUTION_FAILED")
@@ -271,6 +292,9 @@ def capture_candidate_saxo_depth(
             reasons.add("SAMPLING_CLOCK_UNVERIFIED")
             break
         completed = completed.astimezone(UTC)
+        if (completed-now).total_seconds() > MAX_GROUP_WALL_SECONDS:
+            reasons.add("SAXO_SAMPLE_TIME_BUDGET_EXCEEDED")
+            break
         try:
             contract_right = str(contract.put_call).strip().upper()
             if (completed < began or

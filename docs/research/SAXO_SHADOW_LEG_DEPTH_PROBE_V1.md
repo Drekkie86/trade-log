@@ -18,8 +18,10 @@ The new module src/research/saxo_shadow_depth_probe_v1.py:
 
 - Samples ONE explicitly selected candidate, maximum FOUR unique
   frozen option legs. At most four calls to the existing
-  SaxoClient.get_option_contract_and_quote interface, GET-only.
-  Underlying Saxo client may make several HTTP calls per leg.
+  SaxoClient.get_option_quote GET-only calls, after ONE shared
+  SaxoClient.find_option_contracts_batch root+option-space resolution.
+  For same-expiry legs this bounds discovery to one root lookup
+  and one option-space lookup, then no more than four quote GETs.
 - All provider requests disabled unless allow_provider_get=True.
   Never manages Saxo tokens, refreshes accounts, or places orders.
   Caller injects an already authorized read-only SaxoClient.
@@ -35,9 +37,11 @@ The new module src/research/saxo_shadow_depth_probe_v1.py:
   noncrossed bid/ask, adequate size on BOTH sides, observed source
   quote no more than 15 seconds before fetch completion, 15-second
   maximum cross-leg as-of skew and no future evidence.
-- Stops on first provider/identity/timestamp failure. Provider
-  exception bodies are never copied into the audit (may contain
-  secrets). Produces in-memory evidence with source prices,
+- Stops on first provider/identity/timestamp failure. Explicitly
+  blocks when the total resolution/sample interval exceeds 15 seconds,
+  although a blocking Saxo HTTP call can still hit its own timeout.
+  Provider exception bodies are never copied into the audit (may
+  contain secrets). Produces in-memory evidence with source prices,
   sizes, timestamps, provider quality and SHA-256 digest.
 
 Even with every check passing, each candidate sample MUST remain
@@ -49,10 +53,10 @@ fill verification, automatic outcome scoring, DB insertion or order.
 
 - Saxo credentials, entitlements and next-session quote freshness
   need independent testing. Fake provider tests never prove validity.
-- Four-leg limit bounds the number of logical samples, but the
-  current Saxo contract resolver repeats option root/space lookup
-  for every leg. Before unattended sampling, add shared root and
-  expiry-space reuse and measure worst-case end-to-end latency.
+- Batch resolver now reuses the Saxo root/option-space for all
+  same-expiry legs, reducing upstream discovery calls. This needs
+  end-to-end provider latency, rate limit and entitlement profiling
+  against real Saxo data before any unattended sampling.
 - No persistent append-only Saxo shadow research journal or
   supervised daemon integration yet. That must come next, with
   deduplicated sessions, explicit failed attempts and strict resource

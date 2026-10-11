@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.providers.saxo import SaxoOptionContract, SaxoOptionQuote
+from src.providers.saxo import (
+    SaxoOptionContract, SaxoOptionQuote, SaxoClient,
+    SaxoContractResolutionError,
+)
 from src.research.saxo_shadow_depth_probe_v1 import capture_candidate_saxo_depth
 
 NOW = datetime(2026, 10, 12, 14, 0, 0, tzinfo=timezone.utc)
@@ -61,28 +64,38 @@ class FakeSaxo:
     def __init__(self, *, stamp=None, size=3, mismatch=False,
                  price_source_type="FIRM", fails=False):
         self.calls=[]
+        self.resolution_calls=0
+        self.contracts_by_uic={}
         self.stamp=stamp or "2026-10-12T13:59:58Z"
         self.size=size
         self.mismatch=mismatch
         self.price_source_type=price_source_type
         self.fails=fails
 
-    def get_option_contract_and_quote(self, *, underlying, expiration,
-                                      strike, put_call):
-        self.calls.append((underlying,expiration,strike,put_call))
+    def find_option_contracts_batch(self, *, underlying, requests):
+        self.resolution_calls+=1
+        result=[]
+        for expiration,strike,put_call in requests:
+            uic=1000+int(strike)
+            contract=SaxoOptionContract(
+                uic=uic,option_root_id=5,underlying_uic=17,
+                underlying=underlying,put_call=put_call,
+                strike=strike,expiration=expiration,
+                trading_status="Tradable",
+                contract_size=10 if self.mismatch else 100)
+            self.contracts_by_uic[uic]=contract
+            result.append(contract)
+        return result
+
+    def get_option_quote(self, uic):
+        contract=self.contracts_by_uic[uic]
+        self.calls.append((contract.underlying,contract.expiration,
+                           contract.strike,contract.put_call))
         if self.fails:
             raise RuntimeError("SYNTHETIC_PROVIDER_FAILURE_WITH_NO_SECRET")
-        uic=1000+int(strike)
-        contract=SaxoOptionContract(
-            uic=uic,option_root_id=5,underlying_uic=17,
-            underlying=underlying,put_call=put_call,
-            strike=strike,expiration=expiration,
-            trading_status="Tradable",contract_size=10 if self.mismatch else 100,
-        )
-        return contract, quote_for(
+        return quote_for(
             uic,at=self.stamp,size=self.size,
-            price_source_type=self.price_source_type
-        )
+            price_source_type=self.price_source_type)
 
 
 def sample(tmp_path, *, fake=None, at=NOW, enable=True, **data):
@@ -93,6 +106,83 @@ def sample(tmp_path, *, fake=None, at=NOW, enable=True, **data):
         allow_provider_get=enable,clock=lambda:at)
     return r,c,p
 
+
+
+
+class CountedBatchSaxo(SaxoClient):
+    """No HTTP requests: model the existing Saxo root/option-space response."""
+    def __init__(self):
+        super().__init__(access_token="SYNTHETIC_NONSECRET")
+        self.root_calls=0
+        self.space_calls=[]
+    def find_option_root(self, underlying):
+        self.root_calls+=1
+        return {"Identifier":309}
+    def get_option_space(self, option_root_id, expiration=None):
+        self.space_calls.append((option_root_id, expiration))
+        return {
+            "ContractSize":100,
+            "OptionSpace":[{
+                "Expiry":expiration,
+                "SpecificOptions":[
+                    {"Uic":1100,"StrikePrice":100,"PutCall":"Call",
+                     "TradingStatus":"Tradable"},
+                    {"Uic":1105,"StrikePrice":105,"PutCall":"Call",
+                     "TradingStatus":"Tradable"},
+                    {"Uic":1107,"StrikePrice":107,"PutCall":"Put",
+                     "TradingStatus":"Tradable"},
+                ]
+            }],
+        }
+
+
+def test_batch_contract_resolver_reuses_root_and_option_space():
+    c=CountedBatchSaxo()
+    rows=c.find_option_contracts_batch(
+        underlying="AAPL",
+        requests=[("2026-11-20",100.0,"Call"),
+                  ("2026-11-20",105.0,"Call"),
+                  ("2026-11-20",107.0,"Put")])
+    assert [x.uic for x in rows]==[1100,1105,1107]
+    assert all(x.contract_size==100 for x in rows)
+    assert c.root_calls==1
+    assert c.space_calls==[(309,"2026-11-20")]
+
+
+def test_batch_resolves_all_contracts_before_quote_calls():
+    c=CountedBatchSaxo()
+    with pytest.raises(SaxoContractResolutionError):
+        c.find_option_contracts_batch(
+            underlying="AAPL",
+            requests=[("2026-11-20",100.0,"Call"),
+                      ("2026-11-20",999.0,"Call")])
+    assert c.root_calls==1
+    assert c.space_calls==[(309,"2026-11-20")]
+
+
+def test_batch_rejects_duplicate_and_unbounded_requests_without_io():
+    c=CountedBatchSaxo()
+    request=("2026-11-20",100.0,"Call")
+    with pytest.raises(ValueError,match="DUPLICATE"):
+        c.find_option_contracts_batch(underlying="AAPL",requests=[request,request])
+    with pytest.raises(ValueError,match="OUT_OF_BOUNDS"):
+        c.find_option_contracts_batch(underlying="AAPL",requests=[request]*5)
+    assert c.root_calls==0
+    assert c.space_calls==[]
+
+
+
+def test_slow_contract_resolution_stops_before_any_price_get(tmp_path):
+    p=_db(tmp_path)
+    client=FakeSaxo()
+    times=iter([NOW,datetime(2026,10,12,14,0,16,tzinfo=timezone.utc)])
+    result=capture_candidate_saxo_depth(
+        candidate_id=12,db_path=p,saxo_client=client,
+        allow_provider_get=True,clock=lambda:next(times))
+    assert "SAXO_SAMPLE_TIME_BUDGET_EXCEEDED" in result.reason_codes
+    assert client.resolution_calls==1
+    assert client.calls==[]
+    assert result.outcome_eligible is False
 
 def test_provider_disabled_is_inert_no_saxo_calls(tmp_path):
     r,client,_=sample(tmp_path,enable=False)
@@ -204,9 +294,9 @@ def test_invalid_id_is_rejected(tmp_path):
 
 def test_invalid_provider_option_right_is_not_silently_treated_as_put(tmp_path):
     class MalformedRight(FakeSaxo):
-        def get_option_contract_and_quote(self, **kwargs):
-            contract, quote=super().get_option_contract_and_quote(**kwargs)
-            return replace(contract,put_call="INVALID"),quote
+        def find_option_contracts_batch(self, **kwargs):
+            result=super().find_option_contracts_batch(**kwargs)
+            return [replace(result[0],put_call="INVALID"),*result[1:]]
     r,c,_=sample(tmp_path,fake=MalformedRight())
     assert "SAXO_CONTRACT_OR_ACQUISITION_IDENTITY_INVALID" in r.reason_codes
     assert len(c.calls)==1
