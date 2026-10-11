@@ -376,6 +376,17 @@ def seed_proposal(
             ).lastrowid
         )
 
+        frozen_pricing = json.dumps({
+            "pricing_basis": "BUY_AT_ASK_SELL_AT_BID",
+            "legs": [
+                {"option_quote_id": wing_quote_ids[95], "side": "BUY",
+                 "quantity": 1, "entry_price": 5.0},
+                {"option_quote_id": option_quote_id, "side": "SELL",
+                 "quantity": 2, "entry_price": 4.9},
+                {"option_quote_id": wing_quote_ids[105], "side": "BUY",
+                 "quantity": 1, "entry_price": 5.0},
+            ],
+        }, sort_keys=True)
         proposal_id = int(
             conn.execute(
                 """
@@ -419,7 +430,7 @@ def seed_proposal(
                     'LONG_1_2_1_BUTTERFLY',
                     '1.0.0',
                     ?,
-                    '{}',
+                    ?,
                     'USD',
                     ?,
                     'THEORETICAL_EXPIRY_PAYOFF_USING_CONSERVATIVE_BID_ASK_ENTRY',
@@ -469,6 +480,7 @@ def seed_proposal(
                             ]
                         }
                     ),
+                    frozen_pricing,
                     max_loss_usd_minor,
                 ),
             ).lastrowid

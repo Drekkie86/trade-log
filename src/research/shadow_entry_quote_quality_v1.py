@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -61,7 +62,19 @@ def evaluate_entry_quote_quality(
     }
     try:
         decision = _parse_aware(admission_at)
+        proposal_created_at = _parse_aware(proposal["created_at"])
+        if proposal_created_at > decision:
+            return _blocked("ENTRY_PROPOSAL_AFTER_ADMISSION", summary)
         data = json.loads(str(proposal["structure_json"]))
+        prices = json.loads(str(proposal["entry_pricing_json"]))
+        if prices.get("pricing_basis") != "BUY_AT_ASK_SELL_AT_BID":
+            return _blocked("ENTRY_FROZEN_PRICE_CONTRACT_INVALID", summary)
+        frozen_prices = {}
+        for leg_price in prices["legs"]:
+            qid = int(leg_price["option_quote_id"])
+            if qid in frozen_prices:
+                return _blocked("ENTRY_FROZEN_PRICE_DUPLICATE_LEG", summary)
+            frozen_prices[qid] = leg_price
         legs = data["legs"]
         if (not isinstance(legs, list) or not 1 <= len(legs) <= MAX_STRUCTURE_LEGS):
             return _blocked("ENTRY_LEG_COUNT_INVALID", summary)
@@ -70,6 +83,8 @@ def evaluate_entry_quote_quality(
             ids.append(int(leg["option_quote_id"]))
         if len(set(ids)) != len(ids):
             return _blocked("ENTRY_LEG_QUOTE_IDS_REUSED", summary)
+        if set(ids) != set(frozen_prices):
+            return _blocked("ENTRY_FROZEN_PRICE_LEG_COVERAGE_MISMATCH", summary)
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return _blocked("ENTRY_STRUCTURE_TIMESTAMP_OR_LEGS_INVALID", summary)
 
@@ -137,6 +152,13 @@ def evaluate_entry_quote_quality(
                 return _blocked("ENTRY_LEG_OPTION_IDENTITY_MISMATCH",summary,evidence)
             if (int(leg["quantity"]) < 1 or str(leg["side"]) not in ("BUY","SELL")):
                 return _blocked("ENTRY_LEG_CONTRACT_QUANTITY_OR_SIDE_INVALID",summary,evidence)
+            side = str(leg["side"])
+            frozen_leg = frozen_prices[int(row["id"])]
+            if frozen_leg.get("side") != side or int(frozen_leg.get("quantity",0)) != int(leg["quantity"]):
+                return _blocked("ENTRY_FROZEN_PRICE_LEG_IDENTITY_MISMATCH",summary,evidence)
+            source_price = row["ask"] if side == "BUY" else row["bid"]
+            if Decimal(str(frozen_leg["entry_price"])) != Decimal(str(source_price)):
+                return _blocked("ENTRY_FROZEN_PRICE_DIFFERS_FROM_SOURCE_QUOTE",summary,evidence)
             if (row["bid"] is None or row["ask"] is None or
                     not (math.isfinite(float(row["bid"])) and math.isfinite(float(row["ask"]))) or
                     float(row["bid"]) < 0 or float(row["ask"]) < float(row["bid"]) or
@@ -149,7 +171,7 @@ def evaluate_entry_quote_quality(
             bid_time = parse_thetadata_market_timestamp(str(row["bid_at"])).astimezone(timezone.utc)
             ask_time = parse_thetadata_market_timestamp(str(row["ask_at"])).astimezone(timezone.utc)
             capture_time = _parse_aware(row["captured_at"])
-        except (ValueError, KeyError, TypeError, OverflowError):
+        except (ValueError, KeyError, TypeError, OverflowError, InvalidOperation):
             return _blocked("ENTRY_LEG_TIMESTAMP_OR_PRICE_UNPARSEABLE",summary,evidence)
         snapshots.add(int(row["snapshot_id"]))
         ages = {

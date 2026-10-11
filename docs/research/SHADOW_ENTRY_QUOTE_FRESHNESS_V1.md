@@ -15,8 +15,10 @@ A future candidate is labelled FRESH only when all of the following hold:
 1. The latest stored ThetaData timestamp-semantics validation has DOCUMENTED_AND_LIVE_VALIDATED, live_probe_state=PASSED, compatible America/New_York offset/DST/documentation checks, and a validation timestamp no later than the decision.
 2. The structure contains 1–8 distinct persisted quote IDs.
 3. Each quote belongs to the same underlying, research run and ThetaData provider, matches its leg's expiration/strike/right, and all quotes belong to one recorded source snapshot.
-4. Every leg has nonnegative, noncrossed, explicitly FETCHED bid and ask, each with an interpretable provider quote timestamp and independent bid/ask timestamps.
-5. Provider source quote, bid and ask ages at immutable admission time are in [0,15] seconds, source times do not postdate source capture, snapshot age is in [0,15] seconds, and all leg timestamps are mutually no more than 15 seconds apart.
+4. The frozen entry pricing must declare BUY_AT_ASK_SELL_AT_BID and contain exactly one record per required quote ID, with matching side, quantity and source-side entry price. Missing, duplicated and changed frozen leg prices are blocked, never recomputed silently.
+5. A proposal must exist at or before the frozen admission decision timestamp, and the decision timestamp must explicitly identify its timezone.
+6. Every leg has nonnegative, noncrossed, explicitly FETCHED bid and ask, each with an interpretable provider quote timestamp and independent bid/ask timestamps.
+7. Provider source quote, bid and ask ages at immutable admission time are in [0,15] seconds, source times do not postdate source capture, snapshot age is in [0,15] seconds, and all leg timestamps are mutually no more than 15 seconds apart.
 
 Limits reuse the existing first-cohort FRESH classification contract and are tagged SHADOW_ENTRY_PER_LEG_ASOF_15S_V1. They are conservative engineering gating rules, **not statistically calibrated trading-edge thresholds**. Do not optimize them on historical outcomes without preregistration.
 

@@ -129,6 +129,9 @@ def test_reused_leg_quote_ids_and_cross_run_quotes_rejected(db_path):
     other=json.loads(proposal_row(db_path,two["proposal_id"])["structure_json"])
     duplicate["legs"][0]["option_quote_id"]=other["legs"][0]["option_quote_id"]
     p["structure_json"]=json.dumps(duplicate)
+    pricing=json.loads(p["entry_pricing_json"])
+    pricing["legs"][0]["option_quote_id"]=other["legs"][0]["option_quote_id"]
+    p["entry_pricing_json"]=json.dumps(pricing)
     assert evaluate_entry_quote_quality(proposal=p,admission_at=CLOCK,db_path=db_path).reason_code=="ENTRY_LEG_QUOTE_SNAPSHOT_OR_RUN_MISMATCH"
 
 
@@ -143,11 +146,52 @@ def test_time_bounds_do_not_guess_or_clamp_future(db_path):
     ).reason_code=="ENTRY_LEG_STALE_AT_ADMISSION"
     assert evaluate_entry_quote_quality(
         proposal=p,admission_at="2026-09-01T18:00:02Z",db_path=db_path
+    ).reason_code=="ENTRY_PROPOSAL_AFTER_ADMISSION"
+    future=seed_proposal(db_path,lower_wing_quote_at="2026-09-01T14:00:20")
+    p_future=proposal_row(db_path,future["proposal_id"])
+    assert evaluate_entry_quote_quality(
+        proposal=p_future,admission_at=CLOCK,db_path=db_path
     ).reason_code=="ENTRY_LEG_FUTURE_SOURCE_TIMESTAMP"
     assert evaluate_entry_quote_quality(
         proposal=p,admission_at="2026-09-01T18:00:10",db_path=db_path
     ).reason_code=="ENTRY_STRUCTURE_TIMESTAMP_OR_LEGS_INVALID"
 
+
+
+
+def test_frozen_bid_ask_entry_must_match_persisted_quote(db_path):
+    seeded=seed_proposal(db_path)
+    p=proposal_row(db_path,seeded["proposal_id"])
+    prices=json.loads(p["entry_pricing_json"])
+    prices["legs"][0]["entry_price"]=999.0
+    p["entry_pricing_json"]=json.dumps(prices)
+    r=evaluate_entry_quote_quality(proposal=p,admission_at=CLOCK,db_path=db_path)
+    assert r.reason_code=="ENTRY_FROZEN_PRICE_DIFFERS_FROM_SOURCE_QUOTE"
+
+
+def test_frozen_price_legs_cannot_be_omitted_or_duplicated(db_path):
+    seeded=seed_proposal(db_path)
+    p=proposal_row(db_path,seeded["proposal_id"])
+    prices=json.loads(p["entry_pricing_json"])
+    prices["legs"].pop()
+    p["entry_pricing_json"]=json.dumps(prices)
+    assert evaluate_entry_quote_quality(
+        proposal=p,admission_at=CLOCK,db_path=db_path
+    ).reason_code=="ENTRY_FROZEN_PRICE_LEG_COVERAGE_MISMATCH"
+    prices["legs"].append(prices["legs"][0])
+    p["entry_pricing_json"]=json.dumps(prices)
+    assert evaluate_entry_quote_quality(
+        proposal=p,admission_at=CLOCK,db_path=db_path
+    ).reason_code=="ENTRY_FROZEN_PRICE_DUPLICATE_LEG"
+
+
+def test_no_future_proposal_can_be_admitted(db_path):
+    seeded=seed_proposal(db_path)
+    p=proposal_row(db_path,seeded["proposal_id"])
+    p["created_at"]="2026-09-01T18:00:11Z"
+    assert evaluate_entry_quote_quality(
+        proposal=p,admission_at=CLOCK,db_path=db_path
+    ).reason_code=="ENTRY_PROPOSAL_AFTER_ADMISSION"
 
 def test_option_identity_drift_is_not_a_valid_shadow_leg(db_path):
     seeded=seed_proposal(db_path)
