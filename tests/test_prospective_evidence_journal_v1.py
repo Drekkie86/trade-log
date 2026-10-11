@@ -140,7 +140,7 @@ def test_bad_fields_rejected_before_db_write(db,bad):
 
 
 def test_market_reference_requires_source_evidence_hash(db):
-    with pytest.raises(ValueError,match="MARKET_REFERENCE_REQUIRES"): 
+    with pytest.raises(ValueError,match="MARKET_REFERENCE_REQUIRES"):
         append_evidence_event(db,event(1,et="MARKET_REFERENCE",
                                        state="OBSERVED_ONLY",source="SAXO_MULTILEG"))
     assert len(rows(db))==0
