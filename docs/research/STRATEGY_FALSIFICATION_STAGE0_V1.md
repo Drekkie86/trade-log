@@ -88,6 +88,10 @@ optimized or scored on the explored 17-day residual history.
 unknown costs/FX/tax, missing ownership proof.
 \`OVER_CAP\`: exceeds €500 under supplied assumptions.
 \`REFERENCE_HEDGE_ONLY\`: stock-backed benchmark lane.
+\`ECONOMICALLY_DOMINATED_AFTER_ASSUMED_COSTS\`: non-positive best-case net
+expiry payoff after explicitly supplied costs, even before predictive modelling.
+\`LEGACY_REFERENCE_ONLY\`: reverse butterfly evidence comparator; never
+an additional approved strategy or a trading instruction.
 \`INDICATIVELY_AFFORDABLE_NOT_EXECUTABLE\`: arithmetic and explicitly
 supplied inputs pass; STILL not an order or expected-return signal.
 

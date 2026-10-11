@@ -240,6 +240,19 @@ class StrategyStage0Tests(unittest.TestCase):
         self.assertNotEqual(r.state,"FAILED_STRUCTURE")
         self.assertEqual(r.gross_max_loss_usd,"500.00")
         self.assertNotIn(LEGACY_REVERSE_ID,CATALOGUE)
+        self.assertEqual(r.state, "LEGACY_REFERENCE_ONLY")
+
+    def test_economically_dominated_structure_after_costs_is_rejected(self):
+        import dataclasses
+        s = examples()["S03"]
+        expensive = dataclasses.replace(
+            POLICY, additional_round_trip_cost_usd=D("250"))
+        result = evaluate(s, expensive)
+        self.assertEqual(result.gross_max_profit_usd, "200.00")
+        self.assertEqual(result.as_dict()["net_max_profit_usd"], "-62.00")
+        self.assertEqual(result.state, "ECONOMICALLY_DOMINATED_AFTER_ASSUMED_COSTS")
+        self.assertIn("NON_POSITIVE_BEST_CASE_NET_EXPIRY_PAYOFF", result.reasons)
+        self.assertNotEqual(result.state, "INDICATIVELY_AFFORDABLE_NOT_EXECUTABLE")
 
     def test_net_payoff_and_breakevens_include_costs_without_alpha_claim(self):
         r = evaluate(examples()["S03"], POLICY).as_dict()

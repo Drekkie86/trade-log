@@ -398,8 +398,14 @@ def evaluate(s: Structure, policy: QuoteCostPolicy) -> Feasibility:
             return _bad("UNSCORABLE", s, "INVALID_FRESHNESS_RULE")
         if policy.bankroll_eur != BANKROLL_EUR:
             return _bad("FAILED_STRUCTURE", s, "BANKROLL_LIMIT_MUST_EQUAL_EUR_500")
-        if s.strategy_id in ("S01", "S02", "S05"):
+        if fees is not None and max_profit is not None and max_profit - fees <= 0:
+            reasons.append("NON_POSITIVE_BEST_CASE_NET_EXPIRY_PAYOFF")
+        if s.strategy_id == LEGACY_REVERSE_ID:
+            state = "LEGACY_REFERENCE_ONLY"
+        elif s.strategy_id in ("S01", "S02", "S05"):
             state = "REFERENCE_HEDGE_ONLY"
+        elif "NON_POSITIVE_BEST_CASE_NET_EXPIRY_PAYOFF" in reasons:
+            state = "ECONOMICALLY_DOMINATED_AFTER_ASSUMED_COSTS"
         elif "EXCEEDS_EUR_500_BANKROLL" in reasons:
             state = "OVER_CAP"
         elif reasons:
