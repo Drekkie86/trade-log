@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from types import SimpleNamespace
 from pathlib import Path
 import pytest
 
 from src.research.prospective_evidence_journal_v1 import (
-    EvidenceEvent,append_evidence_event,verify_journal_chain,ZERO_HASH
+    EvidenceEvent,append_evidence_event,verify_journal_chain,ZERO_HASH,
+    record_quote_request,record_quote_result
 )
 
 SCHEMA=(Path(__file__).resolve().parents[1] /
@@ -212,6 +214,104 @@ def test_no_trade_requires_explanation_and_not_a_win(db):
     with pytest.raises(ValueError,match="NO_TRADE_REQUIRES"):
         append_evidence_event(db,event(2,et="NO_TRADE",state="NO_TRADE"))
     assert len(rows(db))==1
+
+
+
+def _fake_probe(*, status="BROKER_PACKAGE_PRICE_REFERENCE_ONLY",
+                reasons=(), outcome_eligible=False, trading_enabled=False,
+                broker_package_fill_verified=False):
+    return SimpleNamespace(
+        status=status,
+        reasons=reasons,
+        outcome_eligible=outcome_eligible,
+        trading_enabled=trading_enabled,
+        broker_package_fill_verified=broker_package_fill_verified,
+        evidence_sha256="b"*64,
+    )
+
+
+def test_native_package_quote_result_requires_prior_request(db):
+    append_evidence_event(db,event(1))
+    with pytest.raises(ValueError,match="QUOTE_RESULT_WITHOUT_REQUEST"):
+        record_quote_result(
+            db,attempt_key="a1",probe_result=_fake_probe(),
+            event_at="2026-10-12T14:00:03Z")
+    assert len(rows(db))==1
+    record_quote_request(
+        db,attempt_key="a1",opportunity_key="cohortA:opp:0001",
+        strategy_id="S03", phase="ENTRY",event_at="2026-10-12T14:00:01Z",
+        source_family="SAXO_MULTILEG",candidate_id=12,research_run_id=15)
+    record_quote_result(
+        db,attempt_key="a1",probe_result=_fake_probe(),
+        event_at="2026-10-12T14:00:03Z")
+    es=rows(db)
+    assert [x[2] for x in es]==[
+        "OPPORTUNITY","PRICE_REQUEST","MARKET_REFERENCE"]
+    assert es[-1][3]=="OBSERVED_ONLY"
+    assert verify_journal_chain(db)["checked"]==3
+
+
+def test_native_quote_failure_included_not_silently_dropped(db):
+    append_evidence_event(db,event(1))
+    record_quote_request(
+        db,attempt_key="b1",opportunity_key="cohortA:opp:0001",
+        strategy_id="S03",phase="EXIT",
+        event_at="2026-10-12T14:00:01Z",source_family="SAXO_MULTILEG")
+    record_quote_result(db,attempt_key="b1",
+        probe_result=_fake_probe(
+            status="UNVERIFIED_OR_UNAVAILABLE_PACKAGE_PRICE",
+            reasons=("PACKAGE_SIZE_OR_DEPTH_NOT_PROVEN",)),
+        event_at="2026-10-12T14:00:02Z")
+    assert rows(db)[-1][2:4]==("SOURCE_FAILURE","UNAVAILABLE")
+    assert verify_journal_chain(db)["checked"]==3
+
+
+def test_denies_fake_verified_package_fill_flag(db):
+    append_evidence_event(db,event(1))
+    record_quote_request(
+        db,attempt_key="c1",opportunity_key="cohortA:opp:0001",
+        strategy_id="S03",phase="ENTRY",event_at="2026-10-12T14:00:01Z",
+        source_family="SAXO_MULTILEG")
+    with pytest.raises(ValueError,match="SOURCE_PROBE_PACKAGE_VERIFICATION"):
+        record_quote_result(db,attempt_key="c1",
+            probe_result=_fake_probe(broker_package_fill_verified=True),
+            event_at="2026-10-12T14:00:02Z")
+    with pytest.raises(ValueError,match="PROBE_OUTCOME_OR_TRADING"):
+        record_quote_result(db,attempt_key="c1",
+            probe_result=_fake_probe(outcome_eligible=True),
+            event_at="2026-10-12T14:00:02Z")
+    assert len(rows(db))==2
+
+
+def test_readonly_saxo_leg_probe_is_observed_only(db):
+    append_evidence_event(db,event(1))
+    record_quote_request(
+        db,attempt_key="leg1",opportunity_key="cohortA:opp:0001",
+        strategy_id="S03",phase="ENTRY",event_at="2026-10-12T14:00:01Z",
+        source_family="SAXO_LEG")
+    p=SimpleNamespace(
+        status="LEG_SAXO_DEPTH_OBSERVED_NOT_PACKAGE_EXECUTION",
+        reason_codes=(),outcome_eligible=False,trading_enabled=False,
+        independent_package_execution_verified=False,
+        evidence_sha256="d"*64)
+    record_quote_result(
+        db,attempt_key="leg1",probe_result=p,
+        event_at="2026-10-12T14:00:02Z")
+    assert rows(db)[-1][3]=="OBSERVED_ONLY"
+    assert verify_journal_chain(db)["checked"]==3
+
+
+def test_quote_result_time_cannot_precede_quote_request(db):
+    append_evidence_event(db,event(1))
+    record_quote_request(
+        db,attempt_key="d1",opportunity_key="cohortA:opp:0001",
+        strategy_id="S03",phase="ENTRY",event_at="2026-10-12T14:00:05Z",
+        source_family="SAXO_MULTILEG")
+    with pytest.raises(ValueError,match="QUOTE_RESULT_BACKDATED"):
+        record_quote_result(db,attempt_key="d1",
+            probe_result=_fake_probe(),event_at="2026-10-12T14:00:04Z")
+    assert len(rows(db))==2
+
 
 def test_not_a_production_migration(db):
     assert "prospective_evidence_events_v1" in {

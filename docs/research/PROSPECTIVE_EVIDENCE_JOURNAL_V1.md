@@ -36,6 +36,17 @@ appear in the persisted payload. Producers must use nonsecret event keys.
 
 ## Hard outcome firewall
 
+The staging API also has bounded request/result adapters for the exact
+research-only shapes produced by draft PR #104 (Saxo leg depth) and PR #105
+(Saxo native package pricing). A producer must append PRICE_REQUEST before
+the authorized provider interaction; the later result must cite that request,
+match its source family and occur at or after request time. Qualified quotes
+are stored only as MARKET_REFERENCE / OBSERVED_ONLY; delayed, unavailable
+or failed requests are retained as SOURCE_FAILURE / UNAVAILABLE. A claimed
+trade outcome, trading flag or verified package fill on a source probe is
+rejected rather than promoted. Synthetic integration fixtures verify both
+paths. This is not yet daemon scheduling or provider-side runtime wiring.
+
 This table has no price P&L field, outcome-eligible field, broker-trade flag
 or ability to mark SCORED. A MARKET_REFERENCE means observed source evidence
 ONLY, not broker execution. Native multi-leg broker price responses remain

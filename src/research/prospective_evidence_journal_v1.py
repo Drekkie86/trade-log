@@ -160,6 +160,108 @@ def append_evidence_event(conn: sqlite3.Connection,event: EvidenceEvent) -> int:
         raise
 
 
+
+
+def record_quote_request(
+    conn: sqlite3.Connection, *,
+    attempt_key: str, opportunity_key: str, strategy_id: str,
+    phase: str, event_at: str, source_family: str,
+    candidate_id: int | None = None, research_run_id: int | None = None,
+) -> int:
+    """Record intent BEFORE a source call; no provider access here."""
+    if source_family not in ("SAXO_LEG","SAXO_MULTILEG"):
+        raise ValueError("UNSUPPORTED_BROKER_SOURCE_FAMILY")
+    if phase not in ("ENTRY","EXIT"):
+        raise ValueError("QUOTE_REQUEST_NEEDS_ENTRY_OR_EXIT_PHASE")
+    return append_evidence_event(conn,EvidenceEvent(
+        event_key=attempt_key+":request",
+        opportunity_key=opportunity_key,
+        strategy_id=strategy_id,
+        phase=phase,
+        event_type="PRICE_REQUEST",
+        event_state="RECORDED",
+        event_at=event_at,
+        source_family=source_family,
+        source_evidence_sha256=None,
+        candidate_id=candidate_id,
+        research_run_id=research_run_id,
+    ))
+
+
+def record_quote_result(
+    conn: sqlite3.Connection, *,
+    attempt_key: str,
+    probe_result: Any,
+    event_at: str,
+) -> int:
+    """Persist only allowlisted fields from source probes, NEVER fills.
+
+    Accepts previous Saxo per-leg/native package probe result shape via
+    read-only typed access. A result must follow a pre-existing PRICE_REQUEST.
+    A source error always remains an explicit failure in the denominator.
+    """
+    if not isinstance(attempt_key,str) or not SAFE_KEY.fullmatch(attempt_key):
+        raise ValueError("UNSAFE_ATTEMPT_KEY")
+    request=conn.execute(
+        """SELECT opportunity_key,strategy_id,phase,source_family,
+                  candidate_id,research_run_id,event_at
+           FROM prospective_evidence_events_v1
+           WHERE event_key=? AND event_type='PRICE_REQUEST' LIMIT 1""",
+        (attempt_key+":request",),
+    ).fetchone()
+    if request is None:
+        raise ValueError("QUOTE_RESULT_WITHOUT_REQUEST")
+    (
+        opportunity_key,strategy_id,phase,source_family,
+        candidate_id,research_run_id,request_at
+    )=request
+    if _utc(event_at)<request_at:
+        raise ValueError("QUOTE_RESULT_BACKDATED_BEFORE_REQUEST")
+    if any(getattr(probe_result,name,None) is not False for name in
+           ("outcome_eligible","trading_enabled")):
+        raise ValueError("PROBE_OUTCOME_OR_TRADING_NOT_EXPLICITLY_DISABLED")
+    if source_family=="SAXO_LEG":
+        qualified_state="LEG_SAXO_DEPTH_OBSERVED_NOT_PACKAGE_EXECUTION"
+        if getattr(probe_result,"independent_package_execution_verified",None) is not False:
+            raise ValueError("SOURCE_PROBE_PACKAGE_VERIFICATION_NOT_DISABLED")
+        reason_tuple=getattr(probe_result,"reason_codes",None)
+    elif source_family=="SAXO_MULTILEG":
+        qualified_state="BROKER_PACKAGE_PRICE_REFERENCE_ONLY"
+        if getattr(probe_result,"broker_package_fill_verified",None) is not False:
+            raise ValueError("SOURCE_PROBE_PACKAGE_VERIFICATION_NOT_DISABLED")
+        reason_tuple=getattr(probe_result,"reasons",None)
+    else:
+        raise ValueError("QUOTE_RESULT_UNSUPPORTED_SOURCE")
+    if not isinstance(reason_tuple,tuple):
+        raise ValueError("QUOTE_PROBE_REASON_CODES_INVALID")
+    status=getattr(probe_result,"status",None)
+    digest=getattr(probe_result,"evidence_sha256",None)
+    if not isinstance(digest,str) or not SHA.fullmatch(digest):
+        raise ValueError("QUOTE_PROBE_SOURCE_DIGEST_MISSING")
+    is_observed=(status==qualified_state and not reason_tuple)
+    if is_observed:
+        event_type="MARKET_REFERENCE"
+        state="OBSERVED_ONLY"
+        reasons=()
+    else:
+        event_type="SOURCE_FAILURE"
+        state="UNAVAILABLE"
+        reasons=reason_tuple or ("PROBE_NOT_QUALIFIED",)
+    return append_evidence_event(conn,EvidenceEvent(
+        event_key=attempt_key+":result",
+        opportunity_key=str(opportunity_key),
+        strategy_id=str(strategy_id),
+        phase=str(phase),
+        event_type=event_type,
+        event_state=state,
+        event_at=event_at,
+        source_family=str(source_family),
+        source_evidence_sha256=digest,
+        reason_codes=reasons,
+        candidate_id=candidate_id,
+        research_run_id=research_run_id,
+    ))
+
 def verify_journal_chain(conn: sqlite3.Connection, *, max_rows: int=MAX_AUDIT_ROWS) -> dict[str,Any]:
     """Bounded consistency check; hash chains do not authenticate the provider."""
     if type(max_rows) is not int or not 1<=max_rows<=MAX_AUDIT_ROWS:
