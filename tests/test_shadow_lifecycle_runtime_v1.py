@@ -186,7 +186,7 @@ def test_intraday_marks_do_not_score_closed_candidate(db_path):
     assert _state(db_path, decision.candidate_id) == "CLOSED_OR_EXPIRED"
 
 
-def test_validated_package_outcome_allows_scoring_after_close(db_path):
+def test_unverified_package_marker_cannot_score_after_close(db_path):
     decision = _candidate(db_path)
     close_run = _research_run(
         db_path,
@@ -241,5 +241,7 @@ def test_validated_package_outcome_allows_scoring_after_close(db_path):
         db_path=db_path,
     )
 
-    assert result.scored_count == 1
-    assert _state(db_path, decision.candidate_id) == "SCORED"
+    # A marker flag alone has no independent Saxo package receipt. This was
+    # previously accepted and is now correctly blocked for every legacy row.
+    assert result.scored_count == 0
+    assert _state(db_path, decision.candidate_id) == "CLOSED_OR_EXPIRED"
