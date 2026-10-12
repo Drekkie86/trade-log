@@ -62,6 +62,28 @@ preflight, release/rollback check, and independent reviewer approval.
   release migrations, production DB alteration, broker credential use, user
   bankroll change, real order or live API call occurred in this integration.
 
+## New staged orchestration (12 Oct integration increment)
+
+The integration adds src/research/prospective_package_quote_attempt_v1.py:
+a single bounded PRICE-ONLY Saxo package-observation attempt, performed
+against a caller-provisioned *staging* journal SQLite connection.
+
+- Append OPPORTUNITY before any request; if provider observation is disabled
+  (the default), record NO_TRADE with an explicit authorization reason.
+- When explicitly enabled, append PRICE_REQUEST before calling an injected
+  price-only observer. Preserve observed-only market reference, provider
+  failure, invalid response and final NO_TRADE; no blank/success-only samples.
+- Retain exception type/contents nowhere, avoiding accidental credential
+  leakage. A malformed or falsely execution-verified provider result becomes
+  SOURCE_FAILURE/UNAVAILABLE rather than being silently discarded.
+- Failures of the journal itself propagate instead of masquerading as Saxo
+  source failures. A hash-chain consistency check verifies append order.
+- Even synthetic best-case package prices generate NO_TRADE and never set
+  outcome_eligible, trading_enabled or SCORED. No Saxo runtime is created.
+- Tests use fake source results and a throwaway SQLite staging DB. This
+  must not be wired into the production daemon before controlled v35
+  migration, rate limits, identity/replay and external source validation.
+
 ## Next checks before any release
 
 1. Exact combined CI green and source/security review.
