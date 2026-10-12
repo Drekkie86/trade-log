@@ -61,6 +61,35 @@ def test_stale_backup_is_blocking():
     assert any(c.name == "verified-backup" and c.state == "FAIL" for c in result.checks)
 
 
+def test_metadata_only_backup_inventory_is_unverified_not_missing():
+    inventory = {
+        "total_files": 2,
+        "valid_files": 0,
+        "latest_valid_age_hours": None,
+        "entries": [
+            {"state": "NOT_REVERIFIED"},
+            {"state": "NOT_REVERIFIED"},
+        ],
+    }
+    result = assess_v1_readiness(_deck(), inventory)
+    backup = next(c for c in result.checks if c.name == "verified-backup")
+    assert backup.state == "UNVERIFIED"
+    assert backup.blocking is True
+    assert "Backups exist" in backup.detail
+    assert result.product_ready is False
+
+
+def test_audit_does_not_treat_unknown_backup_state_as_ready():
+    inventory = {
+        "valid_files": 0,
+        "latest_valid_age_hours": None,
+        "entries": [{"state": "NOT_REVERIFIED"}],
+    }
+    result = assess_v1_readiness(_deck(daemon="HEALTHY", theta_ready=True),
+                                 inventory, require_runtime=True)
+    assert result.product_state == "V1_NOT_OPERATIONALLY_READY"
+
+
 def test_model_decision_firewall_is_blocking():
     deck = _deck()
     deck["models"][0]["decision_enabled"] = 1

@@ -4,12 +4,14 @@ import json
 import os
 import subprocess
 import tempfile
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from src.config import get_runtime_setting
 from src.dashboard.read_model import load_command_deck
-from src.operations.backup_recovery import inventory_backups
+from src.operations.backup_recovery import inventory_backups_fast
 from src.operations.v1_readiness import assess_v1_readiness
 
 
@@ -74,10 +76,28 @@ def _redact(value, secrets: tuple[str, ...]):
     return value
 
 
+def _audit_stage(name: str, operation):
+    """Emit safe, flushed stage timings so a systemd timeout is attributable."""
+    print(f"AUDIT_STAGE_START {name}", file=sys.stderr, flush=True)
+    began = time.monotonic()
+    try:
+        return operation()
+    finally:
+        print(
+            f"AUDIT_STAGE_FINISH {name} elapsed_ms={int((time.monotonic() - began)*1000)}",
+            file=sys.stderr, flush=True,
+        )
+
+
 def build_audit_snapshot(*, include_provider_health: bool = False) -> dict[str, object]:
-    deck = load_command_deck(include_provider_health=include_provider_health)
-    backups = inventory_backups().as_dict()
-    readiness = assess_v1_readiness(deck, backups).as_dict()
+    deck = _audit_stage("command_deck", lambda: load_command_deck(
+        include_provider_health=include_provider_health))
+    # Deep inventory can re-open/verify EVERY large SQLite or compressed
+    # backup and repeatedly exceeded the nightly reporting budget.
+    # Verification is performed by the dedicated backup and restore controls.
+    # Never relabel metadata-only entries as VALID: NOT_REVERIFIED is explicit.
+    backups = _audit_stage("backup_metadata", lambda: inventory_backups_fast().as_dict())
+    readiness = _audit_stage("readiness", lambda: assess_v1_readiness(deck, backups).as_dict())
     safe_config = {key: get_runtime_setting(key) for key in SAFE_CONFIGURATION_KEYS}
     secret_presence = {key: bool(os.environ.get(key) or get_runtime_setting(key)) for key in SECRET_PRESENCE_KEYS}
     payload = {

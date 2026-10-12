@@ -59,14 +59,36 @@ def assess_v1_readiness(
 
     valid_backups = int(backup_inventory.get("valid_files", 0) or 0)
     latest_age = backup_inventory.get("latest_valid_age_hours")
-    backup_ok = valid_backups > 0 and latest_age is not None and float(latest_age) <= BACKUP_MAX_AGE_HOURS
-    checks.append(ReadinessCheck(
-        "recovery", "verified-backup", "PASS" if backup_ok else "FAIL",
-        (
+    entries = backup_inventory.get("entries", ())
+    metadata_only = (
+        isinstance(entries, (list, tuple))
+        and bool(entries)
+        and all(
+            isinstance(entry, dict) and entry.get("state") == "NOT_REVERIFIED"
+            for entry in entries
+        )
+    )
+    backup_ok = (
+        not metadata_only
+        and valid_backups > 0
+        and latest_age is not None
+        and float(latest_age) <= BACKUP_MAX_AGE_HOURS
+    )
+    if metadata_only:
+        backup_state = "UNVERIFIED"
+        backup_detail = (
+            "Backups exist, but this metadata-only audit did not verify "
+            "their integrity or restore readiness. Dedicated recovery "
+            "verification evidence is required."
+        )
+    else:
+        backup_state = "PASS" if backup_ok else "FAIL"
+        backup_detail = (
             f"Latest valid backup age {float(latest_age):.1f}h."
             if latest_age is not None else "No valid verified backup is available."
-        ),
-        True,
+        )
+    checks.append(ReadinessCheck(
+        "recovery", "verified-backup", backup_state, backup_detail, True,
     ))
 
     market = deck.get("market_clock", {})
@@ -116,7 +138,8 @@ def assess_v1_readiness(
         False,
     ))
 
-    blockers = [check for check in checks if check.blocking and check.state == "FAIL"]
+    # UNKNOWN/UNVERIFIED evidence must never make operational readiness green.
+    blockers = [check for check in checks if check.blocking and check.state != "PASS"]
     product_ready = not blockers
     product_state = "V1_OPERATIONALLY_READY" if product_ready else "V1_NOT_OPERATIONALLY_READY"
     return V1Readiness(
