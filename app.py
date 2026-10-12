@@ -1360,6 +1360,11 @@ elif page == "Shadow Lab":
             "marks are later valuations. Validated hold/mark outcomes and predeclared risk-trigger exits are deliberately separate measurement populations."
         )
 
+        # Render the user-visible workbench in the real main-sidebar Shadow Lab,
+        # not only in the disconnected legacy Calibration multipage URL.
+        from src.ui.shadow_stage0_workbench_v1 import render_shadow_stage0_workbench
+        render_shadow_stage0_workbench()
+
         lifecycle = snapshot.get("lifecycle_health", {})
         replay_summary = snapshot.get("historical_replay_summary", {})
 
