@@ -348,20 +348,19 @@ def plan_backup_capacity(
         reverse=True,
     )
 
-    # Retention is the desired maximum, not a guarantee that may consume the
-    # production reserve. Make one normal retention slot when needed, then
-    # continue dropping only the oldest backups until the next full verified
-    # copy fits. Never pre-delete the newest known-good recovery point.
-    if not backups:
-        preprune_keep = 0
-    else:
-        preprune_keep = min(
-            len(backups),
-            max(
-                1,
-                keep - 1,
-            ),
-        )
+    # Preserve TWO existing full recovery points whenever the configured
+    # retention target is >=2 and at least two copies exist. Do not sacrifice
+    # the second copy BEFORE its successor has passed full verification.
+    # Capacity shortage must fail closed rather than silently reducing the
+    # operator's redundancy to a single file.
+    minimum_preprune_keep = (
+        2 if keep >= 2 and len(backups) >= 2 else
+        1 if backups else 0
+    )
+    preprune_keep = min(
+        len(backups),
+        max(minimum_preprune_keep, keep - 1),
+    )
 
     def reclaimable_bytes(
         retained_count: int,
@@ -383,7 +382,7 @@ def plan_backup_capacity(
 
     while (
         projected_free < required
-        and preprune_keep > 1
+        and preprune_keep > minimum_preprune_keep
     ):
         preprune_keep -= 1
         reclaimable = (
