@@ -66,7 +66,7 @@ def test_audit_snapshot_redacts_secret_if_nested_diagnostic_contains_it(
             },
         },
     )
-    monkeypatch.setattr(audit, "inventory_backups", lambda: type("X", (), {"as_dict": lambda self: {"valid_files": 1, "latest_valid_age_hours": 0}})())
+    monkeypatch.setattr(audit, "inventory_backups_fast", lambda: type("X", (), {"as_dict": lambda self: {"valid_files": 0, "latest_valid_age_hours": None, "entries": [{"state": "NOT_REVERIFIED"}]}})())
     monkeypatch.setattr(audit, "assess_v1_readiness", lambda *args, **kwargs: type("R", (), {"as_dict": lambda self: {"product_ready": True}})())
 
     payload = audit.build_audit_snapshot()
@@ -74,3 +74,31 @@ def test_audit_snapshot_redacts_secret_if_nested_diagnostic_contains_it(
     assert "VERY_SECRET_KEY" not in encoded
     assert "OIDC_SECRET" not in encoded
     assert "[REDACTED_SECRET]" in encoded
+
+def test_daily_audit_is_metadata_only_not_a_deep_reverification(
+    db_path, tmp_path, monkeypatch, capsys
+):
+    import src.operations.audit_export as audit
+    import src.operations.backup_recovery as recovery
+
+    backup_dir = tmp_path / "backups"
+    create_verified_backup(db_path=db_path, backup_dir=backup_dir, retention=3)
+    monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db_path))
+    monkeypatch.setenv("CHRISTIANIA_BACKUP_DIR", str(backup_dir))
+    monkeypatch.setenv("CHRISTIANIA_AUDIT_DIR", str(tmp_path / "audit"))
+
+    def forbidden_deep_inventory(*args, **kwargs):
+        raise AssertionError("Daily reporting must not deeply verify every backup")
+
+    monkeypatch.setattr(recovery, "inventory_backups", forbidden_deep_inventory)
+    payload = audit.build_audit_snapshot()
+    backup_inventory = payload["backup_inventory"]
+    assert backup_inventory["total_files"] >= 1
+    assert backup_inventory["valid_files"] == 0
+    assert all(entry["state"] == "NOT_REVERIFIED"
+               for entry in backup_inventory["entries"])
+    captured = capsys.readouterr()
+    assert "AUDIT_STAGE_START command_deck" in captured.err
+    assert "AUDIT_STAGE_START backup_metadata" in captured.err
+    assert "AUDIT_STAGE_FINISH backup_metadata" in captured.err
+    assert "AUDIT_STAGE_FINISH readiness" in captured.err
