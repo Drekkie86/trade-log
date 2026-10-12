@@ -476,6 +476,41 @@ def _parse_systemd_usec(
     )
 
 
+def _cgroup_inactive_file_bytes(unit: str) -> int | None:
+    """Read-only cgroup v2 reclaimable file cache for canonical service units.
+
+    Linux MemoryCurrent includes page cache. A high cache charge is not the
+    same as high resident Python memory. If stat is missing or malformed,
+    return None and retain the conservative original threshold check.
+    """
+    service_resource_policy(unit)  # fail closed on unknown unit names
+    path = Path("/sys/fs/cgroup/system.slice") / unit / "memory.stat"
+    try:
+        lines = path.read_text(encoding="ascii").splitlines()
+        matches = [line.split() for line in lines if line.startswith("inactive_file ")]
+        if len(matches) != 1 or len(matches[0]) != 2:
+            return None
+        value = int(matches[0][1])
+        return value if value >= 0 else None
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
+def _cgroup_memory_high_events(unit: str) -> int | None:
+    """Cumulative high-throttle events, observational only (not a rate)."""
+    service_resource_policy(unit)
+    path = Path("/sys/fs/cgroup/system.slice") / unit / "memory.events"
+    try:
+        lines = path.read_text(encoding="ascii").splitlines()
+        matches = [line.split() for line in lines if line.startswith("high ")]
+        if len(matches) != 1 or len(matches[0]) != 2:
+            return None
+        value = int(matches[0][1])
+        return value if value >= 0 else None
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
 def _memory_check(
     unit: str,
     properties: dict[str, str],
@@ -513,8 +548,22 @@ def _memory_check(
         )
     )
 
+    inactive_file = _cgroup_inactive_file_bytes(unit)
+    if (current is not None and inactive_file is not None
+            and inactive_file <= current):
+        working_set = current - inactive_file
+        memory_basis = "CGROUP_V2_CURRENT_MINUS_INACTIVE_FILE"
+    else:
+        working_set = current
+        memory_basis = "CONSERVATIVE_MEMORY_CURRENT_FALLBACK"
+        inactive_file = None
+
     telemetry = {
         "current_bytes": current,
+        "working_set_bytes": working_set,
+        "inactive_file_bytes": inactive_file,
+        "cache_adjustment_used": int(inactive_file is not None),
+        "cumulative_memory_high_events": _cgroup_memory_high_events(unit),
         "peak_bytes": peak,
         "nrestarts": restarts,
         "warning_bytes": (
@@ -538,13 +587,15 @@ def _memory_check(
             "or malformed"
         )
     elif (
-        current
-        >= policy.memory_warning_bytes
+        working_set is not None
+        and working_set >= policy.memory_warning_bytes
     ):
         failures.append(
-            "MemoryCurrent="
-            f"{current} reached warning="
-            f"{policy.memory_warning_bytes}"
+            "EffectiveWorkingSet="
+            f"{working_set} reached warning="
+            f"{policy.memory_warning_bytes}; "
+            f"current={current}; inactive_file={inactive_file}; "
+            f"basis={memory_basis}"
         )
 
     if (
@@ -586,6 +637,9 @@ def _memory_check(
             "PASS",
             (
                 f"Current={current}; "
+                f"effective_working_set={working_set}; "
+                f"inactive_file={inactive_file}; "
+                f"basis={memory_basis}; "
                 f"peak={peak}; "
                 f"restarts={restarts}; "
                 "warning="
