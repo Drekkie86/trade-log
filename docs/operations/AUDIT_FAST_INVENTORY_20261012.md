@@ -20,8 +20,10 @@ so audit-report completion alone cannot establish recovery readiness.
 
 The daily audit now calls inventory_backups_fast(), an existing
 metadata-only function. Its output explicitly marks every backup entry
-NOT_REVERIFIED, with valid_files=0; neither export nor readiness may
-silently treat these backups as verified. Dedicated backup and restore
+NOT_REVERIFIED, with valid_files=0. The readiness calculation now marks
+its recovery check UNVERIFIED when backup files are present but only
+metadata was inspected, rather than falsely reporting that none exists.
+UNVERIFIED is still a blocking readiness state, never a PASS. Dedicated backup and restore
 jobs retain responsibility for deep checksum/SQLite/foreign-key checks.
 
 Three fixed audit stages emit flushed stderr markers:
