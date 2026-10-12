@@ -26,14 +26,14 @@ def _clone_with_entry_pricing(conn, proposal_id: int, *, entry_price: float) -> 
         (proposal_id,),
     ).fetchone()
     structure = json.loads(source["structure_json"])
-    quote_id = int(structure["legs"][0]["option_quote_id"])
     pricing = json.dumps(
         {
             "legs": [
                 {
-                    "option_quote_id": quote_id,
+                    "option_quote_id": int(leg["option_quote_id"]),
                     "entry_price": entry_price,
                 }
+                for leg in structure["legs"]
             ]
         },
         sort_keys=True,

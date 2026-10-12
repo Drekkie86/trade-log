@@ -71,28 +71,18 @@ def _latest_pin_action(candidate_id: int, *, db_path=None) -> str | None:
 
 
 def _validated_package_outcome_exists(candidate_id: int, *, db_path=None) -> bool:
-    """Return whether the candidate has independently validated package evidence.
+    """Fail closed until an independent broker-package receipt can be verified.
 
-    Ordinary automated intraday leg-liquidation marks are deliberately *not*
-    sufficient to score a candidate. The frozen measurement contract requires
-    an explicitly validated package outcome with outcome_eligible=1.
+    A database row or outcome_eligible=1 flag is NOT proof of a matched,
+    executable entry/exit package. The current schema has no independently
+    authenticated receipt journal and no validator of Saxo execution IDs.
+    Until both are available and reconciled, never transition to SCORED.
+
+    Do not restore the old marker-only predicate: it can be bypassed by a
+    synthetic or incorrectly tagged shadow mark. This gate deliberately
+    disables ALL scoring rather than fabricating a positive track record.
     """
-    conn = get_connection(db_path)
-    try:
-        row = conn.execute(
-            """
-            SELECT 1
-            FROM shadow_mark_observations
-            WHERE candidate_id = ?
-              AND measurement_role = 'VALIDATED_PACKAGE_OUTCOME'
-              AND outcome_eligible = 1
-            LIMIT 1;
-            """,
-            (candidate_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return row is not None
+    return False
 
 
 def _iso_date(value, *, field: str) -> date:
