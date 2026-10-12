@@ -20,8 +20,12 @@ def make_source(path):
 
 
 def create_sparse_backup(path, bytes_count):
+    # Never create multi-GiB test files on Windows CI: truncate() can reserve
+    # real physical space and trigger unrelated backup headroom failures.
+    # The capacity model uses monkeypatched disk_usage(), not file size.
+    assert bytes_count > 0
     with open(path,"wb") as f:
-        f.truncate(bytes_count)
+        f.write(b"SIMULATED_BACKUP_FOR_CAPACITY_TEST")
 
 
 class TightDisk:
@@ -50,8 +54,8 @@ def test_two_existing_backups_are_never_prepruned_when_new_backup_cannot_fit(
     assert plan.feasible_after_safe_prune is False
     with pytest.raises(RuntimeError,match="Insufficient backup filesystem headroom"):
         create_verified_backup(db_path=source,backup_dir=backups,retention=3)
-    assert old.stat().st_size==2*1024**3
-    assert recent.stat().st_size==2*1024**3
+    assert old.stat().st_size==len(b"SIMULATED_BACKUP_FOR_CAPACITY_TEST")
+    assert recent.stat().st_size==len(b"SIMULATED_BACKUP_FOR_CAPACITY_TEST")
     assert len(list(backups.iterdir()))==2
 
 
@@ -92,8 +96,12 @@ def test_retention_one_explicitly_still_keeps_single_prior_recovery_copy(
             backups/f"christiania_backup_2026100{i+1}T000000Z.db",
             2*1024**3,
         )
-    monkeypatch.setattr(ops.shutil,"disk_usage",lambda _:TightDisk())
+    class EnoughDisk:
+        total=100*1024**3
+        free=55*1024**3
+        used=total-free
+    monkeypatch.setattr(ops.shutil,"disk_usage",lambda _:EnoughDisk())
     plan=plan_backup_capacity(source=source,target_dir=backups,retention=1)
     assert plan.preprune_keep==1
-    assert plan.reclaimable_bytes==2*1024**3
+    assert plan.reclaimable_bytes==len(b"SIMULATED_BACKUP_FOR_CAPACITY_TEST")
     assert plan.feasible_after_safe_prune is True
