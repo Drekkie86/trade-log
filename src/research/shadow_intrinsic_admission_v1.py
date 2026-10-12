@@ -14,6 +14,7 @@ from src.database.repository import (
 )
 from src.providers.ecb_fx import EcbFxObservation
 from src.research.shadow_lifecycle import classify_greek_quality
+from src.research.shadow_entry_quote_quality_v1 import evaluate_entry_quote_quality
 
 UTC = ZoneInfo("UTC")
 
@@ -301,6 +302,8 @@ def _persist_decision(
     estimated_cost_eur_minor: int,
     intrinsic_risk_eur_minor: int,
     fx: EcbFxObservation,
+    decided_at: str,
+    entry_quote_quality: dict[str, Any] | None,
     db_path=None,
 ) -> int:
     evidence = json.dumps(
@@ -332,6 +335,9 @@ def _persist_decision(
             },
             "research_only": True,
             "broker_order_created": False,
+            "entry_quote_quality": entry_quote_quality or {
+                "eligible": False, "reason_code": "NOT_EVALUATED_EARLIER_BLOCK"
+            },
         },
         sort_keys=True,
     )
@@ -365,7 +371,7 @@ def _persist_decision(
                     intrinsic_risk_eur_minor,
                     decision,
                     reason_code,
-                    _now_utc(),
+                    decided_at,
                     evidence,
                 ),
             )
@@ -424,6 +430,10 @@ def admit_shadow_proposals(
             db_path=db_path,
         )
 
+        # The final entry decision clock is captured BEFORE the as-of check.
+        # It is also persisted so immutable timestamps match quality evidence.
+        decision_at = _now_utc()
+        entry_quality = None
         block_reason = None
         if max_loss_usd_minor <= 0 or converted_max_loss_eur_minor <= 0:
             block_reason = "NON_POSITIVE_DEFINED_MAX_LOSS"
@@ -437,6 +447,12 @@ def admit_shadow_proposals(
             block_reason = "ENTRY_GREEK_EVIDENCE_MISSING"
         elif greek_evidence["state"] != "PRESENT":
             block_reason = "ENTRY_GREEK_NOT_PRESENT"
+
+        if block_reason is None:
+            entry_quality = evaluate_entry_quote_quality(
+                proposal=proposal, admission_at=decision_at, db_path=db_path
+            )
+            block_reason = entry_quality.reason_code
 
         if block_reason is not None:
             _persist_decision(
@@ -452,6 +468,8 @@ def admit_shadow_proposals(
                 estimated_cost_eur_minor=estimated_cost_eur_minor,
                 intrinsic_risk_eur_minor=intrinsic_risk_eur_minor,
                 fx=fx,
+                decided_at=decision_at,
+                entry_quote_quality=None if entry_quality is None else entry_quality.evidence,
                 db_path=db_path,
             )
             decisions.append(
@@ -485,7 +503,7 @@ def admit_shadow_proposals(
             "surfaced_at": str(proposal["surfaced_at"]),
             "entry_quote_observation_id": int(quote_evidence["id"]),
             "entry_greek_observation_id": int(greek_evidence["id"]),
-            "quote_freshness_class": "FRESH",
+            "quote_freshness_class": entry_quality.freshness_class,
             "greek_quality_class": greek_quality,
             "universe_status": universe_status,
             "structure_id": str(proposal["structure_id"]),
@@ -556,6 +574,8 @@ def admit_shadow_proposals(
             estimated_cost_eur_minor=estimated_cost_eur_minor,
             intrinsic_risk_eur_minor=intrinsic_risk_eur_minor,
             fx=fx,
+            decided_at=decision_at,
+            entry_quote_quality=entry_quality.evidence,
             db_path=db_path,
         )
         decisions.append(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -906,6 +907,82 @@ class SaxoClient:
         value: str,
     ) -> str:
         return value[:10]
+
+    def find_option_contracts_batch(
+        self,
+        *,
+        underlying: str,
+        requests: list[tuple[str, float, str]],
+    ) -> list[SaxoOptionContract]:
+        """Bounded independent quote resolver: reuse root/space per expiry.
+
+        Returns exact contracts in input order, with no quote or order call.
+        Intended solely for up to four observed shadow legs.
+        """
+        if not 1 <= len(requests) <= 4:
+            raise ValueError("SAXO_BATCH_LEG_COUNT_OUT_OF_BOUNDS")
+        normalized = []
+        for expiration, strike, right in requests:
+            if (not isinstance(expiration, str)
+                    or len(expiration) != 10
+                    or right not in ("Call", "Put")
+                    or not isinstance(strike, (int, float))
+                    or not math.isfinite(float(strike))
+                    or float(strike) <= 0):
+                raise ValueError("SAXO_BATCH_CONTRACT_REQUEST_INVALID")
+            normalized.append((expiration, float(strike), right.lower()))
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("SAXO_BATCH_DUPLICATE_CONTRACT_REQUEST")
+
+        root = self.find_option_root(underlying)
+        root_id = int(root["Identifier"])
+        spaces = {
+            expiration: self.get_option_space(root_id, expiration)
+            for expiration in sorted({s[0] for s in normalized})
+        }
+        resolved = []
+        for expiration, strike, right in normalized:
+            space = spaces[expiration]
+            matches = []
+            for entry in space.get("OptionSpace", []):
+                if str(entry.get("Expiry", ""))[:10] != expiration:
+                    continue
+                for option in entry.get("SpecificOptions", []):
+                    try:
+                        if (str(option.get("PutCall", "")).lower() != right
+                                or abs(float(option["StrikePrice"]) - strike)
+                                > 0.000001):
+                            continue
+                        uic = option.get("Uic")
+                        if uic is None:
+                            continue
+                        underlying_uic = option.get("UnderlyingUic")
+                        matches.append(SaxoOptionContract(
+                            uic=int(uic),
+                            option_root_id=root_id,
+                            underlying_uic=(
+                                int(underlying_uic)
+                                if underlying_uic is not None else None
+                            ),
+                            underlying=underlying.upper(),
+                            put_call=str(option["PutCall"]),
+                            strike=float(option["StrikePrice"]),
+                            expiration=expiration,
+                            trading_status=option.get("TradingStatus"),
+                            contract_size=_optional_float(
+                                space.get("ContractSize")
+                            ),
+                        ))
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        continue
+            if len(matches) != 1:
+                raise SaxoContractResolutionError(
+                    "Saxo bounded batch could not uniquely resolve "
+                    f"{underlying} {expiration} {right} {strike:g} "
+                    f"(matches={len(matches)})."
+                )
+            resolved.append(matches[0])
+        return resolved
 
     def find_option_contract(
         self,
