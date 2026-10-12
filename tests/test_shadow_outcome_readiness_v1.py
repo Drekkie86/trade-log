@@ -3,10 +3,21 @@ import pytest
 
 from src.database.repository import get_connection
 from src.research.shadow_admission import admit_shadow_proposals
+import src.research.shadow_intrinsic_admission_v1 as active_shadow_admission
 from src.research.shadow_outcome_readiness_v1 import (
     inspect_candidate, inspect_recent
 )
 from tests._shadow_admission_seed import fx, seed_proposal
+
+
+@pytest.fixture(autouse=True)
+def _freeze_synthetic_admission_clock(monkeypatch):
+    # Same historical synthetic source session as the entry freshness fixtures.
+    monkeypatch.setattr(
+        active_shadow_admission,
+        "_now_utc",
+        lambda: "2026-09-01T18:00:10.000Z",
+    )
 
 
 def one_candidate(db_path):
@@ -17,14 +28,17 @@ def one_candidate(db_path):
     return result.decisions[0]
 
 
-def test_legacy_fresh_status_is_not_independent_outcome_validation(db_path):
+def test_fresh_source_entry_still_lacks_independent_outcome(db_path):
     decision=one_candidate(db_path)
     report=inspect_candidate(decision.candidate_id,db_path=db_path)
     assert report.quote_freshness_label=="FRESH"
     assert report.readiness=="NOT_READY"
     assert not report.can_score
-    assert "ENTRY_QUALITY_NOT_VERIFIED_AS_OF_ADMISSION" in report.blockers
-    assert "PROVIDER_TIMESTAMP_LIVE_PROBE_UNVERIFIED" in report.blockers
+    # Under the synthetic fixture, the *entry* is verified by the new
+    # admission gate; paper P&L still cannot become an executable package.
+    assert "ENTRY_QUALITY_NOT_VERIFIED_AS_OF_ADMISSION" not in report.blockers
+    assert "PROVIDER_TIMESTAMP_LIVE_PROBE_UNVERIFIED" not in report.blockers
+    assert "CANONICAL_EXECUTABLE_PACKAGE_RECEIPT_NOT_INDEPENDENTLY_VERIFIED" in report.blockers
     assert "PREDECLARED_RISK_EXIT_PLAN_MISSING" in report.blockers
     assert "NO_ELIGIBLE_PACKAGE_MARK" in report.blockers
     assert report.independent_leg_stress_marks==0

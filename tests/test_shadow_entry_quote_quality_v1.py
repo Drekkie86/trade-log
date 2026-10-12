@@ -159,6 +159,30 @@ def test_time_bounds_do_not_guess_or_clamp_future(db_path):
 
 
 
+
+
+def test_submillisecond_stale_quote_cannot_round_into_eligibility(db_path):
+    seeded=seed_proposal(db_path)
+    proposal=proposal_row(db_path,seeded["proposal_id"])
+    # Source quote time is 18:00:00Z. This is 15.0004s old, not 15s.
+    result=evaluate_entry_quote_quality(
+        proposal=proposal,
+        admission_at="2026-09-01T18:00:15.0004Z",
+        db_path=db_path,
+    )
+    assert result.reason_code=="ENTRY_LEG_STALE_AT_ADMISSION"
+    assert result.evidence["eligible"] is False
+
+
+def test_submillisecond_future_timestamp_cannot_round_to_zero(db_path):
+    seeded=seed_proposal(
+        db_path,lower_wing_quote_at="2026-09-01T14:00:10.0004")
+    proposal=proposal_row(db_path,seeded["proposal_id"])
+    result=evaluate_entry_quote_quality(
+        proposal=proposal,admission_at=CLOCK,db_path=db_path)
+    assert result.reason_code=="ENTRY_LEG_FUTURE_SOURCE_TIMESTAMP"
+    assert result.evidence["eligible"] is False
+
 def test_frozen_bid_ask_entry_must_match_persisted_quote(db_path):
     seeded=seed_proposal(db_path)
     p=proposal_row(db_path,seeded["proposal_id"])

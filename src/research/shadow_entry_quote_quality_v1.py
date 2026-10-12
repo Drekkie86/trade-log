@@ -174,14 +174,18 @@ def evaluate_entry_quote_quality(
         except (ValueError, KeyError, TypeError, OverflowError, InvalidOperation):
             return _blocked("ENTRY_LEG_TIMESTAMP_OR_PRICE_UNPARSEABLE",summary,evidence)
         snapshots.add(int(row["snapshot_id"]))
+        # Apply strict temporal limits to full-precision durations, NEVER
+        # rounded evidence values. Rounding 15.0004 to 15.000 would wrongly
+        # admit stale quotes; -0.0004 to -0.000 would hide future data.
         ages = {
-            "quote_age_seconds": round((decision-quote_time).total_seconds(),3),
-            "bid_age_seconds": round((decision-bid_time).total_seconds(),3),
-            "ask_age_seconds": round((decision-ask_time).total_seconds(),3),
-            "snapshot_age_seconds": round((decision-capture_time).total_seconds(),3),
+            "quote_age_seconds": (decision-quote_time).total_seconds(),
+            "bid_age_seconds": (decision-bid_time).total_seconds(),
+            "ask_age_seconds": (decision-ask_time).total_seconds(),
+            "snapshot_age_seconds": (decision-capture_time).total_seconds(),
         }
         evidence.append({"quote_id":int(row["id"]),"snapshot_id":int(row["snapshot_id"]),
-                         "side":str(leg["side"]),**ages})
+                         "side":str(leg["side"]),
+                         **{k:round(v,6) for k,v in ages.items()}})
         quote_times.extend((quote_time,bid_time,ask_time))
         if any(age < 0 for age in ages.values()):
             return _blocked("ENTRY_LEG_FUTURE_SOURCE_TIMESTAMP",summary,evidence)
