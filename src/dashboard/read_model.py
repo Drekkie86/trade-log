@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from src.dashboard.shadow_candidate_validation_v1 import read_shadow_candidate_validation
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
@@ -679,6 +680,7 @@ def load_command_deck(
     shadow_mark_history: list[dict[str, Any]] = []
     shadow_candidate_followup: list[dict[str, Any]] = []
     shadow_tracking: dict[str, Any] = {}
+    shadow_candidate_validation: dict[str, Any] = {}
     recovery_summary: list[dict[str, Any]] = []
     data_quality: dict[str, Any] = {}
     shadow_risk_current: list[dict[str, Any]] = []
@@ -1687,6 +1689,7 @@ def load_command_deck(
 
         if _needs("shadow"):
             _section_started = time.perf_counter()
+            shadow_candidate_validation = read_shadow_candidate_validation(conn)
             shadow_mark_history = _rows_to_dicts(
                 conn.execute(
                     '''
@@ -2067,6 +2070,7 @@ def load_command_deck(
         "shadow_mark_history": shadow_mark_history,
         "shadow_candidate_followup": shadow_candidate_followup,
         "shadow_tracking": shadow_tracking,
+        "shadow_candidate_validation": shadow_candidate_validation,
         "shadow_risk_current": shadow_risk_current,
         "recovery_summary": recovery_summary,
         "data_quality": data_quality,

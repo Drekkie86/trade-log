@@ -1360,8 +1360,48 @@ elif page == "Shadow Lab":
             "marks are later valuations. Validated hold/mark outcomes and predeclared risk-trigger exits are deliberately separate measurement populations."
         )
 
-        # Render the user-visible workbench in the real main-sidebar Shadow Lab,
-        # not only in the disconnected legacy Calibration multipage URL.
+        validation = snapshot.get("shadow_candidate_validation", {})
+        if validation:
+            section_heading(
+                "Prospective candidate validation",
+                "Read-only evidence gates. Admitted research candidates are not "
+                "executable trades or validated economic outcomes.",
+            )
+            vcounts = validation.get("counts", {})
+            va, vb, vc, vd = st.columns(4)
+            va.metric("Recently audited candidates", _fmt_count(vcounts.get("recent_sample_size", 0)))
+            vb.metric("Prospectively recorded plans", _fmt_count(vcounts.get("sample_predeclared_risk_plans", 0)))
+            vc.metric("Evidence-eligible outcomes", _fmt_count(vcounts.get("sample_economically_eligible", 0)))
+            vd.metric(
+                "Live source clock",
+                "Verified" if validation.get("clock_evidence") == "GLOBAL_LIVE_SEMANTICS_PASSED" else "Unverified",
+            )
+            st.caption(
+                f"Separate admission policies: legacy wallet-policy decisions "
+                f"{_fmt_count(vcounts.get('historical_legacy_admission_decisions', 0))}; "
+                f"intrinsic-risk decisions "
+                f"{_fmt_count(vcounts.get('new_intrinsic_admission_decisions', 0))}. "
+                "The detailed table covers only the newest 40 candidates, NOT all history."
+            )
+            st.warning(
+                "FRESH is an older recorded quote classification, not independently "
+                "verified per-leg as-of evidence. Later liquidation marks are not "
+                "complex-package fills or validated P&L. No candidate is promoted "
+                "to trade-ready without frozen risk rules and independent receipts."
+            )
+            with st.expander("Inspect recent candidates and missing evidence", expanded=True):
+                _show_table(
+                    validation.get("recent_candidates", []),
+                    columns=[
+                        "candidate_id", "underlying", "surfaced_at", "structure_id",
+                        "admission_policy", "recorded_quote_class", "risk_plan_recording",
+                        "mark_count", "eligible_marks", "economic_scoring_state",
+                        "missing_evidence",
+                    ],
+                )
+
+        # The interactive, explicitly hypothetical workbench is separate
+        # from the production-candidate evidence gate above.
         from src.ui.shadow_stage0_workbench_v1 import render_shadow_stage0_workbench
         render_shadow_stage0_workbench()
 
