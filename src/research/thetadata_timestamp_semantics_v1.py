@@ -13,6 +13,11 @@ DOC_URLS=(
 )
 
 def validate_thetadata_timestamp_semantics_v1(*,db_path=None,live_probe_state='NOT_RUN'):
+    # This validator exercises documented DST conversion examples only. It
+    # does NOT contact ThetaData or authenticate a per-contract observation.
+    # A caller-supplied PASSED flag must never become a live-validation claim.
+    if live_probe_state != 'NOT_RUN':
+        raise ValueError('LIVE_THETA_TIMESTAMP_PROBE_MUST_BE_INDEPENDENTLY_VERIFIED')
     summer=parse_thetadata_market_timestamp('2026-09-03T09:30:00.000')
     winter=parse_thetadata_market_timestamp('2026-01-15T09:30:00.000')
     aware=parse_thetadata_market_timestamp('2026-09-03T13:30:00+00:00')
@@ -22,7 +27,6 @@ def validate_thetadata_timestamp_semantics_v1(*,db_path=None,live_probe_state='N
     aware_pass=(aware.hour==9 and aware.utcoffset().total_seconds()/3600==-4.0)
     doc_pass=True
     if not (dst and aware_pass and doc_pass): confidence='FAILED'
-    elif live_probe_state=='PASSED': confidence='DOCUMENTED_AND_LIVE_VALIDATED'
     else: confidence='DOCUMENTED_CONTRACT_VALIDATED_NOT_LIVE_PROBED'
     evidence={'version':VERSION,'documentation_urls':DOC_URLS,'documented_contract':'ThetaData time_of_day is America/New_York and snapshot cache resets at midnight ET','summer_example':summer.isoformat(),'winter_example':winter.isoformat(),'aware_utc_example':aware.isoformat(),'live_probe_state':live_probe_state}
     c=get_connection(db_path)
