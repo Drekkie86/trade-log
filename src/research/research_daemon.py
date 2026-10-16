@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
-from src.database.repository import get_connection
+from src.database.repository import (
+    active_pinned_underlyings,
+    get_connection,
+)
 from src.operations.market_calendar import session_sample_bounds
 from src.providers.massive import MassiveClient
 from src.providers.thetadata_control import (
@@ -872,12 +875,18 @@ def run_daemon(
 
             print()
 
+            # Underlyings with actively tracked shadow candidates must be
+            # sampled every slot, or the mark collector cannot value them.
+            pinned_underlyings = active_pinned_underlyings(
+                db_path=db_path,
+            )
             batch = select_symbol_batch(
                 symbols=symbols,
                 scheduled_for=slot,
                 batch_size=effective_batch_size,
                 interval_minutes=interval_minutes,
                 profile=universe_profile,
+                pinned=pinned_underlyings,
             )
             batch_symbols = list(batch.symbols)
             universe_context = {
@@ -886,11 +895,18 @@ def run_daemon(
                 "batch_size": batch.batch_size,
                 "batch_index": batch.batch_index,
                 "batch_count": batch.batch_count,
+                "pinned_added": list(batch.pinned_added),
             }
             print(
                 "Universe batch: "
                 f"{batch.batch_index + 1}/{batch.batch_count}; "
-                f"{batch.batch_size}/{batch.universe_size} symbols."
+                f"{batch.batch_size}/{batch.universe_size} symbols"
+                + (
+                    f" (+{len(batch.pinned_added)} pinned: "
+                    + ", ".join(batch.pinned_added) + ")"
+                    if batch.pinned_added else ""
+                )
+                + "."
             )
             print(
                 "Symbols: "

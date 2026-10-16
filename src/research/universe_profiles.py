@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
+from typing import Iterable
 from zoneinfo import ZoneInfo
 
 
@@ -38,6 +39,7 @@ class UniverseBatch:
     batch_index: int
     batch_count: int
     symbols: tuple[str, ...]
+    pinned_added: tuple[str, ...] = ()
 
 
 def symbols_for_profile(name: str) -> list[str]:
@@ -58,7 +60,18 @@ def select_symbol_batch(
     batch_size: int,
     interval_minutes: int,
     profile: str | None = None,
+    pinned: Iterable[str] = (),
 ) -> UniverseBatch:
+    """Select this slot's rotating batch, then force-include pinned underlyings.
+
+    A pinned underlying is one with an actively tracked shadow candidate. The
+    shadow mark collector can only value a candidate whose underlying was
+    sampled in the *current* research run, so leaving pinned names to the
+    rotation starves tracked candidates of marks on every slot where their
+    batch is not up (3 of 4 slots with 48 symbols / batch 12). Pinned names
+    are appended on top of the rotating batch; they never displace it and
+    unknown pins (not in the governed universe) are ignored.
+    """
     if not symbols:
         raise ValueError("Universe cannot be empty.")
     if batch_size < 1:
@@ -86,12 +99,22 @@ def select_symbol_batch(
 
     start = batch_index * effective_batch
     end = min(start + effective_batch, len(normalized))
+    rotating = list(normalized[start:end])
+
+    universe = set(normalized)
+    pinned_added: list[str] = []
+    for raw in pinned:
+        symbol = str(raw).strip().upper()
+        if symbol in universe and symbol not in rotating and symbol not in pinned_added:
+            pinned_added.append(symbol)
+    pinned_added.sort()
 
     return UniverseBatch(
         profile=None if profile is None else profile.upper(),
         universe_size=len(normalized),
-        batch_size=end - start,
+        batch_size=len(rotating) + len(pinned_added),
         batch_index=batch_index,
         batch_count=batch_count,
-        symbols=tuple(normalized[start:end]),
+        symbols=tuple(rotating + pinned_added),
+        pinned_added=tuple(pinned_added),
     )

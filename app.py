@@ -687,12 +687,19 @@ if page == "Dashboard":
         )
 
     section_heading("Research pulse", "Prospective evidence grows independently from product readiness.")
-    m1, m2, m3, m4, m5 = st.columns(5)
+    expiry_pulse = snapshot.get("shadow_expiry_outcomes", {})
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Prospective dates", _fmt_count(prospective["independent_dates"]), "first review at 5")
     m2.metric("Observation rows", _fmt_count(prospective["observation_rows"]))
     m3.metric("Surfaced observations", _fmt_count(counts["surfaced_total"]))
     m4.metric("Shadow candidates", _fmt_count(counts["shadow_candidates"]))
-    m5.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "provenance retained")
+    _wr = expiry_pulse.get("win_rate")
+    m5.metric(
+        "Expiry outcomes",
+        _fmt_count(expiry_pulse.get("resolved", 0)),
+        "no result yet" if _wr is None else f"{_wr * 100:.0f}% profitable · see Shadow Lab",
+    )
+    m6.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "provenance retained")
     _visual_note(
         "How much evidence Christiania has collected. Prospective dates matter more than raw row count: "
         "many observations from one day are still only one independent market date."
@@ -1349,15 +1356,68 @@ elif page == "Shadow Lab":
             "Candidate follow-up: inception, subsequent marks, validated outcomes, and current evidence state.",
         )
         tracking = snapshot.get("shadow_tracking", {})
+        expiry = snapshot.get("shadow_expiry_outcomes", {})
+
+        section_heading(
+            "Did the suggested structures make money at expiry?",
+            "Deterministic expiry-intrinsic outcomes for every admitted candidate whose expiration has passed. "
+            "This is the one measurable answer Christiania can give today.",
+        )
+        resolved = int(expiry.get("resolved", 0) or 0)
+        o1, o2, o3, o4, o5 = st.columns(5)
+        o1.metric(
+            "Resolved expiry outcomes",
+            _fmt_count(resolved),
+            f"{_fmt_count(expiry.get('unresolved', 0))} unresolved",
+        )
+        win_rate = expiry.get("win_rate")
+        o2.metric(
+            "Win rate",
+            "—" if win_rate is None else f"{win_rate * 100:.0f}%",
+            f"{_fmt_count(expiry.get('wins', 0))} W / {_fmt_count(expiry.get('losses', 0))} L / {_fmt_count(expiry.get('flat', 0))} flat",
+        )
+        total_net = expiry.get("total_net_eur_minor")
+        o3.metric(
+            "Total net P&L at expiry",
+            "—" if total_net is None else f"€{_fmt_number(total_net / 100.0, decimals=2)}",
+            "after assumed round-trip costs",
+        )
+        mean_net = expiry.get("mean_net_eur_minor")
+        o4.metric(
+            "Mean net per candidate",
+            "—" if mean_net is None else f"€{_fmt_number(mean_net / 100.0, decimals=2)}",
+            f"{_fmt_count(expiry.get('resolved_expiration_dates', 0))} independent expiry date(s)",
+        )
+        ratio = expiry.get("net_to_risk_ratio")
+        o5.metric(
+            "Net / defined risk",
+            "—" if ratio is None else f"{ratio * 100:+.1f}%",
+            "of total max loss at stake",
+        )
+        if resolved == 0:
+            st.info(
+                "No expired candidate has an expiry outcome yet. Outcomes are recorded by the daemon "
+                "on the first completed cycle after each candidate's expiration session."
+            )
+        else:
+            st.warning(
+                "Terminal price is the last daemon-sampled underlying price of the expiry session, "
+                "not the official settlement value. Costs are the assumed public tariff ceiling, not fills. "
+                f"With {_fmt_count(expiry.get('resolved_expiration_dates', 0))} independent expiry date(s) this is a "
+                "descriptive tally, not a statistical claim about edge."
+            )
+
+        section_heading("Tracking funnel")
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Proposals", _fmt_count(counts["proposals_total"]), f"{_fmt_count(counts['proposals_blocked'])} builder-blocked")
         c2.metric("Admitted shadows", _fmt_count(counts["admitted_total"]), f"{_fmt_count(counts['admission_blocked'])} blocked")
-        c3.metric("Recorded marks", _fmt_count(counts["shadow_marks"]), f"{_fmt_count(tracking.get('marked_candidates', 0))} candidate(s)")
-        c4.metric("Validated hold/mark outcomes", _fmt_count(tracking.get("validated_outcomes", 0)), "raw population")
+        c3.metric("Valued marks", _fmt_count(counts["shadow_marks"]), f"{_fmt_count(tracking.get('marked_candidates', 0))} candidate(s); see per-candidate split")
+        c4.metric("Validated package outcomes", _fmt_count(tracking.get("validated_outcomes", 0)), "frozen contract; no writer yet")
         c5.metric("Predeclared risk exits", _fmt_count(tracking.get("risk_exit_outcomes", 0)), f"{_fmt_count(tracking.get('eligible_risk_exit_outcomes', 0))} evidence-eligible")
         _visual_note(
-            "This is the follow-up laboratory: proposals are ideas, admitted shadows are hypothetical experiments we track, "
-            "marks are later valuations. Validated hold/mark outcomes and predeclared risk-trigger exits are deliberately separate measurement populations."
+            "Proposals are ideas, admitted shadows are hypothetical experiments we track, marks are intraday "
+            "liquidation-stress valuations. Expiry outcomes (above), validated package outcomes and predeclared "
+            "risk-trigger exits are deliberately separate measurement populations."
         )
 
         validation = snapshot.get("shadow_candidate_validation", {})
@@ -1515,11 +1575,21 @@ elif page == "Shadow Lab":
             a, b, c, d = st.columns(4)
             a.metric("Underlying", selected.get("underlying") or "—")
             b.metric("Current state", _status_label(selected.get("current_state")))
-            c.metric("Thesis assessment", selected.get("thesis_assessment") or "NOT YET SCORED")
-            d.metric("Validated trade result", selected.get("validated_trade_result") or "NOT YET VALIDATED")
+            expiry_net = selected.get("expiry_net_pnl_eur_minor")
+            c.metric(
+                "Result at expiry",
+                selected.get("expiry_result") or "NOT YET DUE / NOT RECORDED",
+                "—" if expiry_net is None else f"€{_fmt_number(float(expiry_net) / 100.0, decimals=2)} net",
+            )
+            d.metric(
+                "Valued / placeholder marks",
+                f"{_fmt_count(selected.get('complete_mark_count', 0))} / {_fmt_count(selected.get('unsampled_cycle_count', 0))}",
+                "placeholders = cycles where this underlying was not sampled",
+            )
             _visual_note(
-                "Thesis assessment asks whether the original market idea was right. Validated trade result asks whether the "
-                "hypothetical structure made money after the allowed outcome rules. Those are deliberately different questions."
+                "Result at expiry is the deterministic intrinsic payoff of the persisted structure at the last stored "
+                "expiry-session underlying price, net of assumed costs. 'Validated package outcome' (frozen contract) "
+                "is a separate population and currently has no production writer."
             )
 
             details = pd.DataFrame([selected])
@@ -1537,14 +1607,15 @@ elif page == "Shadow Lab":
                     "anomaly_direction",
                     "admission_label",
                     "current_state",
-                    "mark_count",
-                    "validated_outcomes",
+                    "complete_mark_count",
+                    "unsampled_cycle_count",
+                    "expiry_result",
+                    "expiry_net_pnl_eur_minor",
+                    "expiry_terminal_underlying_price",
+                    "expiry_outcome_reason",
                     "latest_mark_at",
                     "latest_measurement_role",
-                    "latest_outcome_eligible",
-                    "validated_net_pnl_eur_minor",
-                    "thesis_assessment",
-                    "validated_trade_result",
+                    "validated_outcomes",
                 ],
             )
 
@@ -1612,12 +1683,13 @@ elif page == "Shadow Lab":
                 columns=[
                     "candidate_id",
                     "underlying",
-                    "hypothesis_family",
+                    "structure_id",
                     "current_state",
-                    "mark_count",
+                    "expiry_result",
+                    "expiry_net_pnl_eur_minor",
+                    "complete_mark_count",
+                    "unsampled_cycle_count",
                     "validated_outcomes",
-                    "thesis_assessment",
-                    "validated_trade_result",
                     "latest_mark_at",
                 ],
             )

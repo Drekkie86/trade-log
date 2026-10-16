@@ -2622,6 +2622,45 @@ def append_shadow_outcome_observation(
         return int(cursor.lastrowid)
 
 
+def active_pinned_underlyings(
+    *,
+    db_path=None,
+    connection=None,
+) -> list[str]:
+    """Underlyings with at least one candidate whose latest pin event is PIN.
+
+    Pins are per candidate (trigger trg_underlying_pin_alternates), so the
+    latest action is resolved per candidate first; an underlying stays pinned
+    while any of its candidates is still pinned.
+    """
+    own_connection = connection is None
+    if own_connection:
+        connection = get_connection(db_path)
+    try:
+        rows = connection.execute(
+            """
+            WITH latest AS (
+                SELECT
+                    underlying,
+                    action,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY candidate_id
+                        ORDER BY id DESC
+                    ) AS rn
+                FROM underlying_pin_events
+            )
+            SELECT DISTINCT underlying
+            FROM latest
+            WHERE rn = 1 AND action = 'PIN'
+            ORDER BY underlying;
+            """
+        ).fetchall()
+        return [str(row["underlying"]) for row in rows]
+    finally:
+        if own_connection:
+            connection.close()
+
+
 def append_underlying_pin_event(
     *,
     underlying: str,

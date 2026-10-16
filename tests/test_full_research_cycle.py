@@ -103,6 +103,11 @@ def test_full_cycle_skips_fx_when_no_proposals(
         "advance_shadow_lifecycle",
         fake_lifecycle,
     )
+    monkeypatch.setattr(
+        "src.research.full_research_cycle."
+        "record_shadow_expiry_outcomes",
+        lambda **kwargs: None,
+    )
 
     result = run_full_research_cycle(
         symbols=["AAPL"],
@@ -196,6 +201,11 @@ def test_full_cycle_admits_only_persisted_proposals(
         "advance_shadow_lifecycle",
         fake_lifecycle,
     )
+    monkeypatch.setattr(
+        "src.research.full_research_cycle."
+        "record_shadow_expiry_outcomes",
+        lambda **kwargs: None,
+    )
 
     result = run_full_research_cycle(
         symbols=["AAPL"],
@@ -258,6 +268,11 @@ def test_full_cycle_propagates_research_thresholds(
     monkeypatch.setattr(
         "src.research.full_research_cycle."
         "advance_shadow_lifecycle",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "src.research.full_research_cycle."
+        "record_shadow_expiry_outcomes",
         lambda **kwargs: None,
     )
 

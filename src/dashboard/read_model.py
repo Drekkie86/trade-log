@@ -680,6 +680,7 @@ def load_command_deck(
     shadow_mark_history: list[dict[str, Any]] = []
     shadow_candidate_followup: list[dict[str, Any]] = []
     shadow_tracking: dict[str, Any] = {}
+    shadow_expiry_outcomes: dict[str, Any] = {}
     shadow_candidate_validation: dict[str, Any] = {}
     recovery_summary: list[dict[str, Any]] = []
     data_quality: dict[str, Any] = {}
@@ -1126,6 +1127,63 @@ def load_command_deck(
                 3,
             )
 
+        if _needs("lifecycle") or _needs("shadow"):
+            expiry_row = conn.execute(
+                '''
+                SELECT
+                    COUNT(*) AS recorded,
+                    SUM(outcome_state = 'RESOLVED') AS resolved,
+                    SUM(outcome_state = 'UNRESOLVED') AS unresolved,
+                    SUM(outcome_state = 'RESOLVED' AND estimated_net_pnl_eur_minor > 0) AS wins,
+                    SUM(outcome_state = 'RESOLVED' AND estimated_net_pnl_eur_minor < 0) AS losses,
+                    SUM(outcome_state = 'RESOLVED' AND estimated_net_pnl_eur_minor = 0) AS flat,
+                    SUM(CASE WHEN outcome_state = 'RESOLVED'
+                             THEN estimated_net_pnl_eur_minor END) AS total_net_eur_minor,
+                    AVG(CASE WHEN outcome_state = 'RESOLVED'
+                             THEN estimated_net_pnl_eur_minor END) AS mean_net_eur_minor,
+                    SUM(CASE WHEN outcome_state = 'RESOLVED'
+                             THEN max_theoretical_loss_usd_minor END) AS total_max_loss_usd_minor,
+                    SUM(CASE WHEN outcome_state = 'RESOLVED'
+                             THEN estimated_net_pnl_usd_minor END) AS total_net_usd_minor,
+                    COUNT(DISTINCT CASE WHEN outcome_state = 'RESOLVED'
+                                        THEN expiration END) AS resolved_expiration_dates
+                FROM shadow_expiry_outcomes_v1;
+                '''
+            ).fetchone()
+            _resolved = int(expiry_row["resolved"] or 0)
+            _total_max_loss = expiry_row["total_max_loss_usd_minor"]
+            shadow_expiry_outcomes = {
+                "recorded": int(expiry_row["recorded"] or 0),
+                "resolved": _resolved,
+                "unresolved": int(expiry_row["unresolved"] or 0),
+                "wins": int(expiry_row["wins"] or 0),
+                "losses": int(expiry_row["losses"] or 0),
+                "flat": int(expiry_row["flat"] or 0),
+                "win_rate": (
+                    int(expiry_row["wins"] or 0) / _resolved if _resolved else None
+                ),
+                "total_net_eur_minor": (
+                    int(expiry_row["total_net_eur_minor"])
+                    if expiry_row["total_net_eur_minor"] is not None else None
+                ),
+                "mean_net_eur_minor": (
+                    float(expiry_row["mean_net_eur_minor"])
+                    if expiry_row["mean_net_eur_minor"] is not None else None
+                ),
+                # Net result as a fraction of the total defined risk actually
+                # put at stake, computed in USD so the ratio is FX-free.
+                "net_to_risk_ratio": (
+                    int(expiry_row["total_net_usd_minor"]) / int(_total_max_loss)
+                    if _total_max_loss else None
+                ),
+                "resolved_expiration_dates": int(
+                    expiry_row["resolved_expiration_dates"] or 0
+                ),
+                "measurement_role": "PROSPECTIVE_EXPIRY_INTRINSIC_V1",
+                "settlement_basis": "LAST_STORED_EXPIRY_SESSION_UNDERLYING_SNAPSHOT",
+            }
+
+
         if _needs("lifecycle"):
             _section_started = time.perf_counter()
             latest_completed_session_row = conn.execute(
@@ -1433,6 +1491,8 @@ def load_command_deck(
                         SELECT
                             smo.candidate_id,
                             COUNT(*) AS mark_count,
+                            SUM(CASE WHEN smo.quality_state = 'COMPLETE_UNVERIFIED_FRESHNESS'
+                                     THEN 1 ELSE 0 END) AS complete_mark_count,
                             SUM(CASE WHEN smo.outcome_eligible = 1 THEN 1 ELSE 0 END)
                                 AS validated_outcomes
                         FROM shadow_mark_observations AS smo
@@ -1503,10 +1563,14 @@ def load_command_deck(
                         ru.failure_code AS collection_failure_code,
                         ru.recovery_error_type,
                         COALESCE(mc.mark_count, 0) AS mark_count,
+                        COALESCE(mc.complete_mark_count, 0) AS complete_mark_count,
                         COALESCE(mc.validated_outcomes, 0) AS validated_outcomes,
                         rm.observed_at AS latest_mark_at,
                         rm.estimated_net_pnl_eur_minor
-                            AS latest_estimated_net_pnl_eur_minor
+                            AS latest_estimated_net_pnl_eur_minor,
+                        seo.outcome_state AS expiry_outcome_state,
+                        seo.estimated_net_pnl_eur_minor AS expiry_net_pnl_eur_minor,
+                        seo.terminal_underlying_price AS expiry_terminal_underlying_price
                     FROM recent_candidates AS sc
                     LEFT JOIN v_shadow_admission_decisions_all AS sad
                       ON sad.candidate_id = sc.id
@@ -1529,6 +1593,8 @@ def load_command_deck(
                     LEFT JOIN latest_marks AS rm
                       ON rm.candidate_id = sc.id
                      AND rm.row_rank = 1
+                    LEFT JOIN shadow_expiry_outcomes_v1 AS seo
+                      ON seo.candidate_id = sc.id
                     ORDER BY sc.id DESC;
                     '''
                 ).fetchall()
@@ -1751,6 +1817,12 @@ def load_command_deck(
                         SELECT
                             smo.candidate_id,
                             COUNT(*) AS mark_count,
+                            SUM(CASE WHEN smo.quality_state = 'COMPLETE_UNVERIFIED_FRESHNESS'
+                                     THEN 1 ELSE 0 END) AS complete_mark_count,
+                            SUM(CASE WHEN smo.quality_state = 'INCOMPLETE_LEG_MARK'
+                                      AND json_extract(smo.evidence_json, '$.reason')
+                                          = 'NO_THETADATA_SNAPSHOT'
+                                     THEN 1 ELSE 0 END) AS unsampled_cycle_count,
                             SUM(CASE WHEN smo.outcome_eligible = 1 THEN 1 ELSE 0 END)
                                 AS validated_outcomes
                         FROM shadow_mark_observations AS smo
@@ -1793,6 +1865,20 @@ def load_command_deck(
                         sc.admission_label,
                         ssp.anomaly_direction,
                         COALESCE(mc.mark_count, 0) AS mark_count,
+                        COALESCE(mc.complete_mark_count, 0) AS complete_mark_count,
+                        COALESCE(mc.unsampled_cycle_count, 0) AS unsampled_cycle_count,
+                        seo.outcome_state AS expiry_outcome_state,
+                        seo.reason_code AS expiry_outcome_reason,
+                        seo.terminal_underlying_price AS expiry_terminal_underlying_price,
+                        seo.estimated_net_pnl_eur_minor AS expiry_net_pnl_eur_minor,
+                        seo.max_theoretical_loss_usd_minor AS expiry_max_loss_usd_minor,
+                        CASE
+                            WHEN seo.outcome_state IS NULL THEN 'NOT YET DUE / NOT RECORDED'
+                            WHEN seo.outcome_state = 'UNRESOLVED' THEN 'UNRESOLVED'
+                            WHEN seo.estimated_net_pnl_eur_minor > 0 THEN 'PROFIT AT EXPIRY'
+                            WHEN seo.estimated_net_pnl_eur_minor < 0 THEN 'LOSS AT EXPIRY'
+                            ELSE 'FLAT AT EXPIRY'
+                        END AS expiry_result,
                         rm.observed_at AS latest_mark_at,
                         rm.estimated_net_pnl_eur_minor
                             AS latest_estimated_net_pnl_eur_minor,
@@ -1832,6 +1918,8 @@ def load_command_deck(
                     LEFT JOIN validated_mark AS vm
                       ON vm.candidate_id = sc.id
                      AND vm.validated_rank = 1
+                    LEFT JOIN shadow_expiry_outcomes_v1 AS seo
+                      ON seo.candidate_id = sc.id
                     ORDER BY sc.id DESC;
                     '''
                 ).fetchall()
@@ -2070,6 +2158,7 @@ def load_command_deck(
         "shadow_mark_history": shadow_mark_history,
         "shadow_candidate_followup": shadow_candidate_followup,
         "shadow_tracking": shadow_tracking,
+        "shadow_expiry_outcomes": shadow_expiry_outcomes,
         "shadow_candidate_validation": shadow_candidate_validation,
         "shadow_risk_current": shadow_risk_current,
         "recovery_summary": recovery_summary,
