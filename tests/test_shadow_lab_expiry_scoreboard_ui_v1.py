@@ -43,7 +43,8 @@ def _metric_labels(app):
 
 def test_empty_database_renders_zero_outcomes(app_db):
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
-    app.run(timeout=60)
+    app.run(timeout=60)  # opens on Trade Ideas, the default page
+    app.sidebar.radio[0].set_value("⚓ Dashboard").run(timeout=60)
     assert not app.exception, app.exception
     metrics = _metric_labels(app)
     assert metrics["Expiry outcomes"][0] == "0"
@@ -70,7 +71,8 @@ def test_resolved_outcome_shows_on_both_pages(app_db):
     record_shadow_expiry_outcomes(research_run_id=after, db_path=app_db)
 
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
-    app.run(timeout=60)
+    app.run(timeout=60)  # opens on Trade Ideas, the default page
+    app.sidebar.radio[0].set_value("⚓ Dashboard").run(timeout=60)
     assert not app.exception, app.exception
     value, delta = _metric_labels(app)["Expiry outcomes"]
     assert value == "1"
