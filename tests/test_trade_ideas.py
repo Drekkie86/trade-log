@@ -313,7 +313,9 @@ def test_idea_shows_three_models_side_by_side(db_path):
     assert len(set(round(v, 6) for v in edges.values())) == 3
     assert idea.favouring == sum(1 for m in MODEL_ORDER if idea.judgements[m].favours)
     assert idea.profile is not None and 0.0 < idea.profile.p_profit < 1.0
-    assert idea.net_debit_usd > 0 and idea.max_loss_usd == pytest.approx(idea.net_debit_usd)
+    assert idea.net_debit_usd > 0
+    assert idea.max_loss_usd == pytest.approx(idea.net_debit_usd + idea.fees_usd)
+    assert idea.max_loss_usd == pytest.approx(idea.profile.max_loss_usd)
     assert idea.admission_decision is None  # nothing admitted yet
 
 
@@ -494,12 +496,12 @@ def test_table_rows_put_each_model_in_its_own_column(db_path):
     idea = load_current_ideas(db_path=db_path)[0][0]
     row = ideas_to_rows([idea])[0]
     assert row["Stock"] == "AAPL" and row["Trade"] == "Long fly 95/100/105 call"
-    assert row["Expires"] == "2026-09-18 (17d)"
+    assert row["Expires"] == "18 Sep 2026 · 17 DTE at quote"
     for model_id in MODEL_ORDER:
         cell = row[MODEL_LABELS[model_id]]
         assert cell[0] in "✓≈✗" and "$" in cell
     assert row["Models that see edge"] == f"{idea.favouring} of 3"
-    assert row["Status"] == "Not tracked yet"
+    assert row["Status"] == "Expired — historical proposal"
     assert row["Most you can lose"].startswith("$") and row["Most you can make"].startswith("$")
 
 
@@ -521,7 +523,7 @@ def test_evidence_banner_never_overstates():
     tone, text = evidence_banner(empty, 0)
     assert tone == "warning" and "Not proven yet" in text
     tone, text = evidence_banner(empty, 4)
-    assert "untested" in text
+    assert "retrospective replay" in text and "No prospective picks" in text
     rows = record_rows(empty)
     assert rows[0]["Win rate"] == "—" and rows[0]["Average result"] == "—"
 
@@ -662,3 +664,15 @@ def test_svi_leave_one_out_does_not_see_the_target_quote():
     other = [(k, iv + (0.10 if k == 100 else 0.0)) for k, iv in with_bump]
     fair2, _, _ = svi_fair_ivs(other, market, [100.0], exclude_strike=100.0)
     assert fair2[100.0] == pytest.approx(fair[100.0], abs=1e-9)
+
+
+def test_track_record_explicitly_requires_outcome_schema(db_path):
+    conn = get_connection(db_path)
+    try:
+        conn.execute("DROP TABLE shadow_expiry_outcomes_v1")
+        conn.commit()
+    finally:
+        conn.close()
+    import sqlite3
+    with pytest.raises(sqlite3.OperationalError, match="migration 035"):
+        model_track_record(db_path=db_path)

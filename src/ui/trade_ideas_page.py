@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Sequence
 
 import streamlit as st
@@ -80,6 +82,14 @@ def zone_text(idea: TradeIdea) -> str:
 
 
 def status_text(idea: TradeIdea) -> str:
+    # An old proposal must not appear as an actionable current candidate.
+    try:
+        if date.fromisoformat(idea.expiration) < datetime.now(
+            ZoneInfo("America/New_York")
+        ).date():
+            return "Expired — historical proposal"
+    except ValueError:
+        return "Expiry unavailable"
     if idea.admission_decision is None:
         return "Not tracked yet"
     if idea.admission_decision == "ADMITTED":
@@ -93,7 +103,10 @@ def ideas_to_rows(ideas: Sequence[TradeIdea]) -> list[dict[str, Any]]:
         row: dict[str, Any] = {
             "Stock": idea.underlying,
             "Trade": structure_label(idea),
-            "Expires": f"{idea.expiration} ({idea.dte}d)" if idea.dte is not None else idea.expiration,
+            "Expires": (
+                f"{date.fromisoformat(idea.expiration):%d %b %Y}"
+                + (f" · {idea.dte} DTE at quote" if idea.dte is not None else "")
+            ),
         }
         for model_id in MODEL_ORDER:
             row[MODEL_LABELS[model_id]] = verdict_cell(idea.judgements[model_id])
@@ -110,7 +123,7 @@ def evidence_banner(records: dict[str, ModelRecord], resolved_total: int) -> tup
     if resolved_total == 0:
         return (
             "warning",
-            "Not proven yet. No trade has reached its expiry date, so none of these models has a track record. "
+            "Not proven yet. No usable resolved expiry outcome is available for this retrospective replay. "
             "Treat every ✓ as an idea to check, not a result. The three models read the same prices, so they "
             "often agree even when the apparent mispricing is only noise.",
         )
@@ -118,13 +131,14 @@ def evidence_banner(records: dict[str, ModelRecord], resolved_total: int) -> tup
     if judged == 0:
         return (
             "info",
-            f"{resolved_total} trade(s) have expired, but no model had picked any of them in advance, "
-            "so their picks are still untested.",
+            f"{resolved_total} distinct trades have resolved expiry outcomes, but none had a positive "
+            "model-implied difference in the retrospective replay. No prospective picks are proven.",
         )
     return (
         "info",
-        f"{resolved_total} trade(s) have expired. The table at the bottom shows how each model's picks did. "
-        "Few trades means wide uncertainty.",
+        f"{resolved_total} distinct trades have resolved expiry outcomes. The table below replays models "
+        "using historical entry quotes; these were not necessarily predictions recorded at the time. "
+        "Few trades mean wide uncertainty.",
     )
 
 
@@ -187,7 +201,7 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
     def _page() -> None:
         section_heading(
             "Trade Ideas",
-            "Trades the system found, and what each of three independent models says about them.",
+            "Unexecuted trade proposals, compared using three models of the same market quotes.",
         )
         ideas, errors, session_date = _cached_ideas(key, db_path)
         try:
@@ -212,6 +226,16 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
                 st.caption(f"{len(errors)} idea(s) could not be scored.")
             return
 
+        try:
+            today_ny = datetime.now(ZoneInfo("America/New_York")).date()
+            age_days = (today_ny - date.fromisoformat(session_date)).days if session_date else 0
+        except ValueError:
+            age_days = 0
+        if age_days >= 3:
+            st.warning(
+                f"These ideas come from the {session_date} market session, "
+                "not current quotes. Review as historical observations only."
+            )
         as_of = max((i.as_of for i in ideas if i.as_of), default=None)
         agree2 = sum(1 for i in ideas if i.favouring >= 2)
         st.caption(
@@ -220,8 +244,8 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
         )
 
         min_models = st.select_slider(
-            "Only show trades where this many models see an edge",
-            options=[0, 1, 2, 3], value=2, key="ideas_min_models",
+            "Minimum models showing a positive value difference (0 = all ideas)",
+            options=[0, 1, 2, 3], value=0, key="ideas_min_models",
             help="An edge means: worth more than its price according to the model, after the bid/ask spread and fees. "
                  "The models share the same inputs, so more agreement is not much stronger evidence.",
         )
@@ -235,12 +259,11 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
                 on_select="rerun", selection_mode="single-row", key="ideas_table",
                 column_config={
                     MODEL_LABELS[m]: st.column_config.TextColumn(
-                        help="✓ edge after costs · ≈ small edge, costs eat it · ✗ model says it is worth less than "
-                             "its price · n/a model could not judge. The dollar figure is the expected gain after costs.")
+                        help="✓ positive model-implied difference after estimated costs · ≈ costs exceed the model difference · ✗ no model-implied difference · n/a unavailable. These are not expected trading profits.")
                     for m in MODEL_ORDER
                 },
             )
-            st.caption("Click a row for details.")
+            st.caption("Click a row for details. Dollar differences are model valuations, not expected returns.")
             selected = None
             try:
                 picked = event.selection.rows
@@ -256,18 +279,19 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
                     st.caption(f"Idea {proposal_id}: {message}")
 
         if records is not None:
-            st.markdown("#### Has it worked so far?")
+            st.markdown("#### Retrospective check on expired trades")
             st.dataframe(pd.DataFrame(record_rows(records)), hide_index=True, width="stretch")
         with st.expander("How to read this page"):
             st.markdown(
-                "- Each model estimates what the option's volatility *should* be. If that makes the trade worth "
-                "more than its price, even after the bid/ask spread and fees, it shows ✓ and the dollar gain.\n"
+                "- Each model estimates an option's fair volatility from neighbouring quotes. ✓ means "
+                "a positive theoretical valuation difference after estimated spread and fees, not a guaranteed gain.\n"
                 "- The three models look at the same option prices in different ways. Because they share the "
                 "same inputs they agree easily: in our simulations of markets with no real mispricing, most "
                 "flagged trades still had 2 or more models seeing an edge. Agreement is a weak hint, not proof.\n"
-                "- The gain is what the model expects **if it is right**. Prices can also differ from the model "
+                "- The dollar difference is model-implied value after estimated costs, **not expected profit**. Prices can differ "
                 "for good reasons, and with many options scanned some will look good by chance.\n"
-                "- Only the table above is evidence, and only once trades have expired.\n"
+                "- The expired-trade comparison is retrospective: models are rerun now on saved entry quotes. "
+                "It is not a prospective, timestamped prediction record or evidence of a live edge.\n"
                 "- Nothing here places an order or is advice."
             )
 
@@ -286,7 +310,7 @@ def _detail(idea: TradeIdea, alt, pd, st) -> None:  # pragma: no cover - renderi
                 st.caption(j.reason or "Could not judge this trade.")
                 continue
             st.metric(_verdict_words(j), usd(j.net_edge_usd, signed=True, decimals=2),
-                      help="Expected gain after the bid/ask spread and fees, if the model is right.")
+                      help="Model-implied valuation difference after estimated spread and fees; not a forecast or expected trading profit.")
             fair = j.fair_iv_by_strike.get(idea.target_strike)
             market = next((l.market_iv for l in idea.legs if l.strike == idea.target_strike), None)
             if fair is not None and market is not None:
@@ -348,6 +372,7 @@ def _summary(idea: TradeIdea) -> str:
     zone = zone_text(idea)
     return (
         f"{head} You risk at most {usd(idea.max_loss_usd)} to make at most {usd(idea.profile.max_profit_usd)}. "
-        f"It makes money if the stock ends {zone.replace('–', 'to')} at expiry "
-        f"(about {idea.profile.p_profit * 100:.0f}% likely on a simple price-movement assumption)."
+        f"The expiry payoff is positive if the stock ends {zone.replace('–', 'to')} "
+        f"(a {idea.profile.p_profit * 100:.0f}% risk-neutral model probability, "
+        "not an observed or real-world success rate)."
     )

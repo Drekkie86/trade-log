@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as dtime
 from statistics import median
@@ -558,7 +559,10 @@ def _score_proposal_row(conn, row) -> TradeIdea:
             raise ValueError(f"leg quote {quote_id} lacks a quote or provider IV")
         if quote["bid"] is None or quote["ask"] is None:
             raise ValueError(f"leg quote {quote_id} lacks bid/ask")
-        snapshot_id = int(quote["snapshot_id"])
+        leg_snapshot_id = int(quote["snapshot_id"])
+        if snapshot_id is not None and leg_snapshot_id != snapshot_id:
+            raise ValueError("structure legs come from different quote snapshots; cannot compare model edges")
+        snapshot_id = leg_snapshot_id
         obs_rows.append(obs)
         legs.append(
             IdeaLeg(
@@ -632,6 +636,9 @@ def _score_proposal_row(conn, row) -> TradeIdea:
 
     structure_max_loss_usd = float(row["max_theoretical_loss_minor"]) / 100.0
     fees = structure_fees_usd(legs)
+    # The proposal's theoretical expiry maximum loss excludes commission.
+    # Use the same round-trip fee allowance as the expiry payoff profile.
+    max_loss_with_fees = structure_max_loss_usd + fees
 
     judgements: dict[str, ModelJudgement] = {}
 
@@ -639,7 +646,7 @@ def _score_proposal_row(conn, row) -> TradeIdea:
     if row["v1_interpolated_iv"] is not None:
         judgements[MODEL_V1] = judge_model(
             MODEL_V1, legs, market, {target: float(row["v1_interpolated_iv"])},
-            max_loss_usd=structure_max_loss_usd,
+            max_loss_usd=max_loss_with_fees,
             detail={"market_iv": row["v1_implied_volatility"], "wings": [row["v1_lower_strike"], row["v1_upper_strike"]]},
         )
     else:
@@ -660,7 +667,7 @@ def _score_proposal_row(conn, row) -> TradeIdea:
     if v2 is not None and v2["fitted_iv"] is not None and float(v2["fitted_iv"]) > 0:
         judgements[MODEL_V2] = judge_model(
             MODEL_V2, legs, market, {target: float(v2["fitted_iv"])},
-            max_loss_usd=structure_max_loss_usd,
+            max_loss_usd=max_loss_with_fees,
             detail={"loo_residual": v2["loo_residual"], "state": v2["observation_state"]},
         )
     else:
@@ -680,7 +687,7 @@ def _score_proposal_row(conn, row) -> TradeIdea:
     else:
         judgements[MODEL_SVI] = judge_model(
             MODEL_SVI, legs, market, fair,
-            max_loss_usd=structure_max_loss_usd, detail=diag,
+            max_loss_usd=max_loss_with_fees, detail=diag,
         )
 
     try:
@@ -710,7 +717,7 @@ def _score_proposal_row(conn, row) -> TradeIdea:
         as_of=str(snap["captured_at"]),
         spot=spot,
         net_debit_usd=-entry_cashflow_usd(legs),
-        max_loss_usd=structure_max_loss_usd,
+        max_loss_usd=max_loss_with_fees,
         fees_usd=fees,
         profile=profile,
         judgements=judgements,
@@ -850,16 +857,21 @@ class ModelRecord:
 
 
 def model_track_record(*, db_path=None) -> tuple[dict[str, ModelRecord], int]:
-    """For each model: of the resolved expiry outcomes where it saw edge after
-    costs *at entry*, how many actually made money?  Judgements are recomputed
-    from the data stored at entry.  Returns (records, resolved_total)."""
+    """Retrospective replay on historical entry inputs, not precommitted picks.
+
+    Models are re-run now against stored proposal quotes, after expiry outcomes
+    are already known. Returns (records, distinct resolved bets). This MUST NOT
+    be described as a prospective or timestamped prediction track record.
+    """
     conn = get_connection(db_path)
     try:
         has_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shadow_expiry_outcomes_v1';"
         ).fetchone()
         if not has_table:
-            return {m: _empty_record(m) for m in MODEL_ORDER}, 0
+            raise sqlite3.OperationalError(
+                "Expiry-outcome evidence is unavailable until migration 035 is applied."
+            )
         outcomes = conn.execute(
             """
             SELECT o.candidate_id, o.estimated_net_pnl_usd_minor AS net_minor,
