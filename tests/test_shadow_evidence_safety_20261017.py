@@ -55,3 +55,32 @@ def test_atomic_local_settings_serializes_concurrent_updates(tmp_path, monkeypat
     text = env_file.read_text(encoding="utf-8")
     assert "KEEP=unchanged" in text
     assert "TOKEN_A=a" in text and "TOKEN_B=b" in text
+
+
+def test_preflight_rejects_applied_migration35_missing_revision(tmp_path):
+    import sqlite3
+    from christiania_release_database import _assert_applied_expiry_migration_shape
+
+    db = tmp_path / "partial_v35.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE shadow_expiry_outcomes_v1(candidate_id INTEGER)")
+    import pytest
+    with pytest.raises(RuntimeError, match="MIGRATION_035_SHAPE_MISMATCH"):
+        _assert_applied_expiry_migration_shape(db)
+
+
+def test_preflight_accepts_consistent_latest_expiry_projection(tmp_path):
+    import sqlite3
+    from christiania_release_database import _assert_applied_expiry_migration_shape
+
+    db = tmp_path / "shape_v35.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE shadow_expiry_outcomes_v1"
+            "(candidate_id INTEGER, revision INTEGER, snapshot_captured_at TEXT)"
+        )
+        conn.execute(
+            "CREATE VIEW v_shadow_expiry_outcomes_latest_v1 AS "
+            "SELECT * FROM shadow_expiry_outcomes_v1"
+        )
+    _assert_applied_expiry_migration_shape(db)
