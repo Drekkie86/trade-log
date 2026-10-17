@@ -35,6 +35,7 @@ from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
 from src.research.cash_settled_universe import cash_settled_research_universe
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
+from src.ui.trade_ideas_page import render_trade_ideas_page
 from src.quant.bench import run_vanilla_bench
 from src.quant.registry import catalog as quant_model_catalog
 from src.quant.types import QuantInputError, VanillaOption
@@ -558,6 +559,7 @@ with st.sidebar:
     page = st.radio(
         "Navigation",
         [
+            "💡 Trade Ideas",
             "⚓ Dashboard",
             "🎯 Decision Desk",
             "📜 Research Runs",
@@ -615,7 +617,9 @@ calibration_state = calibration_evidence_state(
 )
 lifecycle_health = snapshot.get("lifecycle_health", {})
 
-if page == "Dashboard":
+if page == "Trade Ideas":
+    render_trade_ideas_page()
+elif page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")
     if lifecycle_health.get("state") == "WARN":
         st.warning(
