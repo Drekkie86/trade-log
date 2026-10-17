@@ -28,7 +28,7 @@ def test_system_flags_missing_collector():
             "database": {"quick_check": None, "schema_version": 36, "expected_schema_version": 36}}
     rows = system_checks(snap, {"state": "NOT_PROBED"}, {"total_files": 0})
     assert dict((r[0], r[1]) for r in rows)["Collector"] is False
-    assert dict((r[0], r[1]) for r in rows)["Database"] is True
+    assert dict((r[0], r[1]) for r in rows)["Database"] is None
     assert system_verdict(rows)[0] == "bad"
 
 

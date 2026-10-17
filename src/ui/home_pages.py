@@ -70,37 +70,39 @@ def status_row(label: str, ok: bool | None, text: str) -> None:
 
 # ---------------------------------------------------------------- results ---
 def results_verdict(expiry: dict[str, Any]) -> tuple[str, str, str]:
-    """(tone, headline, detail) — never claims the system works."""
+    """(tone, headline, detail) — candidate-level replay, never live proof."""
     resolved = int(expiry.get("resolved", 0) or 0)
     dates = int(expiry.get("resolved_expiration_dates", 0) or 0)
     if resolved == 0:
         return (
             "warn",
-            "No finished bets yet.",
-            "Nothing has reached its expiry date, so there is nothing to judge. "
-            "This is normal early on.",
+            "No resolved expiry outcomes yet.",
+            "Some candidates may have expired without usable terminal-price evidence. "
+            "There is not yet a resolved outcome to evaluate.",
         )
     if resolved < MIN_RESOLVED_BETS or dates < MIN_EXPIRY_DATES:
         return (
             "warn",
             "Too early to tell.",
-            f"{num(resolved)} bet(s) finished, on {num(dates)} different expiry date(s). "
-            f"We need at least {MIN_RESOLVED_BETS} bets on {MIN_EXPIRY_DATES} different dates "
-            "before any win rate means anything.",
+            f"{num(resolved)} resolved candidate outcome(s) on {num(dates)} expiry date(s). "
+            "Repeated observations may represent the same trade idea, so these are not "
+            "independent bets or evidence of a statistically validated win rate.",
         )
     total = expiry.get("total_net_eur_minor")
     if total is not None and float(total) < 0:
         return (
             "bad",
-            "Losing on paper so far.",
-            f"{num(resolved)} finished bets, net {eur_from_minor(total, signed=True)} after assumed costs. "
-            "Do not trade real money on this.",
+            "Negative candidate replay so far.",
+            f"{num(resolved)} resolved candidate outcomes sum to {eur_from_minor(total, signed=True)} "
+            "after assumed costs. Correlated entries may be counted repeatedly; "
+            "this is not a portfolio result or permission to trade live.",
         )
     return (
         "warn",
-        "Positive on paper, not proven.",
-        f"{num(resolved)} finished bets, net {eur_from_minor(total, signed=True)} after assumed costs. "
-        "Paper results from few expiry dates can be luck. Keep collecting before risking real money.",
+        "Positive candidate replay, not proven.",
+        f"{num(resolved)} resolved candidate outcomes sum to {eur_from_minor(total, signed=True)} "
+        "after assumed costs. Repeated trade ideas can inflate this sum; "
+        "it is not an independent-bet or investable return estimate.",
     )
 
 
@@ -116,26 +118,27 @@ def render_results_page(snapshot: dict[str, Any]) -> None:
     resolved = int(expiry.get("resolved", 0) or 0)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Ideas found", num(counts.get("surfaced_total", 0)))
-    c2.metric("Bets being tracked", num(counts.get("shadow_candidates", 0)))
-    c3.metric("Finished bets", num(resolved), f"{num(expiry.get('unresolved', 0))} still waiting", delta_color="off")
+    c2.metric("Recorded paper candidates", num(counts.get("shadow_candidates", 0)))
+    c3.metric("Resolved outcomes", num(resolved), f"{num(expiry.get('unresolved', 0))} unresolved", delta_color="off")
     c4.metric("Days of data", num(prospective.get("independent_dates", 0)), "need 5 for a first look", delta_color="off")
 
     if resolved:
-        section_heading("Finished bets")
+        section_heading("Resolved candidate outcomes — not independent bets")
         wins, losses, flat = (int(expiry.get(k, 0) or 0) for k in ("wins", "losses", "flat"))
         r1, r2, r3 = st.columns(3)
         r1.metric("Won / lost / flat", f"{num(wins)} / {num(losses)} / {num(flat)}")
-        r2.metric("Net result on paper", eur_from_minor(expiry.get("total_net_eur_minor"), signed=True), "after assumed costs", delta_color="off")
-        r3.metric("Average per bet", eur_from_minor(expiry.get("mean_net_eur_minor"), signed=True))
+        r2.metric("Sum of candidate estimates", eur_from_minor(expiry.get("total_net_eur_minor"), signed=True), "not portfolio P&L", delta_color="off")
+        r3.metric("Average per candidate", eur_from_minor(expiry.get("mean_net_eur_minor"), signed=True))
 
     with st.expander("What do these numbers mean?"):
         st.markdown(
             "- **Ideas found**: unusual prices the scanner spotted.\n"
-            "- **Bets being tracked**: ideas we pretend to trade, to see what would have happened.\n"
-            "- **Finished bets**: tracked bets whose option has expired, so the result is known.\n"
+            "- **Recorded paper candidates**: all stored candidate entries, including closed ones.\n"
+            "- **Resolved outcomes**: candidate entries with a modelled expiry result, "
+            "not independent bets. Multiple entries may refer to the same underlying idea.\n"
             "- **Days of data**: separate market days. Ten ideas from one day count as one day.\n\n"
-            "Results are estimates from stored prices and assumed costs. "
-            "They are not real profits. Bets that could not be scored are not counted as wins or losses."
+            "Results use stored prices and assumed costs. They are not real profits or "
+            "a deduplicated portfolio, and candidates without usable evidence are not counted as wins."
         )
 
 
@@ -166,10 +169,16 @@ def system_checks(
         rows.append(("Market data", False, "Theta Terminal is not answering. No new prices will arrive."))
 
     db = snapshot.get("database", {}) or {}
-    if db.get("quick_check") in (None, "ok") and db.get("schema_version") == db.get("expected_schema_version"):
-        rows.append(("Database", True, "Opens normally and is up to date."))
+    if db.get("schema_version") is None or db.get("expected_schema_version") is None:
+        rows.append(("Database", None, "Database schema version was not checked."))
+    elif db.get("schema_version") != db.get("expected_schema_version"):
+        rows.append(("Database", False, "Schema version does not match the expected release."))
+    elif db.get("quick_check") == "ok":
+        rows.append(("Database", True, "Schema current; SQLite quick check passed."))
+    elif db.get("quick_check") is None:
+        rows.append(("Database", None, "Schema current; SQLite integrity was not checked here."))
     else:
-        rows.append(("Database", False, "Needs attention: failed integrity check or wrong version."))
+        rows.append(("Database", False, "SQLite quick check reported an error."))
 
     age = backups.get("latest_valid_age_hours")
     if backups.get("total_files", 0) == 0 and age is None:
@@ -177,9 +186,9 @@ def system_checks(
     elif age is None:
         rows.append(("Backups", False, "No valid backup found."))
     elif float(age) > 36:
-        rows.append(("Backups", False, f"Latest valid backup is {num(age, 0)} hours old."))
+        rows.append(("Backups", False, f"Last indexed backup is {num(age, 0)} hours old; verify a fresh recovery."))
     else:
-        rows.append(("Backups", True, f"Latest valid backup is {num(age, 0)} hours old."))
+        rows.append(("Backups", True, f"Last indexed backup is {num(age, 0)} hours old; full restore not checked here."))
 
     latest = snapshot.get("latest_iteration")
     if latest:
