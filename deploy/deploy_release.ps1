@@ -182,7 +182,7 @@ if ([string]$performanceReport.release_commit -ne $head) {
 if (-not [bool]$performanceReport.read_only) {
     throw "Refusing deployment: performance report does not assert read-only execution."
 }
-if ([int]$performanceReport.probe_version -lt 5) {
+if ([int]$performanceReport.probe_version -lt 6) {
     throw "Refusing deployment: performance report format is too old."
 }
 if (-not [bool]$performanceReport.deployment_lock_held) {
@@ -202,13 +202,17 @@ if ($null -eq $performanceReport.seeded_cold_dashboard -or -not [bool]$performan
 }
 
 $measuredPages = @($performanceReport.pages | ForEach-Object { [string]$_.page })
-foreach ($requiredPage in @("Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL")) {
+foreach ($requiredPage in @("Trade Ideas", "Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL")) {
     if ($requiredPage -notin $measuredPages) {
         throw "Refusing deployment: performance evidence is missing required page $requiredPage."
     }
 }
 
+if ($null -eq $performanceReport.trade_ideas -or -not [bool]$performanceReport.trade_ideas.within_budget -or [bool]$performanceReport.trade_ideas.cached) {
+    throw "Refusing deployment: actual Trade Ideas scoring was not measured uncached within budget."
+}
 Write-Host "Performance evidence accepted: $performancePath"
+Write-Host ("Trade Ideas: uncached median={0}ms cold={1}ms scored={2} errors={3}" -f $performanceReport.trade_ideas.median_ms, $performanceReport.trade_ideas.cold_ms, $performanceReport.trade_ideas.proposals_scored, $performanceReport.trade_ideas.proposals_unscorable)
 Write-Host "Production timing summary:"
 foreach ($page in $performanceReport.pages) {
     Write-Host ("  {0}: median={1}ms cache={2} bytes unpickle={3}ms" -f $page.page, $page.wall_ms.median, $page.cache_payload_bytes, $page.pickle_load_ms.median)

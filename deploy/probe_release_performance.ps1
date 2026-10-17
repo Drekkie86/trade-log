@@ -163,7 +163,7 @@ try {
             if ([string]$report.release_commit -ne $head -or -not [bool]$report.read_only) {
                 throw "Performance report identity/read-only contract does not match target SHA."
             }
-            if ([int]$report.probe_version -lt 5 -or -not [bool]$report.deployment_lock_held) {
+            if ([int]$report.probe_version -lt 6 -or -not [bool]$report.deployment_lock_held) {
                 throw "Performance report does not prove serialized deployment-lock measurement."
             }
             if ($null -eq $report.runtime_activity_before -or $null -eq $report.runtime_activity_after) {
@@ -180,7 +180,7 @@ try {
             }
 
             $measuredPages = @($report.pages | ForEach-Object { [string]$_.page })
-            foreach ($requiredPage in @("Dashboard", "Decision Desk", "Shadow Lab", "FULL")) {
+            foreach ($requiredPage in @("Trade Ideas", "Dashboard", "Decision Desk", "Shadow Lab", "FULL")) {
                 if ($requiredPage -notin $measuredPages) {
                     throw "Performance report is missing required page: $requiredPage"
                 }
@@ -195,6 +195,10 @@ try {
             if ($null -eq $report.ops_release_manifest -or -not [bool]$report.ops_release_manifest.within_budget -or [bool]$report.ops_release_manifest.deep_integrity) {
                 throw "Performance report is missing bounded, metadata-only Ops Release evidence."
             }
+            if ($null -eq $report.trade_ideas -or -not [bool]$report.trade_ideas.within_budget -or [bool]$report.trade_ideas.cached) {
+                throw "Trade Ideas uncached model scoring was not measured or exceeded budget."
+            }
+            Write-Host "trade_ideas_median=$($report.trade_ideas.median_ms)ms cold=$($report.trade_ideas.cold_ms)ms scored=$($report.trade_ideas.proposals_scored)"
             Write-Host "ops_release_manifest_median=$($report.ops_release_manifest.median_ms)ms budget=$($report.ops_release_manifest.budget_ms)ms deep_integrity=$($report.ops_release_manifest.deep_integrity)"
             Write-Host "seeded_dashboard_cold=$($report.seeded_cold_dashboard.wall_ms)ms history_rebuild_avoided=$($report.seeded_cold_dashboard.history_rebuild_avoided)"
             Write-Host "wal_delta_bytes=$($report.wal_delta_bytes)"

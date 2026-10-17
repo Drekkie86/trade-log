@@ -69,6 +69,17 @@ for unit in "${HEAVY_MAINTENANCE_UNITS[@]}"; do
   fi
 done
 
+# Server-owned/transient backup jobs have instance names outside the ordinary
+# timer units. Do not generate performance evidence while such jobs contend
+# for production I/O (as happened during the October recovery-volume cutover).
+while read -r unit; do
+  case "${unit}" in
+    christiania-backup*|christiania-restore*|christiania-volume*)
+      fail "transient recovery/backup maintenance is active: ${unit}"
+      ;;
+  esac
+done < <(systemctl list-units --type=service --state=running --plain --no-legend | awk '{print $1}')
+
 for required in awk chmod chown date flock grep install mktemp rm sha256sum sort sudo systemctl tar; do
   command -v "${required}" >/dev/null 2>&1 || fail "required command missing: ${required}"
 done

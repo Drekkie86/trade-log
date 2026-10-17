@@ -122,7 +122,7 @@ def test_release_activation_requires_recent_exact_sha_performance_evidence():
     assert "Run deploy/probe_release_performance.ps1 first." in deployer
     assert "performanceReport.release_commit -ne $head" in deployer
     assert "performanceReport.read_only" in deployer
-    assert "performanceReport.probe_version -lt 5" in deployer
+    assert "performanceReport.probe_version -lt 6" in deployer
     assert "performanceReport.deployment_lock_held" in deployer
     assert "performanceReport.runtime_activity_before" in deployer
     assert "performanceReport.runtime_activity_after" in deployer
