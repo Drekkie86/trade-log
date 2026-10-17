@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import shutil
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ from src.operations.backup_compression import (
 DEFAULT_BACKUP_RETENTION = 14
 DEFAULT_BACKUP_MIN_FREE_BYTES = 15 * 1024**3
 DEFAULT_BACKUP_MIN_FREE_FRACTION = 0.15
+BACKUP_SNAPSHOT_TIMEOUT_SECONDS = 1800
+BACKUP_SNAPSHOT_PROGRESS_INTERVAL_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -513,6 +516,64 @@ def _verify_backup(
     return version, integrity, len(fk_rows)
 
 
+def _vacuum_into_snapshot(
+    source: Path,
+    destination: Path,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> None:
+    """Take one consistent WAL snapshot without multi-step backup restarts.
+
+    VACUUM INTO uses a single read transaction. Unlike Python's incremental
+    Connection.backup(pages=8192), independent daemon lease updates cannot
+    reset its progress. Only the temporary destination is ever writable.
+    The source is explicitly opened in read-only mode.
+    """
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(f"Snapshot destination already exists: {destination}")
+    if BACKUP_SNAPSHOT_TIMEOUT_SECONDS <= 0:
+        raise TimeoutError("SQLite snapshot exceeded nonpositive time budget")
+    source_uri = source.resolve().as_uri() + "?mode=ro"
+    started = time.monotonic()
+    last_log = [started]
+    timed_out = [False]
+
+    def _progress() -> int:
+        now = time.monotonic()
+        elapsed = now - started
+        if elapsed >= BACKUP_SNAPSHOT_TIMEOUT_SECONDS:
+            timed_out[0] = True
+            return 1
+        if progress is not None and now - last_log[0] >= BACKUP_SNAPSHOT_PROGRESS_INTERVAL_SECONDS:
+            progress(f"snapshot: working elapsed_seconds={elapsed:.0f}")
+            last_log[0] = now
+        return 0
+
+    conn = sqlite3.connect(source_uri, uri=True, timeout=30.0)
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.set_progress_handler(_progress, 10_000)
+        try:
+            conn.execute("VACUUM main INTO ?", (str(destination),))
+        except sqlite3.OperationalError as exc:
+            if timed_out[0]:
+                raise TimeoutError(
+                    f"SQLite snapshot exceeded {BACKUP_SNAPSHOT_TIMEOUT_SECONDS}s; "
+                    "original database and promoted recovery copies are untouched"
+                ) from exc
+            raise
+        finally:
+            conn.set_progress_handler(None, 0)
+    finally:
+        conn.close()
+    if not destination.is_file() or destination.stat().st_size <= 0:
+        raise RuntimeError("VACUUM INTO produced no usable snapshot")
+    # The snapshot must be durable before integrity verification or promotion.
+    os.chmod(destination, 0o600)
+    with destination.open("r+b") as completed:
+        os.fsync(completed.fileno())
+
+
 def _prune_backups(
     directory: Path,
     *,
@@ -627,82 +688,25 @@ def create_verified_backup(
             "Backup timestamp collision."
         )
 
-    source_uri = source.resolve().as_uri() + "?mode=ro"
-
-    source_conn = sqlite3.connect(
-        source_uri,
-        uri=True,
-        timeout=30.0,
-    )
-    target_conn = sqlite3.connect(
-        temp_path
-    )
-
-    next_report_fraction = 0.0
-
-    def report_copy(
-        status: int,
-        remaining: int,
-        total: int,
-    ) -> None:
-        nonlocal next_report_fraction
-
-        if progress is None or total <= 0:
-            return
-
-        completed = max(
-            0,
-            total - remaining,
-        )
-        fraction = min(
-            1.0,
-            completed / total,
-        )
-
-        if (
-            fraction + 1e-12
-            < next_report_fraction
-            and remaining > 0
-        ):
-            return
-
-        progress(
-            "copy: "
-            f"{fraction:.0%} "
-            f"pages={completed}/{total} "
-            f"status={status}"
-        )
-
-        while (
-            next_report_fraction
-            <= fraction
-        ):
-            next_report_fraction += 0.10
-
     if progress is not None:
         progress(
-            "copy: started "
+            "snapshot: started method=VACUUM_INTO "
             f"source={source} "
-            f"temp={temp_path}"
+            f"temp={temp_path} "
+            f"timeout_seconds={BACKUP_SNAPSHOT_TIMEOUT_SECONDS}"
         )
 
     try:
-        try:
-            source_conn.backup(
-                target_conn,
-                pages=8192,
-                progress=report_copy,
-            )
-            target_conn.commit()
+        # VACUUM INTO reads from one consistent WAL snapshot even if concurrent
+        # writers keep committing. The former pages=8192 backup restarted on
+        # daemon lease heartbeats, causing unbounded I/O and no progress.
+        _vacuum_into_snapshot(source, temp_path, progress=progress)
 
-            if progress is not None:
-                progress(
-                    "copy: completed "
-                    f"temp_bytes={temp_path.stat().st_size}"
-                )
-        finally:
-            target_conn.close()
-            source_conn.close()
+        if progress is not None:
+            progress(
+                "snapshot: completed "
+                f"temp_bytes={temp_path.stat().st_size}"
+            )
 
         version, integrity, fk_count = (
             _verify_backup(
