@@ -71,9 +71,15 @@ def test_aggregate_intrinsic_risk_does_not_create_portfolio_capacity_gate(db_pat
         db_path=db_path,
     )
 
-    assert result.admitted_count == 3
-    assert result.blocked_count == 0
-    assert all(item.decision == "ADMITTED" for item in result.decisions)
+    # These three proposals describe the same contract and structure.
+    # Deduplication (not wallet capacity) blocks the repeated admissions.
+    assert result.admitted_count == 1
+    assert result.blocked_count == 2
+    assert result.decisions[0].decision == "ADMITTED"
+    assert all(
+        item.reason_code == "DUPLICATE_ACTIVE_SHADOW_BET"
+        for item in result.decisions[1:]
+    )
     assert sum(item.intrinsic_risk_eur_minor for item in result.decisions) > 50_000
 
 
