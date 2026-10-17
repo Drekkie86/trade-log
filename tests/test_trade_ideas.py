@@ -479,10 +479,10 @@ def test_track_record_counts_a_repeated_anomaly_once(db_path):
         conn.commit()
     finally:
         conn.close()
-    assert record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path).resolved_written == 3
+    assert record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path).resolved_written == 2
 
     records, distinct_bets = model_track_record(db_path=db_path)
-    assert distinct_bets == 2  # three candidates, two distinct bets
+    assert distinct_bets == 2  # duplicate prevented at admission
     assert all(r.n_scored <= 2 for r in records.values())
 
 
