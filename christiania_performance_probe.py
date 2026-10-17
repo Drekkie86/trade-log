@@ -21,6 +21,8 @@ from src.operations.release_manifest import build_release_manifest
 
 
 OPS_RELEASE_MANIFEST_BUDGET_MS = 1000.0
+TRADE_IDEAS_MEDIAN_BUDGET_MS = 5000.0
+TRADE_IDEAS_COLD_BUDGET_MS = 15000.0
 
 
 def _measure_ops_release_manifest(path: Path, *, runs: int = 3) -> dict[str, object]:
@@ -51,6 +53,9 @@ def _measure_ops_release_manifest(path: Path, *, runs: int = 3) -> dict[str, obj
 
 
 PAGES = (
+    "Trade Ideas",
+    "Results",
+    "System",
     "Dashboard",
     "Decision Desk",
     "Research Runs",
@@ -61,6 +66,65 @@ PAGES = (
     "Storm Cellar / 0DTE Lab",
     "Ops",
 )
+
+
+def _measure_trade_ideas(path: Path, *, warmups: int = 1, runs: int = 3) -> dict[str, object]:
+    """Time the actual default-page model queries, not just its runtime read model.
+
+    Intentionally bypass Streamlit caching. Pre-migration production databases
+    may lack the expiry-outcome table; measure their proposal scoring and report
+    that outcome comparison is unavailable instead of fabricating a track record.
+    This is a strictly query-only workload against existing recorded evidence.
+    """
+    from src.decision.trade_ideas import load_current_ideas, model_track_record
+
+    if warmups < 0 or runs < 1:
+        raise ValueError("Invalid Trade Ideas performance sample counts.")
+    with open_readonly_connection(path) as conn:
+        schema_version = int(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0])
+        if schema_version >= 35:
+            columns = {str(row[1]) for row in conn.execute(
+                "PRAGMA table_info(shadow_expiry_outcomes_v1)"
+            )}
+            if not {"revision", "candidate_id", "outcome_state"}.issubset(columns):
+                raise RuntimeError("Trade Ideas expiry-outcome schema is incomplete.")
+    times: list[float] = []
+    last_ideas = []
+    last_errors = []
+    last_session = None
+    resolved_count = 0
+    for i in range(1 + warmups + runs):
+        started = time.perf_counter()
+        ideas, errors, session = load_current_ideas(db_path=path)
+        if schema_version >= 35:
+            _records, resolved_count = model_track_record(db_path=path)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if i == 0 or i >= 1 + warmups:
+            times.append(elapsed_ms)
+        last_ideas, last_errors, last_session = ideas, errors, session
+
+    cold_ms = round(times[0], 3)
+    median_ms = round(statistics.median(times[1:]), 3)
+    within_budget = (
+        cold_ms <= TRADE_IDEAS_COLD_BUDGET_MS
+        and median_ms <= TRADE_IDEAS_MEDIAN_BUDGET_MS
+    )
+    return {
+        "cold_ms": cold_ms,
+        "median_ms": median_ms,
+        "cold_budget_ms": TRADE_IDEAS_COLD_BUDGET_MS,
+        "median_budget_ms": TRADE_IDEAS_MEDIAN_BUDGET_MS,
+        "within_budget": within_budget,
+        "runs": runs,
+        "warmups": warmups,
+        "latest_session": last_session,
+        "proposals_scored": len(last_ideas),
+        "proposals_unscorable": len(last_errors),
+        "resolved_expiry_bets": resolved_count if schema_version >= 35 else None,
+        "expiry_track_record_available": schema_version >= 35,
+        "source_schema_version": schema_version,
+        "cached": False,
+    }
 
 
 def _sqlite_metadata(path: Path) -> dict[str, object]:
@@ -406,6 +470,10 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--dataset-provenance",
+        help="JSON proof for a same-schema live source or a migrated disposable production snapshot.",
+    )
+    parser.add_argument(
         "--db",
         help=(
             "Database path. Defaults to CHRISTIANIA_DB_PATH / "
@@ -467,6 +535,20 @@ def main() -> int:
             )
 
     path = resolve_db_path(args.db)
+    dataset_provenance = None
+    if args.dataset_provenance:
+        dataset_provenance = json.loads(
+            Path(args.dataset_provenance).read_text(encoding="utf-8")
+        )
+        if (
+            dataset_provenance.get("measured_schema_version") !=
+            dashboard_read_model.EXPECTED_SCHEMA_VERSION
+            or Path(dataset_provenance["measured_database_path"]).resolve() != path.resolve()
+            or dataset_provenance.get("kind") not in {
+                "disposable_live_sqlite_snapshot", "live_schema_matched"
+            }
+        ):
+            raise RuntimeError("Performance dataset provenance is invalid or not at release schema.")
     pages: tuple[str | None, ...] = tuple(args.page or PAGES)
     if args.include_full:
         pages = (*pages, None)
@@ -483,6 +565,17 @@ def main() -> int:
         for page in pages
     ]
     ops_release_manifest = _measure_ops_release_manifest(path, runs=args.runs)
+    trade_ideas = _measure_trade_ideas(
+        path, warmups=args.warmups, runs=args.runs
+    )
+    if not trade_ideas["within_budget"]:
+        raise RuntimeError(
+            "Trade Ideas default-page scoring exceeded production budget: "
+            f"cold={trade_ideas['cold_ms']}ms / "
+            f"{trade_ideas['cold_budget_ms']}ms; "
+            f"median={trade_ideas['median_ms']}ms / "
+            f"{trade_ideas['median_budget_ms']}ms"
+        )
     if not ops_release_manifest["within_budget"]:
         raise RuntimeError(
             "Ops Release manifest exceeded interactive performance budget: "
@@ -524,7 +617,7 @@ def main() -> int:
         }
 
     payload = {
-        "probe_version": 5,
+        "probe_version": 7,
         "release_commit": (
             None
             if args.release_commit is None
@@ -535,6 +628,7 @@ def main() -> int:
         "prospective_cache_seed": prospective_cache_seed,
         "seeded_cold_dashboard": seeded_cold_dashboard,
         "database_before": database_before,
+        "dataset_provenance": dataset_provenance,
         "database_after": database_after,
         "runtime_activity_before": runtime_activity_before,
         "runtime_activity_after": runtime_activity_after,
@@ -544,6 +638,7 @@ def main() -> int:
         ),
         "pages": measurements,
         "ops_release_manifest": ops_release_manifest,
+        "trade_ideas": trade_ideas,
         "relative_median_to_full": relative_to_full,
     }
 
