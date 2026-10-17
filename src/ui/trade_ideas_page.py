@@ -6,6 +6,7 @@ Streamlit rendering so they can be unit tested.
 from __future__ import annotations
 
 import os
+import sqlite3
 from typing import Any, Sequence
 
 import streamlit as st
@@ -80,53 +81,49 @@ def zone_text(idea: TradeIdea) -> str:
 
 def status_text(idea: TradeIdea) -> str:
     if idea.admission_decision is None:
-        return "Not yet decided"
+        return "Not tracked yet"
     if idea.admission_decision == "ADMITTED":
-        return "Shadow-tracked"
-    return f"Blocked: {(idea.admission_reason or 'unspecified').replace('_', ' ').lower()}"
+        return "Being tracked"
+    return f"Not tracked: {(idea.admission_reason or 'unspecified').replace('_', ' ').lower()}"
 
 
 def ideas_to_rows(ideas: Sequence[TradeIdea]) -> list[dict[str, Any]]:
     rows = []
     for idea in ideas:
         row: dict[str, Any] = {
-            "Underlying": idea.underlying,
+            "Stock": idea.underlying,
             "Trade": structure_label(idea),
-            "Expiry": f"{idea.expiration} ({idea.dte}d)" if idea.dte is not None else idea.expiration,
+            "Expires": f"{idea.expiration} ({idea.dte}d)" if idea.dte is not None else idea.expiration,
         }
         for model_id in MODEL_ORDER:
             row[MODEL_LABELS[model_id]] = verdict_cell(idea.judgements[model_id])
-        row["Models seeing edge"] = f"{idea.favouring}/{len(MODEL_ORDER)}"
-        row["Profit-zone odds*"] = (
-            f"{idea.profile.p_profit * 100:.0f}%" if idea.profile is not None else "—"
-        )
-        row["Max loss (USD)"] = usd(idea.max_loss_usd)
-        row["Max profit (USD)"] = usd(idea.profile.max_profit_usd) if idea.profile else "—"
+        row["Models that see edge"] = f"{idea.favouring} of {len(MODEL_ORDER)}"
+        row["Most you can lose"] = usd(idea.max_loss_usd)
+        row["Most you can make"] = usd(idea.profile.max_profit_usd) if idea.profile else "—"
         row["Status"] = status_text(idea)
-        row["Profit zone at expiry"] = zone_text(idea)
         rows.append(row)
     return rows
 
 
 def evidence_banner(records: dict[str, ModelRecord], resolved_total: int) -> tuple[str, str]:
-    """(tone, text). Describes what has actually been tested, nothing more."""
+    """(tone, text). Says what has actually been tested, nothing more."""
     if resolved_total == 0:
         return (
             "warning",
-            "No trade has been tested against a real expiry yet, so none of the models below has a track record. "
-            "Read every verdict as a hypothesis, not a result.",
+            "Not proven yet. No trade has reached its expiry date, so none of these models has a track record. "
+            "Treat every ✓ as an idea to check, not a result.",
         )
     judged = sum(r.n_favoured for r in records.values())
     if judged == 0:
         return (
             "info",
-            f"{resolved_total} trade(s) have resolved, but none was one the models favoured at entry, "
-            "so the models' calls are still untested.",
+            f"{resolved_total} trade(s) have expired, but no model had picked any of them in advance, "
+            "so their picks are still untested.",
         )
     return (
         "info",
-        f"{resolved_total} trade(s) have resolved at expiry. Each model's record below counts only the trades "
-        "that model favoured at entry. Small samples carry wide uncertainty; the intervals are shown, not hidden.",
+        f"{resolved_total} trade(s) have expired. The table at the bottom shows how each model's picks did. "
+        "Few trades means wide uncertainty.",
     )
 
 
@@ -138,17 +135,17 @@ def record_rows(records: dict[str, ModelRecord]) -> list[dict[str, Any]]:
             hit, mean = "—", "—"
         else:
             lo, hi = r.hit_rate_ci
-            hit = f"{r.hit_rate * 100:.0f}% ({lo * 100:.0f}–{hi * 100:.0f}%)"
+            hit = f"{r.hit_rate * 100:.0f}% (range {lo * 100:.0f}–{hi * 100:.0f}%)"
             mean = usd(r.mean_net_pnl_usd, signed=True)
             if r.mean_ci is not None:
-                mean += f"  ({usd(r.mean_ci[0], signed=True)} to {usd(r.mean_ci[1], signed=True)})"
+                mean += f"  (range {usd(r.mean_ci[0], signed=True)} to {usd(r.mean_ci[1], signed=True)})"
         rows.append({
             "Model": MODEL_LABELS[model_id],
-            "Resolved trades it could judge": r.n_scored,
-            "…of which it saw edge": r.n_favoured,
+            "Expired trades it could judge": r.n_scored,
+            "Trades it picked": r.n_favoured,
             "Made money": r.wins,
-            "Hit rate (95% interval)": hit,
-            "Mean net P&L per trade": mean,
+            "Win rate": hit,
+            "Average result": mean,
         })
     return rows
 
@@ -189,62 +186,59 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
     def _page() -> None:
         section_heading(
             "Trade Ideas",
-            "Every proposed trade, with what each model says about it. Models are judged separately and never blended.",
+            "Trades the system found, and what each of three independent models says about them.",
         )
         ideas, errors, session_date = _cached_ideas(key, db_path)
-        records, resolved_total = _cached_records(key, db_path)
-
-        tone, text = evidence_banner(records, resolved_total)
-        (st.warning if tone == "warning" else st.info)(text)
+        try:
+            records, resolved_total = _cached_records(key, db_path)
+        except sqlite3.OperationalError as exc:
+            records, resolved_total = None, 0
+            st.error(
+                "The track record could not be read because the database schema is out of date "
+                f"({exc}). Run the database migrations, then reload."
+            )
+        else:
+            tone, text = evidence_banner(records, resolved_total)
+            (st.warning if tone == "warning" else st.info)(text)
 
         if not ideas:
             st.info(
-                "No proposed trades in the latest research session"
-                + (f" ({session_date})." if session_date else ".")
-                + " Proposals appear when the daemon surfaces a local IV anomaly and builds a defined-risk structure."
+                "No trade ideas right now"
+                + (f" (latest session {session_date})." if session_date else ".")
+                + " They appear when the system spots a mispriced option and builds a limited-risk trade around it."
             )
             if errors:
-                st.caption(f"{len(errors)} proposal(s) could not be scored.")
+                st.caption(f"{len(errors)} idea(s) could not be scored.")
             return
 
         as_of = max((i.as_of for i in ideas if i.as_of), default=None)
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Session", session_date or "—")
-        m2.metric("Trades scored", len(ideas))
-        m3.metric("2+ models see edge", sum(1 for i in ideas if i.favouring >= 2))
-        m4.metric("Resolved at expiry", resolved_total)
-        if as_of:
-            st.caption(f"Newest market data in this view: {format_local_datetime(as_of)}.")
-
-        f1, f2 = st.columns([2, 3])
-        min_models = f1.select_slider(
-            "Show trades where at least this many models see edge after costs",
-            options=[0, 1, 2, 3], value=2, key="ideas_min_models",
+        agree2 = sum(1 for i in ideas if i.favouring >= 2)
+        st.caption(
+            f"{len(ideas)} ideas · {agree2} where at least 2 models see an edge"
+            + (f" · market data from {format_local_datetime(as_of)}" if as_of else "")
         )
-        names = sorted({i.underlying for i in ideas})
-        chosen = f2.multiselect("Underlyings", names, default=[], key="ideas_underlyings",
-                                placeholder="All")
-        shown = [i for i in ideas if i.favouring >= min_models and (not chosen or i.underlying in chosen)]
+
+        min_models = st.select_slider(
+            "Only show trades where this many models see an edge",
+            options=[0, 1, 2, 3], value=2, key="ideas_min_models",
+            help="An edge means: worth more than its price according to the model, after the bid/ask spread and fees.",
+        )
+        shown = [i for i in ideas if i.favouring >= min_models]
         if not shown:
-            st.info("No trade meets this filter. Lower the number of models required to see every scored trade.")
+            st.info("No trade meets this filter. Lower the number to see every idea.")
         else:
             rows = ideas_to_rows(shown)
             event = st.dataframe(
                 pd.DataFrame(rows), hide_index=True, width="stretch",
                 on_select="rerun", selection_mode="single-row", key="ideas_table",
                 column_config={
-                    "Profit-zone odds*": st.column_config.TextColumn(
-                        help="Risk-neutral lognormal probability, at the at-the-money IV, that the underlying "
-                             "finishes inside the profit zone. An intuition aid about shape, not a forecast."),
-                    **{
-                        MODEL_LABELS[m]: st.column_config.TextColumn(
-                            help="✓ edge after spread and fees · ≈ edge exists but costs eat it · ✗ model thinks "
-                                 "the position is worth less than the market · n/a model could not judge. "
-                                 "Dollar figure = model value minus market value minus costs.")
-                        for m in MODEL_ORDER
-                    },
+                    MODEL_LABELS[m]: st.column_config.TextColumn(
+                        help="✓ edge after costs · ≈ small edge, costs eat it · ✗ model says it is worth less than "
+                             "its price · n/a model could not judge. The dollar figure is the expected gain after costs.")
+                    for m in MODEL_ORDER
                 },
             )
+            st.caption("Click a row for details.")
             selected = None
             try:
                 picked = event.selection.rows
@@ -255,28 +249,23 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
             _detail(selected or shown[0], alt, pd, st)
 
         if errors:
-            with st.expander(f"{len(errors)} proposal(s) could not be scored"):
+            with st.expander(f"{len(errors)} idea(s) could not be scored"):
                 for proposal_id, message in errors:
-                    st.caption(f"Proposal {proposal_id}: {message}")
+                    st.caption(f"Idea {proposal_id}: {message}")
 
-        st.markdown("#### Track record")
-        st.caption(
-            "How each model's calls actually turned out, from trades resolved at expiry. A call counts only if the "
-            "model saw edge after costs at entry. This is the evidence; the verdicts above are not."
-        )
-        st.dataframe(pd.DataFrame(record_rows(records)), hide_index=True, width="stretch")
+        if records is not None:
+            st.markdown("#### Has it worked so far?")
+            st.dataframe(pd.DataFrame(record_rows(records)), hide_index=True, width="stretch")
         with st.expander("How to read this page"):
             st.markdown(
-                "- **Each model re-prices the structure** at its own fair implied volatility and compares with the "
-                "market's. The dollar figure is that difference, minus crossing the bid/ask spread, minus fees.\n"
-                "- **V1 chord** and **V2 quadratic** fit a line / parabola through neighbouring strikes. "
-                "**SVI smile** fits one smooth curve through the whole expiry. They are different views of the same "
-                "chain, so agreement is informative but not independent proof.\n"
-                "- **Profit-zone odds** describe the shape of the trade under a standard lognormal assumption. "
-                "They say nothing about whether the models are right.\n"
-                "- **Resolved at expiry** uses the last sampled price of the expiry session, not the official "
-                "settlement, and stops 15 minutes before the close.\n"
-                "- Christiania places no orders. Nothing here is a recommendation."
+                "- Each model estimates what the option's volatility *should* be. If that makes the trade worth "
+                "more than its price, even after the bid/ask spread and fees, it shows ✓ and the dollar gain.\n"
+                "- The three models look at the same option prices in different ways. When they agree it is "
+                "a stronger hint, but it is not proof.\n"
+                "- The gain is what the model expects **if it is right**. Prices can also differ from the model "
+                "for good reasons, and with many options scanned some will look good by chance.\n"
+                "- Only the table above is evidence, and only once trades have expired.\n"
+                "- Nothing here places an order or is advice."
             )
 
     _page()
@@ -284,23 +273,24 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
 
 def _detail(idea: TradeIdea, alt, pd, st) -> None:  # pragma: no cover - rendering
     st.markdown(f"#### {idea.underlying} · {structure_label(idea)} · expires {idea.expiration}")
+    st.markdown(md(_summary(idea)))
     cols = st.columns(len(MODEL_ORDER))
     for col, model_id in zip(cols, MODEL_ORDER, strict=True):
         j = idea.judgements[model_id]
         with col:
             st.markdown(f"**{MODEL_LABELS[model_id]}**")
             if not j.available:
-                st.caption(j.reason or "Unavailable.")
+                st.caption(j.reason or "Could not judge this trade.")
                 continue
+            st.metric(_verdict_words(j), usd(j.net_edge_usd, signed=True, decimals=2),
+                      help="Expected gain after the bid/ask spread and fees, if the model is right.")
             fair = j.fair_iv_by_strike.get(idea.target_strike)
             market = next((l.market_iv for l in idea.legs if l.strike == idea.target_strike), None)
             if fair is not None and market is not None:
-                st.caption(f"Fair IV at {idea.target_strike:g}: {fair * 100:.1f}% vs market {market * 100:.1f}%")
-            st.metric("Net edge after costs", usd(j.net_edge_usd, signed=True, decimals=2),
-                      f"{(j.net_edge_to_max_loss or 0) * 100:+.0f}% of max loss", delta_color="off")
+                st.caption(f"Volatility at {idea.target_strike:g}: model {fair * 100:.1f}%, market {market * 100:.1f}%.")
             st.caption(md(
-                f"Model vs market {usd(j.gross_edge_usd, signed=True, decimals=2)} · "
-                f"spread −{usd(j.spread_cost_usd, decimals=2)} · fees −{usd(j.fees_usd, decimals=2)}"
+                f"Before costs {usd(j.gross_edge_usd, signed=True, decimals=2)}, "
+                f"spread −{usd(j.spread_cost_usd, decimals=2)}, fees −{usd(j.fees_usd, decimals=2)}."
             ))
 
     if idea.profile is not None and idea.legs and idea.spot:
@@ -308,12 +298,12 @@ def _detail(idea: TradeIdea, alt, pd, st) -> None:  # pragma: no cover - renderi
         lo = min(idea.strikes[0], idea.spot) - 2 * em
         hi = max(idea.strikes[-1], idea.spot) + 2 * em
         curve = pd.DataFrame(payoff_curve(idea.legs, idea.fees_usd or 0.0, max(lo, 0.01), hi),
-                             columns=["Underlying at expiry", "P&L (USD)"])
-        x_title, y_title = "Underlying at expiry", "P&L (USD)"
+                             columns=["Price at expiry", "Profit / loss ($)"])
+        x_title, y_title = "Price of the stock at expiry", "Profit / loss ($)"
         x_scale = alt.Scale(domain=[max(lo, 0.01), hi], zero=False, nice=False)
         line = alt.Chart(curve).mark_line(color="#2EC4D6").encode(
-            x=alt.X("Underlying at expiry:Q", scale=x_scale, title=x_title),
-            y=alt.Y("P&L (USD):Q", title=y_title),
+            x=alt.X("Price at expiry:Q", scale=x_scale, title=x_title),
+            y=alt.Y("Profit / loss ($):Q", title=y_title),
         )
         zero = alt.Chart(pd.DataFrame({"y": [0.0]})).mark_rule(
             color="#8FA3B5", strokeDash=[4, 4]).encode(y=alt.Y("y:Q", title=y_title))
@@ -321,15 +311,40 @@ def _detail(idea: TradeIdea, alt, pd, st) -> None:  # pragma: no cover - renderi
             color="#E9B44C", strokeDash=[2, 2], strokeWidth=2).encode(
             x=alt.X("x:Q", scale=x_scale, title=x_title))
         st.altair_chart(line + zero + spot, width="stretch")
-        st.caption(
-            f"Expiry P&L after entry cost and fees. Amber dashed line = spot {eu(idea.spot, 2)}. "
-            f"One standard move to expiry ≈ ±{eu(em, 2)} at {idea.profile.atm_iv * 100:.1f}% IV."
-        )
+        st.caption(f"Yellow line = current price {eu(idea.spot, 2)}. Costs are included.")
 
-    legs = pd.DataFrame([{
-        "Side": l.side, "Qty": l.quantity, "Strike": l.strike, "Right": l.right,
-        "Bid": l.bid, "Ask": l.ask, "Entry price": l.entry_price, "Market IV": f"{l.market_iv * 100:.1f}%",
-    } for l in idea.legs])
-    st.dataframe(legs, hide_index=True, width="stretch")
+    with st.expander("The individual options"):
+        legs = pd.DataFrame([{
+            "Action": l.side, "Contracts": l.quantity, "Strike": l.strike,
+            "Type": "Call" if l.right.upper().startswith("C") else "Put",
+            "Bid": l.bid, "Ask": l.ask, "Price used": l.entry_price,
+        } for l in idea.legs])
+        st.dataframe(legs, hide_index=True, width="stretch")
     for note in idea.notes:
         st.caption(f"Note: {note}")
+
+
+def _verdict_words(j: ModelJudgement) -> str:
+    if j.verdict == VERDICT_EDGE:
+        return "Sees an edge"
+    if j.verdict == VERDICT_COSTS_EAT_EDGE:
+        return "Edge too small"
+    return "Sees no edge"
+
+
+def _summary(idea: TradeIdea) -> str:
+    n = len(MODEL_ORDER)
+    if idea.available == 0:
+        head = "No model could judge this trade."
+    elif idea.favouring == 0:
+        head = "No model sees an edge after costs."
+    else:
+        head = f"{idea.favouring} of {n} models see an edge after costs."
+    if idea.profile is None:
+        return head
+    zone = zone_text(idea)
+    return (
+        f"{head} You risk at most {usd(idea.max_loss_usd)} to make at most {usd(idea.profile.max_profit_usd)}. "
+        f"It makes money if the stock ends {zone.replace('–', 'to')} at expiry "
+        f"(about {idea.profile.p_profit * 100:.0f}% likely on a simple price-movement assumption)."
+    )

@@ -53,9 +53,9 @@ MODEL_V2 = "V2_QUADRATIC_LOO"
 MODEL_SVI = "SVI_SMILE"
 MODEL_ORDER = (MODEL_V1, MODEL_V2, MODEL_SVI)
 MODEL_LABELS = {
-    MODEL_V1: "V1 chord",
-    MODEL_V2: "V2 quadratic",
-    MODEL_SVI: "SVI smile",
+    MODEL_V1: "Line fit",
+    MODEL_V2: "Curve fit",
+    MODEL_SVI: "Smile fit",
 }
 
 VERDICT_EDGE = "EDGE AFTER COSTS"

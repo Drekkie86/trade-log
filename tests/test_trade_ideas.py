@@ -450,15 +450,14 @@ def test_table_rows_put_each_model_in_its_own_column(db_path):
     seed_scenario(db_path, with_v2=True)
     idea = load_current_ideas(db_path=db_path)[0][0]
     row = ideas_to_rows([idea])[0]
-    assert row["Underlying"] == "AAPL" and row["Trade"] == "Long fly 95/100/105 call"
-    assert row["Expiry"] == "2026-09-18 (17d)"
+    assert row["Stock"] == "AAPL" and row["Trade"] == "Long fly 95/100/105 call"
+    assert row["Expires"] == "2026-09-18 (17d)"
     for model_id in MODEL_ORDER:
         cell = row[MODEL_LABELS[model_id]]
         assert cell[0] in "✓≈✗" and "$" in cell
-    assert row["Models seeing edge"] == f"{idea.favouring}/3"
-    assert row["Status"] == "Not yet decided"
-    assert row["Profit-zone odds*"].endswith("%")
-    assert " – " in row["Profit zone at expiry"]
+    assert row["Models that see edge"] == f"{idea.favouring} of 3"
+    assert row["Status"] == "Not tracked yet"
+    assert row["Most you can lose"].startswith("$") and row["Most you can make"].startswith("$")
 
 
 def test_unavailable_model_cell_and_formatting():
@@ -477,11 +476,11 @@ def test_evidence_banner_never_overstates():
 
     empty = {m: ModelRecord(m, 0, 0, 0, None, None, None, None) for m in MODEL_ORDER}
     tone, text = evidence_banner(empty, 0)
-    assert tone == "warning" and "No trade has been tested" in text
+    assert tone == "warning" and "Not proven yet" in text
     tone, text = evidence_banner(empty, 4)
-    assert "untested" in text and "favoured" in text
+    assert "untested" in text
     rows = record_rows(empty)
-    assert rows[0]["Hit rate (95% interval)"] == "—" and rows[0]["Mean net P&L per trade"] == "—"
+    assert rows[0]["Win rate"] == "—" and rows[0]["Average result"] == "—"
 
 
 def test_trade_ideas_is_the_first_page_and_renders(db_path, monkeypatch):
@@ -501,8 +500,8 @@ def test_trade_ideas_is_the_first_page_and_renders(db_path, monkeypatch):
     assert app.sidebar.radio[0].value.endswith("Trade Ideas")
     page_text = " ".join(m.value for m in app.markdown) + " ".join(c.value for c in app.caption)
     assert "Trade Ideas" in page_text
-    assert [m.label for m in app.metric][:4] == ["Session", "Trades scored", "2+ models see edge", "Resolved at expiry"]
-    assert any("No trade has been tested" in w.value for w in app.warning)
+    assert any("Not proven yet" in w.value for w in app.warning)
+    assert [m.label for m in app.metric][:3] == ["Sees an edge"] * 3
 
 
 def test_track_record_uses_only_the_current_outcome_revision(db_path):
