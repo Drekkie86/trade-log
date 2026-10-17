@@ -209,6 +209,28 @@ def terminal_value_usd(legs: Sequence[IdeaLeg], underlying_price: float) -> floa
     return total
 
 
+def quote_consistency_problem(
+    legs: Sequence[IdeaLeg], market: MarketInputs
+) -> str | None:
+    """Return a reason if a leg's provider IV does not reproduce its own
+    bid/ask.  Every model edge here is a difference of Black-Scholes prices, so
+    if BS(provider IV) sits far outside the quoted market the IV, the spot, the
+    time to expiry or the rate is wrong and any "edge" is an artefact.  The
+    allowance is one quoted spread outside the band (no invented threshold)."""
+    for leg in legs:
+        try:
+            px = _bs(market, leg.strike, leg.market_iv, leg.right)
+        except (QuantInputError, ValueError, ZeroDivisionError) as exc:
+            return f"Could not price {leg.strike:g} at its provider IV: {exc}"
+        width = max(leg.ask - leg.bid, 0.0)
+        if not math.isfinite(px) or px < leg.bid - width or px > leg.ask + width:
+            return (
+                f"Provider IV at strike {leg.strike:g} does not reproduce the "
+                f"quote (model price {px:.2f} vs bid {leg.bid:.2f} / ask {leg.ask:.2f})."
+            )
+    return None
+
+
 def judge_model(
     model_id: str,
     legs: Sequence[IdeaLeg],
@@ -233,6 +255,14 @@ def judge_model(
             verdict=VERDICT_UNAVAILABLE,
             reason="Model produced no fair IV for this structure.",
         )
+    inconsistent = quote_consistency_problem(legs, market)
+    if inconsistent is not None:
+        return ModelJudgement(
+            model_id=model_id,
+            available=False,
+            verdict=VERDICT_UNAVAILABLE,
+            reason=f"Quotes inconsistent: {inconsistent}",
+        )
     try:
         gross = 0.0
         for leg in legs:
@@ -252,6 +282,13 @@ def judge_model(
             reason=f"Could not re-price legs: {exc}",
         )
 
+    if not math.isfinite(gross):
+        return ModelJudgement(
+            model_id=model_id,
+            available=False,
+            verdict=VERDICT_UNAVAILABLE,
+            reason="Model edge was not a finite number.",
+        )
     spread = sum(
         leg.quantity * leg.multiplier * abs(leg.entry_price - leg.mid)
         for leg in legs
@@ -291,11 +328,18 @@ def svi_fair_ivs(
     chain: Sequence[tuple[float, float]],
     market: MarketInputs,
     strikes: Sequence[float],
+    *,
+    exclude_strike: float | None = None,
 ) -> tuple[dict[float, float] | None, dict[str, Any], str | None]:
     """Fit a raw-SVI smile to (strike, iv) pairs of one expiry and read the
-    fitted IV at ``strikes``.  Fails closed: no fit, no verdict."""
+    fitted IV at ``strikes``.  Fails closed: no fit, no verdict.
+
+    ``exclude_strike`` is left out of the fit (leave-one-out), so the model
+    cannot simply reproduce the quote it is meant to be judging."""
     points = {}
     for strike, iv in chain:
+        if exclude_strike is not None and abs(float(strike) - exclude_strike) < 1e-9:
+            continue
         if math.isfinite(strike) and math.isfinite(iv) and iv > 0.0 and strike > 0.0:
             points[float(strike)] = float(iv)
     if len(points) < 5:
@@ -322,12 +366,23 @@ def svi_fair_ivs(
     errors = np.array(fitted_ivs) - np.array(ivs)
     iv_rmse = float(np.sqrt(np.mean(errors**2))) if np.all(np.isfinite(errors)) else float("inf")
     quality = classify_greek_quality(iv_rmse)
-    arbitrage = bool(fit.static_arbitrage.get("sampled_butterfly_arbitrage"))
+    # The library's own check samples out to +-150% log-moneyness, far beyond
+    # any traded strike; a short-dated smile fitted on a +-10% window nearly
+    # always "fails" out there.  A butterfly is priced inside the quoted range,
+    # so arbitrage is tested over exactly that range (data and leg strikes).
+    k_lo = min(min(ks), *(math.log(s_ / forward) for s_ in strikes))
+    k_hi = max(max(ks), *(math.log(s_ / forward) for s_ in strikes))
+    local = svi_model.sampled_static_arbitrage(
+        fit.parameters, k_min=k_lo, k_max=max(k_hi, k_lo + 1e-6), points=201
+    )
+    arbitrage = bool(local["sampled_butterfly_arbitrage"])
+    wing_arbitrage = bool(fit.static_arbitrage.get("sampled_butterfly_arbitrage"))
     diag = {
         "points": len(points),
         "iv_rmse": iv_rmse,
         "iv_fit_quality": quality.value,
         "sampled_butterfly_arbitrage": arbitrage,
+        "wing_arbitrage_outside_quoted_range": wing_arbitrage,
         "optimiser_converged": bool(fit.diagnostics.converged),
         "optimiser_message": fit.diagnostics.message,
     }
@@ -617,7 +672,9 @@ def _score_proposal_row(conn, row) -> TradeIdea:
         judgements[MODEL_V2] = unavailable(MODEL_V2, reason)
 
     # SVI: smooth smile through the whole expiry.
-    fair, diag, why = svi_fair_ivs(chain, market, [l.strike for l in legs])
+    # Leave-one-out at the target and adjust only the target leg, exactly like
+    # V1/V2, so the three columns answer the same question.
+    fair, diag, why = svi_fair_ivs(chain, market, [target], exclude_strike=target)
     if fair is None:
         judgements[MODEL_SVI] = unavailable(MODEL_SVI, why or "SVI unavailable.")
     else:

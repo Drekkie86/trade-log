@@ -36,24 +36,24 @@ MARKET = MarketInputs(100.0, 30 / 365, 0.04, 0.0, True)
 
 def fly_legs():
     return [
-        IdeaLeg(1, "C", 95, "BUY", 1, 100, 6.20, 6.00, 6.20, 0.20),
-        IdeaLeg(2, "C", 100, "SELL", 2, 100, 2.90, 2.90, 3.10, 0.20),
-        IdeaLeg(3, "C", 105, "BUY", 1, 100, 1.05, 0.95, 1.05, 0.20),
+        IdeaLeg(1, "C", 95, "BUY", 1, 100, 5.92, 5.72, 5.92, 0.20),
+        IdeaLeg(2, "C", 100, "SELL", 2, 100, 2.35, 2.35, 2.55, 0.20),
+        IdeaLeg(3, "C", 105, "BUY", 1, 100, 0.81, 0.61, 0.81, 0.20),
     ]
 
 
 def test_entry_cash_fees_and_payoff_numbers():
     legs = fly_legs()
-    # pay 620 + 105, receive 580 -> debit 145
-    assert entry_cashflow_usd(legs) == pytest.approx(-145.0)
+    # pay 592 + 81, receive 470 -> debit 203
+    assert entry_cashflow_usd(legs) == pytest.approx(-203.0)
     # 4 contract sides * 2 * $3.00
     assert structure_fees_usd(legs) == pytest.approx(24.0)
     prof = profit_profile(legs, MARKET, atm_iv=0.20, fees_usd=24.0)
-    assert prof.max_loss_usd == pytest.approx(169.0)  # debit + fees
-    assert prof.max_profit_usd == pytest.approx(331.0)  # 5*100 - debit - fees
+    assert prof.max_loss_usd == pytest.approx(227.0)  # debit + fees
+    assert prof.max_profit_usd == pytest.approx(273.0)  # 5*100 - debit - fees
     lo, hi = prof.breakevens
-    assert lo == pytest.approx(95 + 1.69, abs=0.02)
-    assert hi == pytest.approx(105 - 1.69, abs=0.02)
+    assert lo == pytest.approx(95 + 2.27, abs=0.02)
+    assert hi == pytest.approx(105 - 2.27, abs=0.02)
     assert prof.profit_intervals == ((pytest.approx(lo), pytest.approx(hi)),)
     # probability mass of the profit zone under the stated lognormal
     sig = 0.20 * math.sqrt(30 / 365)
@@ -69,9 +69,9 @@ def test_entry_cash_fees_and_payoff_numbers():
 
 def test_reverse_butterfly_profits_in_the_tails():
     legs = [
-        IdeaLeg(1, "C", 95, "SELL", 1, 100, 6.00, 6.00, 6.20, 0.20),
-        IdeaLeg(2, "C", 100, "BUY", 2, 100, 3.10, 2.90, 3.10, 0.20),
-        IdeaLeg(3, "C", 105, "SELL", 1, 100, 0.95, 0.95, 1.05, 0.20),
+        IdeaLeg(1, "C", 95, "SELL", 1, 100, 5.72, 5.72, 5.92, 0.20),
+        IdeaLeg(2, "C", 100, "BUY", 2, 100, 2.55, 2.35, 2.55, 0.20),
+        IdeaLeg(3, "C", 105, "SELL", 1, 100, 0.61, 0.61, 0.81, 0.20),
     ]
     prof = profit_profile(legs, MARKET, atm_iv=0.20, fees_usd=structure_fees_usd(legs))
     assert len(prof.profit_intervals) == 2
@@ -87,10 +87,10 @@ def test_model_below_market_iv_favours_selling_the_middle():
     assert j.available and j.verdict == VERDICT_EDGE and j.favours
     # net = gross - spread - fees, exactly
     assert j.net_edge_usd == pytest.approx(j.gross_edge_usd - j.spread_cost_usd - j.fees_usd)
-    # crossing half-spreads: 0.10*100 + 0.10*200 + 0.05*100 = $35
-    assert j.spread_cost_usd == pytest.approx(35.0)
+    # crossing half-spreads: 0.10*100 + 0.10*200 + 0.05*100 = $40
+    assert j.spread_cost_usd == pytest.approx(40.0)
     assert j.fees_usd == pytest.approx(24.0)
-    assert j.net_edge_to_max_loss == pytest.approx(j.net_edge_usd / 169.0)
+    assert j.net_edge_to_max_loss == pytest.approx(j.net_edge_usd / 227.0)
 
 
 def test_costs_are_charged_and_can_eat_the_edge():
@@ -587,3 +587,36 @@ def test_track_record_uses_only_the_current_outcome_revision(db_path):
         if judgement.favours:
             assert (rec.n_favoured, rec.wins) == (1, 0)  # the loss, counted once
             assert rec.mean_net_pnl_usd == pytest.approx(rows[2]["pnl"] / 100.0)
+
+
+# --------------------------------------------------------------------------
+# Model scrutiny: quote consistency, non-finite guard, leave-one-out SVI
+# --------------------------------------------------------------------------
+def test_inconsistent_quotes_make_every_model_unavailable():
+    # provider IV 20% prices the 100 call near 2.45; a quote of 4.00/4.20 is not that
+    legs = fly_legs()
+    bad = legs[1].__class__(2, "C", 100, "SELL", 2, 100, 4.00, 4.00, 4.20, 0.20)
+    j = judge_model(MODEL_V1, [legs[0], bad, legs[2]], MARKET, {100.0: 0.17}, max_loss_usd=227.0)
+    assert not j.available and j.verdict == VERDICT_UNAVAILABLE
+    assert "does not reproduce the quote" in j.reason
+
+
+def test_non_finite_edge_is_unavailable_not_a_verdict():
+    j = judge_model(MODEL_V1, fly_legs(), MARKET, {100.0: float("nan")}, max_loss_usd=227.0)
+    assert not j.available and j.verdict == VERDICT_UNAVAILABLE
+
+
+def test_svi_leave_one_out_does_not_see_the_target_quote():
+    strikes = [90, 92.5, 95, 97.5, 100, 102.5, 105, 107.5, 110]
+    smooth = lambda k: 0.20 + 0.00012 * (k - 100) ** 2
+    market = MarketInputs(100.0, 17 / 365, 0.04, 0.0, True)
+    with_bump = [(k, smooth(k) + (0.04 if k == 100 else 0.0)) for k in strikes]
+    fair, diag, why = svi_fair_ivs(with_bump, market, [100.0], exclude_strike=100.0)
+    assert why is None, why
+    assert diag["points"] == 8
+    # reads the smooth smile (0.20), ignoring the 4-vol-point bump
+    assert fair[100.0] == pytest.approx(0.20, abs=0.002)
+    # changing the excluded quote must not move the answer at all
+    other = [(k, iv + (0.10 if k == 100 else 0.0)) for k, iv in with_bump]
+    fair2, _, _ = svi_fair_ivs(other, market, [100.0], exclude_strike=100.0)
+    assert fair2[100.0] == pytest.approx(fair[100.0], abs=1e-9)
