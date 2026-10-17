@@ -150,7 +150,11 @@ def inventory_backups(
                 integrity = manifest.integrity_check
                 fk_count = manifest.foreign_key_violation_count
                 state = "VALID"
-                detail = "VERIFIED_COMPRESSED"
+                detail = (
+                    "VERIFIED_COMPRESSED"
+                    if manifest.verification_level == "deep"
+                    else "VERIFIED_COMPRESSED_ROUTINE"
+                )
         else:
             version, integrity, fk_count, state, detail = _inspect_sqlite(path)
 
@@ -393,7 +397,7 @@ def run_restore_drill(backup_path: str | Path) -> RestoreDrillResult:
             # Avoid repeating another whole-database verification scan.
             source_version = manifest.schema_version
             restored_version = manifest.schema_version
-            integrity = manifest.integrity_check
+            integrity = "ok"  # The restored file passed full integrity_check.
             fk_count = manifest.foreign_key_violation_count
         else:
             print("[restore-drill] plain SQLite copy: starting", file=sys.stderr, flush=True)

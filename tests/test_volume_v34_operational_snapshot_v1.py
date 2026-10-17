@@ -44,7 +44,9 @@ def test_v34_snapshot_promotes_only_full_verified_copy(tmp_path, monkeypatch):
     assert json.loads((backup_dir / "status.json").read_text())["phase"] == "COMPLETE"
     manifest = json.loads(result.with_name(result.name + ".manifest.json").read_text())
     assert manifest["schema_version"] == 34
-    assert manifest["integrity_check"] == "ok"
+    assert manifest["verification_level"] == "routine"
+    assert manifest["quick_check"] == "ok"
+    assert manifest["integrity_check"] is None
     assert manifest["foreign_key_violation_count"] == 0
     assert manifest["snapshot_sha256"] == rescue.sha256(result)
     assert not list(backup_dir.glob("*.incomplete.db"))

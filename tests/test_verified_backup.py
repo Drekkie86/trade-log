@@ -68,7 +68,9 @@ def test_verified_backup_preserves_committed_wal_data(
     )
 
     assert result.schema_version == EXPECTED_SCHEMA_VERSION
-    assert result.integrity_check == "ok"
+    assert result.verification_level == "routine"
+    assert result.quick_check == "ok"
+    assert result.integrity_check is None
     assert (
         result.foreign_key_violation_count
         == 0
@@ -127,8 +129,10 @@ def test_backup_retention_prunes_oldest(
         )
     )
 
-    assert len(backups) == 2
-    assert result.pruned_count == 2
+    # A routine-verified replacement must never automatically delete older
+    # independently verified recovery points. Retention is a separate gate.
+    assert len(backups) == 4
+    assert result.pruned_count == 0
 
 
 def test_verified_backup_rejects_stale_schema(
@@ -387,13 +391,14 @@ def test_backup_preprunes_before_capacity_check(
         retention=3,
     )
 
-    assert observed_counts == [2]
-    assert result.pruned_count == 1
+    # Capacity safety never relies on deleting another recovery point.
+    assert observed_counts == [3]
+    assert result.pruned_count == 0
     assert len(
         sqlite_runtime.backup_data_files(
             backup_dir
         )
-    ) == 3
+    ) == 4
 
 
 def test_backup_retention_one_preserves_last_good_before_new_copy(

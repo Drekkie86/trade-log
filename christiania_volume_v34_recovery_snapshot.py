@@ -25,6 +25,7 @@ BACKUP_DIR = VOLUME / "backups"
 STATUS = BACKUP_DIR / "volume_v34_fresh_snapshot_status.json"
 EXPECTED_SCHEMA = 34
 SNAPSHOT_LIMIT_SECONDS = 1800
+VERIFICATION_LIMIT_SECONDS = 900
 RESERVE_BYTES = 15 * 1024**3
 
 
@@ -68,23 +69,42 @@ def require_storage(*, source: Path, volume: Path, output_dir: Path) -> int:
 
 
 def verify_sqlite(path: Path, *, expected_schema: int) -> tuple[int, str, int]:
+    """Bounded routine verification, never represented as full integrity."""
     uri = path.resolve().as_uri() + "?mode=ro"
+    started = time.monotonic()
+    timed_out = [False]
+
+    def progress() -> int:
+        if time.monotonic() - started >= VERIFICATION_LIMIT_SECONDS:
+            timed_out[0] = True
+            return 1
+        return 0
+
     conn = sqlite3.connect(uri, uri=True, timeout=30)
     try:
+        conn.execute("PRAGMA query_only=ON")
+        conn.set_progress_handler(progress, 10_000)
         version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         if int(version) != expected_schema:
             raise RuntimeError(f"WRONG_SNAPSHOT_SCHEMA:{version}")
-        status("VERIFYING_INTEGRITY", schema_version=int(version))
-        integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
-        if integrity != "ok":
-            raise RuntimeError(f"FAILED_INTEGRITY_CHECK:{integrity}")
-        status("VERIFYING_FOREIGN_KEYS", integrity=integrity)
-        fk_count = sum(1 for _ in conn.execute("PRAGMA foreign_key_check"))
+        status("VERIFYING_QUICK_CHECK", schema_version=int(version),
+               verification_level="routine")
+        quick = str(conn.execute("PRAGMA quick_check(1)").fetchone()[0])
+        if quick != "ok":
+            raise RuntimeError(f"FAILED_QUICK_CHECK:{quick}")
+        status("VERIFYING_FOREIGN_KEYS", quick_check=quick,
+               integrity_check=None, verification_level="routine")
+        fk_count = 1 if conn.execute("PRAGMA foreign_key_check").fetchone() else 0
         if fk_count:
-            raise RuntimeError(f"FAILED_FOREIGN_KEY_CHECK:{fk_count}")
+            raise RuntimeError("FAILED_FOREIGN_KEY_CHECK")
+    except sqlite3.OperationalError as exc:
+        if timed_out[0]:
+            raise TimeoutError("ROUTINE_VERIFICATION_TIMEOUT") from exc
+        raise
     finally:
+        conn.set_progress_handler(None, 0)
         conn.close()
-    return expected_schema, integrity, fk_count
+    return expected_schema, quick, 0
 
 
 def take_snapshot(*, source: Path, volume: Path, output_dir: Path,
@@ -145,7 +165,7 @@ def take_snapshot(*, source: Path, volume: Path, output_dir: Path,
             with partial.open("r+b") as handle:
                 os.fsync(handle.fileno())
             status("COPY_DONE", snapshot_bytes=partial.stat().st_size)
-            schema, integrity, fk = verify_sqlite(partial, expected_schema=expected_schema)
+            schema, quick, fk = verify_sqlite(partial, expected_schema=expected_schema)
             status("HASHING", snapshot_bytes=partial.stat().st_size)
             digest = sha256(partial)
             os.replace(partial, final)
@@ -156,7 +176,8 @@ def take_snapshot(*, source: Path, volume: Path, output_dir: Path,
                 finally:
                     os.close(dirfd)
             manifest_data = {
-                "schema_version": schema, "integrity_check": integrity,
+                "schema_version": schema, "verification_level": "routine",
+                "quick_check": quick, "integrity_check": None,
                 "foreign_key_violation_count": fk, "snapshot_method": "VACUUM_INTO",
                 "source_path": str(source), "snapshot_path": str(final),
                 "snapshot_bytes": final.stat().st_size,

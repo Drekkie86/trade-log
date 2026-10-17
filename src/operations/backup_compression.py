@@ -12,6 +12,9 @@ from pathlib import Path
 
 from src.config import get_runtime_setting
 from src.database.repository import EXPECTED_SCHEMA_VERSION
+from src.operations.backup_verification import (
+    evidence_path_for, read_plain_evidence,
+)
 
 
 BACKUP_PREFIX = "christiania_backup_"
@@ -31,7 +34,7 @@ class CompressedBackupManifest:
     backup_filename: str
     source_filename: str
     schema_version: int
-    integrity_check: str
+    integrity_check: str | None
     foreign_key_violation_count: int
     source_size_bytes: int
     compressed_size_bytes: int
@@ -39,6 +42,8 @@ class CompressedBackupManifest:
     compressed_sha256: str
     compression: str
     compression_level: int
+    verification_level: str | None = None
+    quick_check: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -266,7 +271,7 @@ def verify_compressed_backup(
 
     manifest = load_compressed_manifest(path)
 
-    if manifest.format_version != 1:
+    if manifest.format_version not in (1, 2):
         raise RuntimeError(
             f"Unsupported compressed backup format v{manifest.format_version}."
         )
@@ -282,9 +287,22 @@ def verify_compressed_backup(
             f"Compressed backup schema v{manifest.schema_version} does not "
             f"match expected v{EXPECTED_SCHEMA_VERSION}."
         )
-    if manifest.integrity_check != "ok":
+    if manifest.format_version == 1:
+        # Legacy records were created only after full integrity_check.
+        acceptable = (manifest.verification_level in (None, "deep")
+                      and manifest.integrity_check == "ok")
+    else:
+        acceptable = (
+            (manifest.verification_level == "deep"
+             and manifest.integrity_check == "ok")
+            or (manifest.verification_level == "routine"
+                and manifest.quick_check == "ok"
+                and manifest.integrity_check is None)
+        )
+    if not acceptable:
         raise RuntimeError(
-            "Compressed backup manifest does not record a clean integrity check."
+            "Compressed manifest has no accepted, explicitly labelled "
+            "routine or deep SQLite verification."
         )
     if manifest.foreign_key_violation_count != 0:
         raise RuntimeError(
@@ -352,10 +370,25 @@ def compress_verified_backup(
             f"Backup is not an uncompressed .db file: {source}"
         )
 
-    version, integrity, fk_count = _verify_plain_sqlite(
-        source,
-        expected_version=None,
-    )
+    # Never repeat a full SQLite integrity scan for a backup whose routine
+    # evidence and SHA-256 have already been recorded. Legacy files without
+    # evidence retain the original full-check behavior.
+    evidence_file = evidence_path_for(source)
+    evidence = None
+    source_sha = None
+    if evidence_file.exists() or evidence_file.is_symlink():
+        source_sha = _sha256_file(source)
+        evidence = read_plain_evidence(source, source_sha256=source_sha)
+        version = evidence.schema_version
+        integrity = evidence.integrity_check
+        quick = evidence.quick_check
+        level = evidence.verification_level
+        fk_count = evidence.foreign_key_violation_count
+    else:
+        version, integrity, fk_count = _verify_plain_sqlite(
+            source, expected_version=None,
+        )
+        level, quick = "deep", None
 
     usage = shutil.disk_usage(source.parent)
     required = _required_free_bytes(
@@ -384,8 +417,9 @@ def compress_verified_backup(
     source_size = source_stat.st_size
     source_atime_ns = source_stat.st_atime_ns
     source_mtime_ns = source_stat.st_mtime_ns
-    source_sha = _sha256_file(source)
-    level = gzip_level()
+    if source_sha is None:
+        source_sha = _sha256_file(source)
+    gzip_compression_level = gzip_level()
 
     try:
         with source.open("rb") as src:
@@ -393,7 +427,7 @@ def compress_verified_backup(
                 with gzip.GzipFile(
                     filename="",
                     mode="wb",
-                    compresslevel=level,
+                    compresslevel=gzip_compression_level,
                     fileobj=raw,
                     mtime=0,
                 ) as gz:
@@ -416,7 +450,7 @@ def compress_verified_backup(
         compressed_size = temp.stat().st_size
 
         manifest = CompressedBackupManifest(
-            format_version=1,
+            format_version=2,
             created_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             backup_filename=final.name,
             source_filename=source.name,
@@ -428,7 +462,9 @@ def compress_verified_backup(
             source_sha256=source_sha,
             compressed_sha256=compressed_sha,
             compression="gzip",
-            compression_level=level,
+            compression_level=gzip_compression_level,
+            verification_level=level,
+            quick_check=quick,
         )
 
         os.replace(temp, final)
@@ -455,6 +491,8 @@ def compress_verified_backup(
         )
 
         source.unlink()
+        if evidence_file.exists():
+            evidence_file.unlink()
         _fsync_directory(source.parent)
 
         reclaimed = max(
@@ -587,9 +625,11 @@ def restore_compressed_backup_to(
             raise RuntimeError(
                 "Restored compressed backup schema mismatch."
             )
-        if integrity != manifest.integrity_check or fk_count != 0:
+        # Restores are deep audits even for routinely verified archives.
+        # Do not compare full integrity_check to the routine 'not run' field.
+        if integrity != "ok" or fk_count != 0:
             raise RuntimeError(
-                "Restored compressed backup failed verification."
+                "Restored compressed backup failed deep verification."
             )
     except BaseException:
         if target.exists():
