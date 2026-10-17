@@ -111,7 +111,8 @@ def evidence_banner(records: dict[str, ModelRecord], resolved_total: int) -> tup
         return (
             "warning",
             "Not proven yet. No trade has reached its expiry date, so none of these models has a track record. "
-            "Treat every ✓ as an idea to check, not a result.",
+            "Treat every ✓ as an idea to check, not a result. The three models read the same prices, so they "
+            "often agree even when the apparent mispricing is only noise.",
         )
     judged = sum(r.n_favoured for r in records.values())
     if judged == 0:
@@ -221,7 +222,8 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
         min_models = st.select_slider(
             "Only show trades where this many models see an edge",
             options=[0, 1, 2, 3], value=2, key="ideas_min_models",
-            help="An edge means: worth more than its price according to the model, after the bid/ask spread and fees.",
+            help="An edge means: worth more than its price according to the model, after the bid/ask spread and fees. "
+                 "The models share the same inputs, so more agreement is not much stronger evidence.",
         )
         shown = [i for i in ideas if i.favouring >= min_models]
         if not shown:
@@ -260,8 +262,9 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
             st.markdown(
                 "- Each model estimates what the option's volatility *should* be. If that makes the trade worth "
                 "more than its price, even after the bid/ask spread and fees, it shows ✓ and the dollar gain.\n"
-                "- The three models look at the same option prices in different ways. When they agree it is "
-                "a stronger hint, but it is not proof.\n"
+                "- The three models look at the same option prices in different ways. Because they share the "
+                "same inputs they agree easily: in our simulations of markets with no real mispricing, most "
+                "flagged trades still had 2 or more models seeing an edge. Agreement is a weak hint, not proof.\n"
                 "- The gain is what the model expects **if it is right**. Prices can also differ from the model "
                 "for good reasons, and with many options scanned some will look good by chance.\n"
                 "- Only the table above is evidence, and only once trades have expired.\n"
