@@ -546,7 +546,7 @@ def test_trade_ideas_is_the_first_page_and_renders(db_path, monkeypatch):
     page_text = " ".join(m.value for m in app.markdown) + " ".join(c.value for c in app.caption)
     assert "Trade Ideas" in page_text
     assert any("Not proven yet" in w.value for w in app.warning)
-    assert [m.label for m in app.metric][:3] == ["Sees an edge"] * 3
+    assert [m.label for m in app.metric][:3] == ["Worth a look", "Marginal", "Skip"]
 
 
 def test_track_record_uses_only_the_current_outcome_revision(db_path):

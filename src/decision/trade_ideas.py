@@ -161,6 +161,7 @@ class TradeIdea:
     candidate_id: int | None
     notes: tuple[str, ...] = ()
     legs: tuple[IdeaLeg, ...] = ()
+    market: MarketInputs | None = None
 
 
 # --------------------------------------------------------------------------
@@ -730,6 +731,7 @@ def _score_proposal_row(conn, row) -> TradeIdea:
         candidate_id=int(row["candidate_id"]) if row["candidate_id"] is not None else None,
         notes=tuple(notes),
         legs=tuple(legs),
+        market=market,
     )
 
 
