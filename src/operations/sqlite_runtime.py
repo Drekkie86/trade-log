@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from src.config import get_runtime_setting
+from src.operations.recovery_volume_guard import require_recovery_volume_path
 from src.database.repository import (
     EXPECTED_SCHEMA_VERSION,
     resolve_db_path,
@@ -74,18 +75,17 @@ def resolve_backup_dir(
     backup_dir: str | Path | None = None,
 ) -> Path:
     if backup_dir is not None:
-        return Path(backup_dir).expanduser()
+        return require_recovery_volume_path(Path(backup_dir).expanduser())
 
     configured = get_runtime_setting(
         "CHRISTIANIA_BACKUP_DIR"
     )
 
     if configured:
-        return Path(configured).expanduser()
+        return require_recovery_volume_path(Path(configured).expanduser())
 
-    return (
-        Path(__file__).resolve().parents[2]
-        / "backups"
+    return require_recovery_volume_path(
+        Path(__file__).resolve().parents[2] / "backups"
     )
 
 
