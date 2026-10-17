@@ -169,3 +169,27 @@ def test_data_quality_still_blocks_admission_without_wallet_gate(db_path):
     assert result.blocked_count == 1
     assert result.decisions[0].reason_code == "ENTRY_QUOTE_NOT_PRESENT"
     assert result.decisions[0].candidate_id is None
+
+
+def test_failed_final_decision_rolls_back_candidate_events_and_pin(db_path, monkeypatch):
+    """No orphan candidate may survive a failure after three state changes."""
+    import pytest
+    import src.research.shadow_intrinsic_admission_v1 as admission
+
+    seeded = seed_proposal(db_path)
+    def forced_failure(**kwargs):
+        raise RuntimeError("injected failure before decision persistence")
+    monkeypatch.setattr(admission, "_persist_decision", forced_failure)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        admit_shadow_proposals(
+            fx=fx(), proposal_ids=[seeded["proposal_id"]], db_path=db_path,
+        )
+    conn = get_connection(db_path)
+    try:
+        for table in (
+            "shadow_candidates", "shadow_state_events",
+            "underlying_pin_events", "shadow_intrinsic_admission_decisions_v1",
+        ):
+            assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, table
+    finally:
+        conn.close()

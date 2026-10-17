@@ -325,6 +325,37 @@ def restore_backup(*, database: Path, backup: Path, expected_version: int | None
     return backup_version
 
 
+def _assert_applied_expiry_migration_shape(database: Path) -> None:
+    """Detect the historical edited-in-place v35 before a release starts.
+
+    Some development databases applied an older SQL file under migration
+    number 035. A version number alone cannot establish that its revision
+    column and latest-outcome view exist. Abort BEFORE rollback copying or
+    touching service writers when the required v35 contract is absent.
+    """
+    connection = sqlite3.connect(
+        database.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0
+    )
+    try:
+        columns = {
+            row[1] for row in connection.execute(
+                "PRAGMA table_info(shadow_expiry_outcomes_v1)"
+            )
+        }
+        view = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' "
+            "AND name='v_shadow_expiry_outcomes_latest_v1'"
+        ).fetchone()
+        if not {"candidate_id", "revision", "snapshot_captured_at"}.issubset(columns) or not view:
+            raise RuntimeError(
+                "MIGRATION_035_SHAPE_MISMATCH: v35 was previously applied "
+                "with missing expiry revision columns or latest view. "
+                "Do not edit 035 in place; repair through a reviewed migration."
+            )
+    finally:
+        connection.close()
+
+
 def prepare_release_database(
     *,
     migrations_dir: Path,
@@ -346,6 +377,8 @@ def prepare_release_database(
         raise RuntimeError("Database must be in WAL mode before release migration.")
 
     schema_before = int(health.schema_version)
+    if schema_before >= 35:
+        _assert_applied_expiry_migration_shape(database)
 
     if schema_before == EXPECTED_SCHEMA_VERSION:
         _progress(

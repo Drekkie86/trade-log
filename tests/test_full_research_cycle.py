@@ -298,3 +298,36 @@ def test_full_cycle_propagates_research_thresholds(
         "spread": 0.12,
         "residual": 0.025,
     }
+
+
+def test_ecb_failure_defers_admission_but_keeps_lifecycle_and_expiry(monkeypatch):
+    from src.providers.ecb_fx import EcbFxError
+    from src.research import full_research_cycle as flow
+    calls = []
+    monkeypatch.setattr(flow, "run_research_cycle", lambda **kw: FakeResearchCycle())
+    monkeypatch.setattr(
+        flow, "build_shadow_structure_proposals",
+        lambda **kw: FakeBridge(1, 1, 0, (FakeProposal("PROPOSED", 101),)),
+    )
+    monkeypatch.setattr(
+        flow, "admit_shadow_proposals",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("Must not admit without FX")),
+    )
+    monkeypatch.setattr(
+        flow, "advance_shadow_lifecycle",
+        lambda **kw: calls.append(("lifecycle", kw["research_run_id"])),
+    )
+    monkeypatch.setattr(
+        flow, "record_shadow_expiry_outcomes",
+        lambda **kw: calls.append(("expiry", kw["research_run_id"])),
+    )
+    def fail_fx():
+        raise EcbFxError("transient ECB outage")
+    result = flow.run_full_research_cycle(
+        symbols=["AAPL"], massive_client=object(), theta_client=object(),
+        fx_fetcher=fail_fx,
+    )
+    assert result.admission is None
+    assert result.fx_observation is None
+    assert "transient ECB outage" in result.admission_error
+    assert calls == [("lifecycle", 17), ("expiry", 17)]

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from src.database.repository import get_connection
@@ -127,12 +127,14 @@ def _expiry_snapshots_bulk(
                        ms.underlying_price, rr.us_session_date
                 FROM research_runs AS rr
                 JOIN market_snapshots AS ms
-                     INDEXED BY idx_market_snapshots_run_provider
                   ON ms.research_run_id = rr.id
                 WHERE rr.us_session_date IN ({day_params})
+                  AND rr.us_session_state = 'INTRADAY'
+                  AND ms.us_session_state = 'INTRADAY'
+                  AND ms.us_session_date = rr.us_session_date
                   AND ms.underlying IN ({underlying_params})
                   AND ms.underlying_price IS NOT NULL
-                ORDER BY ms.captured_at DESC, ms.id DESC
+                ORDER BY julianday(ms.captured_at) DESC, ms.id DESC
                 """,
                 tuple(chunk) + tuple(underlyings),
             ).fetchall()
@@ -144,6 +146,14 @@ def _expiry_snapshots_bulk(
         return result
     finally:
         conn.close()
+
+
+def _utc_instant(value: str) -> datetime:
+    """Compare evidence timestamps by instant, not serialized UTC formatting."""
+    instant = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    if instant.tzinfo is None:
+        raise ShadowExpiryOutcomeError("Timestamp without timezone cannot be ordered safely.")
+    return instant.astimezone(UTC)
 
 
 def _insert(conn, **cols) -> int:
@@ -239,7 +249,8 @@ def record_shadow_expiry_outcomes(
                 # No changing an already recorded version in place.
                 if (
                     int(cand["prior_snapshot_id"]) == int(snapshot["id"])
-                    or str(snapshot["captured_at"]) <= str(cand["prior_snapshot_captured_at"])
+                    or _utc_instant(str(snapshot["captured_at"]))
+                       <= _utc_instant(str(cand["prior_snapshot_captured_at"]))
                 ):
                     continue
 

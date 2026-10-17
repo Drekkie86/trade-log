@@ -486,13 +486,15 @@ def _pct(numerator: int | float, denominator: int | float) -> float:
 
 
 def _html_rows(items: list[tuple[str, str, str | None]]) -> str:
+    from html import escape
+
     rows = []
     for label, value, state in items:
         rows.append(
             '<div style="display:flex;justify-content:space-between;gap:.8rem;'
             'padding:.28rem 0;border-bottom:1px solid rgba(255,255,255,.045)">'
-            f'<span>{status_dot(state)}{label}</span>'
-            f'<strong style="color:#F4F0E7">{value}</strong>'
+            f'<span>{status_dot(state)}{escape(str(label), quote=True)}</span>'
+            f'<strong style="color:#F4F0E7">{escape(str(value), quote=True)}</strong>'
             '</div>'
         )
     return "".join(rows)

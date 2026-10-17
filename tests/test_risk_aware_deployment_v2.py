@@ -52,6 +52,11 @@ def test_no_migration_fast_path_never_calls_backup_or_deep_verify(
 
     monkeypatch.setattr(release_db, "resolve_db_path", lambda: database)
     monkeypatch.setattr(release_db, "resolve_backup_dir", lambda: backup_dir)
+    # The schema-health result is synthetic: no SQLite file was created.
+    # Mock the independent lightweight v35 shape check in this unit test.
+    monkeypatch.setattr(
+        release_db, "_assert_applied_expiry_migration_shape", lambda *_: None
+    )
     monkeypatch.setattr(
         release_db,
         "inspect_database",

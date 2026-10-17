@@ -286,3 +286,76 @@ def test_defined_risk_is_recorded_in_usd_not_the_eur_candidate_column(db_path):
     o = _outcome(db_path, cand["id"])
     assert o["max_theoretical_loss_usd_minor"] == 20_000
     assert o["max_theoretical_loss_usd_minor"] != cand["max_theoretical_loss_minor"]
+
+
+def test_expiry_price_excludes_post_close_snapshots(db_path):
+    """A later POST_CLOSE price must never replace an expiry-session quote."""
+    candidate_id, _ = seed_active_candidate(db_path)
+    conn = get_connection(db_path)
+    try:
+        in_run = _insert_run(conn, started="2026-09-18T19:45:00Z",
+                             session_date="2026-09-18")
+        _insert_snapshot(conn, run_id=in_run, captured_at="2026-09-18T19:45:00Z",
+                         session_date="2026-09-18", price=108.0)
+        post_run = conn.execute(
+            """INSERT INTO research_runs
+               (cohort_id, preregistration_hash, code_git_sha, started_at,
+                ended_at, us_session_date, us_session_state, status)
+               VALUES ('TEST','hash1','sha','2026-09-18T21:30:00Z',
+                       '2026-09-18T21:30:00Z','2026-09-18','POST_CLOSE','COMPLETED')"""
+        ).lastrowid
+        conn.execute(
+            """INSERT INTO market_snapshots
+               (captured_at, underlying, provider, research_run_id,
+                us_session_date, us_session_state, underlying_source, fx_source,
+                underlying_price)
+               VALUES ('2026-09-18T21:30:00Z','AAPL','THETADATA',?,
+                       '2026-09-18','POST_CLOSE','FETCHED','UNKNOWN',60.0)""",
+            (post_run,),
+        )
+        after = _insert_run(conn, started="2026-09-21T14:00:00Z",
+                            session_date="2026-09-21")
+        conn.commit()
+    finally:
+        conn.close()
+    result = record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path)
+    assert result.resolved_written == 1
+    assert _outcome(db_path, candidate_id)["terminal_underlying_price"] == 108.0
+
+
+def test_expiry_query_does_not_require_specific_hint_index(db_path):
+    candidate_id, _ = seed_active_candidate(db_path)
+    conn = get_connection(db_path)
+    try:
+        in_run = _insert_run(conn, started="2026-09-18T19:45:00Z",
+                             session_date="2026-09-18")
+        _insert_snapshot(conn, run_id=in_run, captured_at="2026-09-18T19:45:00Z",
+                         session_date="2026-09-18", price=108.0)
+        after = _insert_run(conn, started="2026-09-21T14:00:00Z",
+                            session_date="2026-09-21")
+        conn.execute("DROP INDEX IF EXISTS idx_market_snapshots_run_provider")
+        conn.commit()
+    finally:
+        conn.close()
+    outcome = record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path)
+    assert outcome.resolved_written == 1
+    assert _outcome(db_path, candidate_id)["terminal_underlying_price"] == 108.0
+
+
+def test_expiry_price_prefers_later_instant_with_different_iso_format(db_path):
+    candidate_id, _ = seed_active_candidate(db_path)
+    conn = get_connection(db_path)
+    try:
+        in_run = _insert_run(conn, started="2026-09-18T19:45:00Z",
+                             session_date="2026-09-18")
+        _insert_snapshot(conn, run_id=in_run, captured_at="2026-09-18T19:30:00Z",
+                         session_date="2026-09-18", price=101.0)
+        _insert_snapshot(conn, run_id=in_run, captured_at="2026-09-18T19:45:00+00:00",
+                         session_date="2026-09-18", price=108.0)
+        after = _insert_run(conn, started="2026-09-21T14:00:00Z",
+                            session_date="2026-09-21")
+        conn.commit()
+    finally:
+        conn.close()
+    record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path)
+    assert _outcome(db_path, candidate_id)["terminal_underlying_price"] == 108.0

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from src.providers.ecb_fx import (
+    EcbFxError,
     EcbFxObservation,
     fetch_ecb_eurusd,
 )
@@ -34,6 +36,10 @@ class FullResearchCycleResult:
     structure_bridge: ShadowStructureBridgeResult
     fx_observation: EcbFxObservation | None
     admission: ShadowAdmissionResult | None
+    admission_error: str | None = None
+
+
+LOG = logging.getLogger(__name__)
 
 
 def run_full_research_cycle(
@@ -112,14 +118,23 @@ def run_full_research_cycle(
 
     fx = None
     admission = None
+    admission_error = None
 
     if proposed_ids:
-        fx = fx_fetcher()
-        admission = admit_shadow_proposals(
-            fx=fx,
-            proposal_ids=proposed_ids,
-            db_path=db_path,
-        )
+        try:
+            fx = fx_fetcher()
+        except (EcbFxError, TimeoutError) as exc:
+            # FX is needed for new admissions only. It must never prevent
+            # independently persisted lifecycle and expiry-outcome work.
+            # No assumed FX rate or invented admission decision is created.
+            admission_error = f"{type(exc).__name__}: {exc}"
+            LOG.warning("Shadow admission deferred: %s", admission_error)
+        else:
+            admission = admit_shadow_proposals(
+                fx=fx,
+                proposal_ids=proposed_ids,
+                db_path=db_path,
+            )
 
     # The daemon collects shadow marks only after this function returns.
     # Advance expiry first so already-expired candidates stop generating dead
@@ -148,4 +163,5 @@ def run_full_research_cycle(
         structure_bridge=bridge,
         fx_observation=fx,
         admission=admission,
+        admission_error=admission_error,
     )
