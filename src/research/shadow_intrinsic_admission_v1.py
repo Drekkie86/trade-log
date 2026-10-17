@@ -372,6 +372,46 @@ def _persist_decision(
             return int(cursor.lastrowid)
 
 
+def _active_duplicate_candidate_id(conn, proposal: dict[str, Any]) -> int | None:
+    """Check canonical target bet under SQLite's admission write lock.
+
+    Repeated proposal/quote IDs can represent the exact same expiry bet;
+    deduplicate by target contract attributes and structure family rather
+    than by volatile snapshot or admission IDs.
+    """
+    row = conn.execute(
+        """
+        SELECT sc.id
+        FROM shadow_candidates AS sc
+        JOIN listing_reference_contracts AS lrc
+          ON lrc.id = sc.reference_contract_id
+        JOIN shadow_state_events AS latest
+          ON latest.id = (
+              SELECT MAX(e.id) FROM shadow_state_events AS e
+              WHERE e.candidate_id = sc.id
+          )
+        WHERE sc.underlying = ?
+          AND lrc.expiration = ?
+          AND lrc."right" = ?
+          AND lrc.strike = ?
+          AND sc.structure_id = ?
+          AND latest.to_state IN (
+              'SURFACED', 'INVESTIGATED', 'DECIDED', 'SHADOW_TRACKED'
+          )
+        ORDER BY sc.id
+        LIMIT 1
+        """,
+        (
+            str(proposal["underlying"]),
+            str(proposal["expiration"]),
+            str(proposal["right"]),
+            float(proposal["target_strike"]),
+            str(proposal["structure_id"]),
+        ),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def admit_shadow_proposals(
     *,
     fx: EcbFxObservation,
@@ -505,6 +545,35 @@ def admit_shadow_proposals(
         # Candidate, state history, pin and decision must commit together.
         with transaction(db_path=db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            duplicate = _active_duplicate_candidate_id(conn, proposal)
+            if duplicate is not None:
+                reason_code = "DUPLICATE_ACTIVE_SHADOW_BET"
+                _persist_decision(
+                    proposal=proposal,
+                    fx_observation_id=fx_observation_id,
+                    candidate_id=None,
+                    decision="BLOCKED",
+                    reason_code=reason_code,
+                    proposal_max_loss_usd_minor=max_loss_usd_minor,
+                    estimated_cost_usd_minor=estimated_cost_usd_minor,
+                    intrinsic_risk_usd_minor=intrinsic_risk_usd_minor,
+                    converted_max_loss_eur_minor=converted_max_loss_eur_minor,
+                    estimated_cost_eur_minor=estimated_cost_eur_minor,
+                    intrinsic_risk_eur_minor=intrinsic_risk_eur_minor,
+                    fx=fx,
+                    db_path=db_path,
+                    conn=conn,
+                )
+                decisions.append(
+                    ShadowAdmissionDecision(
+                        int(proposal["id"]), "BLOCKED", reason_code, None,
+                        fx_observation_id, max_loss_usd_minor,
+                        estimated_cost_usd_minor, intrinsic_risk_usd_minor,
+                        converted_max_loss_eur_minor, estimated_cost_eur_minor,
+                        intrinsic_risk_eur_minor,
+                    )
+                )
+                continue
             candidate_id = create_shadow_candidate(candidate, db_path=db_path, conn=conn)
             event_time = _now_utc()
             append_shadow_state_event(
