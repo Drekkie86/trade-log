@@ -545,7 +545,7 @@ def _vacuum_into_snapshot(
             timed_out[0] = True
             return 1
         if progress is not None and now - last_log[0] >= BACKUP_SNAPSHOT_PROGRESS_INTERVAL_SECONDS:
-            progress(f"snapshot: working elapsed_seconds={elapsed:.0f}")
+            progress(f"copy: working elapsed_seconds={elapsed:.0f}")
             last_log[0] = now
         return 0
 
@@ -690,7 +690,7 @@ def create_verified_backup(
 
     if progress is not None:
         progress(
-            "snapshot: started method=VACUUM_INTO "
+            "copy: started method=VACUUM_INTO "
             f"source={source} "
             f"temp={temp_path} "
             f"timeout_seconds={BACKUP_SNAPSHOT_TIMEOUT_SECONDS}"
@@ -704,7 +704,7 @@ def create_verified_backup(
 
         if progress is not None:
             progress(
-                "snapshot: completed "
+                "copy: completed "
                 f"temp_bytes={temp_path.stat().st_size}"
             )
 
