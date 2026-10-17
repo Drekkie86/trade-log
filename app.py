@@ -35,6 +35,7 @@ from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
 from src.research.cash_settled_universe import cash_settled_research_universe
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
+from src.ui.home_pages import render_results_page, render_system_page
 from src.ui.trade_ideas_page import render_trade_ideas_page
 from src.quant.bench import run_vanilla_bench
 from src.quant.registry import catalog as quant_model_catalog
@@ -457,7 +458,7 @@ st.set_page_config(
     page_title="Christiania",
     page_icon="⚓",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 inject_christiania_theme()
 
@@ -519,7 +520,7 @@ def _cached_page_runtime_state(page: str):
     )
     backup_inventory = (
         inventory_backups_fast().as_dict()
-        if page == "Dashboard"
+        if page in {"Dashboard", "System"}
         else {
             "total_files": 0,
             "valid_files": 0,
@@ -553,28 +554,37 @@ def _cached_deep_ops_readiness():
     return deep_snapshot, deep_backups, deep_readiness
 
 
+ADVANCED_PAGES = [
+    "Dashboard",
+    "Decision Desk",
+    "Research Runs",
+    "Calibration",
+    "Observations",
+    "Shadow Lab",
+    "Quant Models",
+    "Storm Cellar / 0DTE Lab",
+    "Ops",
+]
+
 with st.sidebar:
     if LOGO_PATH.exists():
         st.image(str(LOGO_PATH), width="stretch")
     st.divider()
 
-    page = st.radio(
+    _primary = st.radio(
         "Navigation",
-        [
-            "💡 Trade Ideas",
-            "⚓ Dashboard",
-            "🎯 Decision Desk",
-            "📜 Research Runs",
-            "⚙ Calibration",
-            "◉ Observations",
-            "⚗ Shadow Lab",
-            "∑ Quant Models",
-            "🌊 Storm Cellar / 0DTE Lab",
-            "⚙ Ops",
-        ],
+        ["💡 Trade Ideas", "📈 Results", "🩺 System", "🧰 Advanced tools"],
         label_visibility="collapsed",
     )
-    page = page.split(" ", 1)[1]
+    _primary = _primary.split(" ", 1)[1]
+    if _primary == "Advanced tools":
+        page = st.selectbox(
+            "Tool",
+            ADVANCED_PAGES,
+            help="Detailed research screens. Most people never need these.",
+        )
+    else:
+        page = _primary
 
     st.divider()
     if st.button("↻ Refresh deck", width="stretch"):
@@ -602,7 +612,7 @@ market_clock = snapshot["market_clock"]
 daemon_health = snapshot["daemon_health"]
 theta_health = (
     _cached_theta_health()
-    if page in {"Dashboard", "Ops"}
+    if page in {"Dashboard", "Ops", "System"}
     else snapshot.get("theta_health", {"state": "NOT_PROBED"})
 )
 database = snapshot["database"]
@@ -621,6 +631,10 @@ lifecycle_health = snapshot.get("lifecycle_health", {})
 
 if page == "Trade Ideas":
     render_trade_ideas_page()
+elif page == "Results":
+    render_results_page(snapshot)
+elif page == "System":
+    render_system_page(snapshot, theta_health, backup_inventory)
 elif page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")
     if lifecycle_health.get("state") == "WARN":
