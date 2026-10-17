@@ -176,3 +176,44 @@ def test_pinned_batch_capacity_is_bounded_and_deferred_are_disclosed():
         deferred_seen.update(batch.pinned_deferred)
     assert seen == set(symbols)
     assert deferred_seen
+
+
+def test_new_revision_accepts_later_instant_even_if_iso_text_sorts_earlier(db_path):
+    """+00:00 sorts before Z as text but 19:45 is later than 19:30."""
+    cid, _ = seed_active_candidate(db_path)
+    conn = get_connection(db_path)
+    try:
+        expiry_run = _insert_run(
+            conn, started="2026-09-18T19:30:00Z", session_date="2026-09-18"
+        )
+        _insert_snapshot(
+            conn, run_id=expiry_run, captured_at="2026-09-18T19:30:00Z",
+            session_date="2026-09-18", price=108.0,
+        )
+        after = _insert_run(
+            conn, started="2026-09-21T14:00:00Z", session_date="2026-09-21"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    first = record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path)
+    assert first.resolved_written == 1
+    conn = get_connection(db_path)
+    try:
+        _insert_snapshot(
+            conn, run_id=expiry_run,
+            captured_at="2026-09-18T19:45:00+00:00",
+            session_date="2026-09-18", price=95.0,
+        )
+        next_run = _insert_run(
+            conn, started="2026-09-22T14:00:00Z",
+            session_date="2026-09-22"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    second = record_shadow_expiry_outcomes(research_run_id=next_run, db_path=db_path)
+    assert second.resolved_written == 1
+    history = _history(db_path, cid)
+    assert [x["revision"] for x in history] == [1, 2]
+    assert history[1]["estimated_net_pnl_usd_minor"] == -50600

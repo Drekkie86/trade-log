@@ -11,6 +11,7 @@ from src.database.repository import (
     append_underlying_pin_event,
     create_shadow_candidate,
     get_connection,
+    transaction,
 )
 from src.providers.ecb_fx import EcbFxObservation
 from src.research.shadow_lifecycle import classify_greek_quality
@@ -302,6 +303,7 @@ def _persist_decision(
     intrinsic_risk_eur_minor: int,
     fx: EcbFxObservation,
     db_path=None,
+    conn=None,
 ) -> int:
     evidence = json.dumps(
         {
@@ -336,10 +338,8 @@ def _persist_decision(
         sort_keys=True,
     )
 
-    conn = get_connection(db_path)
-    try:
-        with conn:
-            cursor = conn.execute(
+    with transaction(db_path=db_path, conn=conn) as connection:
+            cursor = connection.execute(
                 """
                 INSERT INTO shadow_intrinsic_admission_decisions_v1 (
                     proposal_id, fx_observation_id, candidate_id,
@@ -369,9 +369,7 @@ def _persist_decision(
                     evidence,
                 ),
             )
-        return int(cursor.lastrowid)
-    finally:
-        conn.close()
+            return int(cursor.lastrowid)
 
 
 def admit_shadow_proposals(
@@ -504,60 +502,68 @@ def admit_shadow_proposals(
                 "recorded independently of any external account balance."
             ),
         }
-        candidate_id = create_shadow_candidate(candidate, db_path=db_path)
-        event_time = _now_utc()
-        append_shadow_state_event(
-            candidate_id,
-            to_state="INVESTIGATED",
-            occurred_at=event_time,
-            actor="SYSTEM",
-            reason_code="DETERMINISTIC_STRUCTURE_AND_INTRINSIC_RISK_REVIEW",
-            note="Automated research-only review; no wallet sizing decision.",
-            db_path=db_path,
-        )
-        append_shadow_state_event(
-            candidate_id,
-            to_state="DECIDED",
-            occurred_at=event_time,
-            actor="SYSTEM",
-            reason_code="SHADOW_RESEARCH_ADMISSION_DECISION",
-            note="Admitted to shadow research only.",
-            db_path=db_path,
-        )
-        append_shadow_state_event(
-            candidate_id,
-            to_state="SHADOW_TRACKED",
-            occurred_at=event_time,
-            actor="SYSTEM",
-            reason_code="START_SHADOW_OUTCOME_TRACKING",
-            note="No live order exists.",
-            db_path=db_path,
-        )
-        append_underlying_pin_event(
-            underlying=str(proposal["underlying"]),
-            candidate_id=candidate_id,
-            action="PIN",
-            occurred_at=event_time,
-            reason="Active shadow research candidate.",
-            db_path=db_path,
-        )
+        # Candidate, state history, pin and decision must commit together.
+        with transaction(db_path=db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            candidate_id = create_shadow_candidate(candidate, db_path=db_path, conn=conn)
+            event_time = _now_utc()
+            append_shadow_state_event(
+                candidate_id,
+                to_state="INVESTIGATED",
+                occurred_at=event_time,
+                actor="SYSTEM",
+                reason_code="DETERMINISTIC_STRUCTURE_AND_INTRINSIC_RISK_REVIEW",
+                note="Automated research-only review; no wallet sizing decision.",
+                db_path=db_path,
+                conn=conn,
+            )
+            append_shadow_state_event(
+                candidate_id,
+                to_state="DECIDED",
+                occurred_at=event_time,
+                actor="SYSTEM",
+                reason_code="SHADOW_RESEARCH_ADMISSION_DECISION",
+                note="Admitted to shadow research only.",
+                db_path=db_path,
+                conn=conn,
+            )
+            append_shadow_state_event(
+                candidate_id,
+                to_state="SHADOW_TRACKED",
+                occurred_at=event_time,
+                actor="SYSTEM",
+                reason_code="START_SHADOW_OUTCOME_TRACKING",
+                note="No live order exists.",
+                db_path=db_path,
+                conn=conn,
+            )
+            append_underlying_pin_event(
+                underlying=str(proposal["underlying"]),
+                candidate_id=candidate_id,
+                action="PIN",
+                occurred_at=event_time,
+                reason="Active shadow research candidate.",
+                db_path=db_path,
+                conn=conn,
+            )
 
-        reason_code = "SHADOW_RESEARCH_ADMITTED_INTRINSIC_RISK_VALID"
-        _persist_decision(
-            proposal=proposal,
-            fx_observation_id=fx_observation_id,
-            candidate_id=candidate_id,
-            decision="ADMITTED",
-            reason_code=reason_code,
-            proposal_max_loss_usd_minor=max_loss_usd_minor,
-            estimated_cost_usd_minor=estimated_cost_usd_minor,
-            intrinsic_risk_usd_minor=intrinsic_risk_usd_minor,
-            converted_max_loss_eur_minor=converted_max_loss_eur_minor,
-            estimated_cost_eur_minor=estimated_cost_eur_minor,
-            intrinsic_risk_eur_minor=intrinsic_risk_eur_minor,
-            fx=fx,
-            db_path=db_path,
-        )
+            reason_code = "SHADOW_RESEARCH_ADMITTED_INTRINSIC_RISK_VALID"
+            _persist_decision(
+                proposal=proposal,
+                fx_observation_id=fx_observation_id,
+                candidate_id=candidate_id,
+                decision="ADMITTED",
+                reason_code=reason_code,
+                proposal_max_loss_usd_minor=max_loss_usd_minor,
+                estimated_cost_usd_minor=estimated_cost_usd_minor,
+                intrinsic_risk_usd_minor=intrinsic_risk_usd_minor,
+                converted_max_loss_eur_minor=converted_max_loss_eur_minor,
+                estimated_cost_eur_minor=estimated_cost_eur_minor,
+                intrinsic_risk_eur_minor=intrinsic_risk_eur_minor,
+                fx=fx,
+                db_path=db_path,
+                conn=conn,
+            )
         decisions.append(
             ShadowAdmissionDecision(
                 int(proposal["id"]),

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -155,7 +158,50 @@ def get_runtime_setting(
     return _read_local_settings().get(name)
 
 
-def set_local_settings(
+@contextmanager
+def _settings_file_lock():
+    """Serialize local Saxo token read-modify-write across app and daemon."""
+    lock_path = ENV_FILE.with_name(ENV_FILE.name + ".lock")
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(lock_fd, "r+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(lock.fileno()).st_size == 0:
+                lock.write(b"0")
+                lock.flush()
+            locked = False
+            for _ in range(100):
+                try:
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            if not locked:
+                raise TimeoutError("Timed out waiting for local settings lock.")
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def set_local_settings(values: dict[str, str]) -> None:
+    """Atomically replace the local config under an interprocess lock."""
+    with _settings_file_lock():
+        _set_local_settings_unlocked(values)
+
+
+def _set_local_settings_unlocked(
     values: dict[str, str],
 ) -> None:
     """
@@ -214,10 +260,24 @@ def set_local_settings(
             f"{key}={value}"
         )
 
-    ENV_FILE.write_text(
-        "\n".join(output_lines) + "\n",
-        encoding="utf-8",
+    # Same-directory temp + fsync + atomic replace. Restrict new files to
+    # owner-only even when the containing directory has wider permissions.
+    fd, temp_name = tempfile.mkstemp(
+        prefix=".christiania_env_", dir=str(ENV_FILE.parent)
     )
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as out:
+            out.write("\n".join(output_lines) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temp_name, ENV_FILE)
+        if os.name != "nt":
+            os.chmod(ENV_FILE, 0o600)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
 
     for key, value in values.items():
         os.environ[key] = value
