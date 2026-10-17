@@ -13,11 +13,40 @@ from src.operations.sqlite_runtime import (
     create_verified_backup,
     resolve_backup_dir,
 )
+from src.operations.backup_compression import (
+    backup_data_files,
+    compress_verified_backup,
+)
+from src.operations.backup_verification import evidence_path_for
 
 
 DEFAULT_RUNTIME_ENV_FILE = Path(
     "/etc/christiania/christiania.env"
 )
+
+
+def compress_pending_routine_backup(
+    backup_dir: str | Path | None,
+):
+    """Finish one interrupted verified routine backup before another copy.
+
+    Only files with explicit new routine evidence qualify; old unmanifested
+    plaintext copies are never reswept with full integrity_check here.
+    Compression proves the source SHA and its gzip roundtrip before deleting
+    the *same* plaintext copy; independent older backups remain untouched.
+    """
+    directory = resolve_backup_dir(backup_dir)
+    candidates = sorted(
+        (
+            p for p in backup_data_files(directory)
+            if p.name.endswith(".db") and evidence_path_for(p).is_file()
+        ),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+    return compress_verified_backup(candidates[0])
 
 
 def main() -> None:
@@ -40,6 +69,11 @@ def main() -> None:
     parser.add_argument(
         "--json",
         action="store_true",
+    )
+    parser.add_argument(
+        "--compress-after",
+        action="store_true",
+        help="Complete any pending routine compression, then compress a new recovery immediately.",
     )
     parser.add_argument(
         "--cleanup-stale-temp",
@@ -109,6 +143,18 @@ def main() -> None:
             )
         return
 
+    pending_compression = None
+    if args.compress_after:
+        # Fail closed on a failed predecessor before committing another 30 GiB
+        # snapshot. Never trigger an expensive full scan of legacy backups.
+        pending_compression = compress_pending_routine_backup(args.backup_dir)
+        if pending_compression is not None:
+            print(
+                "Prior routine backup compression recovered: "
+                f"{pending_compression.compressed_path}",
+                file=sys.stderr, flush=True,
+            )
+
     decision = evaluate_backup_due(
         db_path=args.db,
         backup_dir=args.backup_dir,
@@ -119,6 +165,8 @@ def main() -> None:
             "state": "SKIPPED",
             "decision": decision.as_dict(),
         }
+        if pending_compression is not None:
+            payload["compression"] = pending_compression.as_dict()
 
         if args.json:
             print(
@@ -175,17 +223,28 @@ def main() -> None:
     )
 
     print(
-        f"Verified backup promoted: {result.backup_path}",
+        f"Routine backup promoted: {result.backup_path}",
         file=sys.stderr,
         flush=True,
     )
+    compression = None
+    if args.compress_after:
+        # Compressed proof must pass source SHA, gzip bytes and payload SHA.
+        # Failure leaves the new plaintext copy and all older recovery points.
+        compression = compress_verified_backup(result.backup_path)
+        print(
+            f"Routine recovery compressed and verified: {compression.compressed_path}",
+            file=sys.stderr, flush=True,
+        )
 
     if args.json:
         payload = {
-            "state": "CREATED",
+            "state": "CREATED_AND_COMPRESSED" if compression else "CREATED",
             "decision": decision.as_dict(),
             "backup": result.as_dict(),
         }
+        if compression is not None:
+            payload["compression"] = compression.as_dict()
         print(
             json.dumps(
                 payload,
@@ -201,8 +260,12 @@ def main() -> None:
     print(f"Backup: {result.backup_path}")
     print(f"Schema: v{result.schema_version}")
     print(
-        f"Integrity: {result.integrity_check}"
+        f"Verification level: {getattr(result, 'verification_level', 'unknown')}; "
+        f"quick_check: {getattr(result, 'quick_check', None)}; "
+        f"full integrity_check: {result.integrity_check}"
     )
+    if compression is not None:
+        print(f"Compressed recovery: {compression.compressed_path}")
     print(
         "Foreign-key violations: "
         f"{result.foreign_key_violation_count}"

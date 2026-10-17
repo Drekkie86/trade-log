@@ -11,7 +11,7 @@ EnvironmentFile=/etc/christiania/christiania.env
 Environment=PYTHONUNBUFFERED=1
 UMask=0077
 TimeoutStartSec=5400
-ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py
+ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py --compress-after
 ExecStopPost=/opt/christiania/.venv/bin/python /opt/christiania/backup_christiania.py --cleanup-stale-temp
 NoNewPrivileges=true
 PrivateTmp=true
