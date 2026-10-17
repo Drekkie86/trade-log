@@ -877,7 +877,14 @@ def model_track_record(*, db_path=None) -> tuple[dict[str, ModelRecord], int]:
         ).fetchall()
         pnls: dict[str, list[float]] = {m: [] for m in MODEL_ORDER}
         scored: dict[str, int] = {m: 0 for m in MODEL_ORDER}
-        for out in outcomes:
+        # The same anomaly can be admitted in several 15-minute slots.  Those
+        # candidates share one expiry and therefore one terminal price: they
+        # are one bet, not several independent ones.  Count each distinct
+        # (underlying, expiry, right, target strike, structure) once, at its
+        # earliest entry, so the sample size and intervals are not inflated.
+        seen_bets: set[tuple] = set()
+        distinct = 0
+        for out in sorted(outcomes, key=lambda r: int(r["candidate_id"])):
             try:
                 row = conn.execute(
                     _PROPOSAL_SELECT + " WHERE ssp.id = ?;", (int(out["proposal_id"]),)
@@ -885,6 +892,12 @@ def model_track_record(*, db_path=None) -> tuple[dict[str, ModelRecord], int]:
                 idea = _score_proposal_row(conn, row)
             except Exception:
                 continue
+            bet = (idea.underlying, idea.expiration, idea.right,
+                   idea.target_strike, idea.structure_id)
+            if bet in seen_bets:
+                continue
+            seen_bets.add(bet)
+            distinct += 1
             for model_id, judgement in idea.judgements.items():
                 if not judgement.available:
                     continue
@@ -911,7 +924,7 @@ def model_track_record(*, db_path=None) -> tuple[dict[str, ModelRecord], int]:
                 hit_rate_ci=wilson_interval(wins, n),
                 mean_ci=mean_ci,
             )
-        return records, len(outcomes)
+        return records, distinct
     finally:
         conn.close()
 

@@ -441,6 +441,49 @@ def test_track_record_counts_only_trades_the_model_favoured_at_entry(db_path):
     )
 
 
+def test_track_record_counts_a_repeated_anomaly_once(db_path):
+    """The same anomaly admitted in two slots shares one expiry and one
+    terminal price: it is one bet.  Counting it twice would inflate the sample
+    size and narrow the intervals."""
+    from src.research.shadow_admission import admit_shadow_proposals
+    from src.research.shadow_expiry_outcome_v1 import record_shadow_expiry_outcomes
+    from tests._shadow_admission_seed import fx
+
+    first = seed_scenario(db_path, with_v2=True, underlying="AAPL")
+    again = seed_scenario(db_path, with_v2=True, underlying="AAPL")  # same contract, later slot
+    other = seed_scenario(db_path, with_v2=True, underlying="MSFT")
+    admit_shadow_proposals(
+        fx=fx(), proposal_ids=[first["proposal_id"], again["proposal_id"], other["proposal_id"]],
+        db_path=db_path,
+    )
+    conn = get_connection(db_path)
+    try:
+        for underlying, price in (("AAPL", 100.0), ("MSFT", 80.0)):
+            run = int(conn.execute(
+                """INSERT INTO research_runs (cohort_id, preregistration_hash, code_git_sha,
+                    started_at, ended_at, us_session_date, us_session_state, status)
+                   VALUES ('T','h','s','2026-09-18T19:45:00Z','2026-09-18T19:45:00Z',
+                    '2026-09-18','INTRADAY','COMPLETED');""").lastrowid)
+            conn.execute(
+                """INSERT INTO market_snapshots (captured_at, underlying, provider, research_run_id,
+                    us_session_date, us_session_state, underlying_source, fx_source, underlying_price)
+                   VALUES ('2026-09-18T19:45:00Z', ?, 'THETADATA', ?, '2026-09-18', 'INTRADAY',
+                    'FETCHED', 'UNKNOWN', ?);""", (underlying, run, price))
+        after = int(conn.execute(
+            """INSERT INTO research_runs (cohort_id, preregistration_hash, code_git_sha,
+                started_at, ended_at, us_session_date, us_session_state, status)
+               VALUES ('T','h','s','2026-09-21T14:00:00Z','2026-09-21T14:00:00Z',
+                '2026-09-21','INTRADAY','COMPLETED');""").lastrowid)
+        conn.commit()
+    finally:
+        conn.close()
+    assert record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path).resolved_written == 3
+
+    records, distinct_bets = model_track_record(db_path=db_path)
+    assert distinct_bets == 2  # three candidates, two distinct bets
+    assert all(r.n_scored <= 2 for r in records.values())
+
+
 # --------------------------------------------------------------------------
 # Page helpers and the page itself
 # --------------------------------------------------------------------------
