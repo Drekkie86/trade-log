@@ -16,6 +16,9 @@ from src.research.shadow_intrinsic_admission_v1 import (
     ShadowAdmissionResult,
     admit_shadow_proposals,
 )
+from src.research.shadow_expiry_outcome_v1 import (
+    record_shadow_expiry_outcomes,
+)
 from src.research.shadow_lifecycle_runtime import (
     advance_shadow_lifecycle,
 )
@@ -123,6 +126,17 @@ def run_full_research_cycle(
     # quote marks. Closing never implies scoring; the lifecycle runtime keeps
     # the validated-package-outcome evidence firewall intact.
     advance_shadow_lifecycle(
+        research_run_id=int(
+            research_cycle.research.run_id
+        ),
+        db_path=db_path,
+    )
+
+    # Record the deterministic expiry-intrinsic outcome for every admitted
+    # candidate whose expiration session has passed. This is the measurable
+    # answer to "did the suggested structure make money"; it does not touch
+    # the VALIDATED_PACKAGE_OUTCOME scoring contract.
+    record_shadow_expiry_outcomes(
         research_run_id=int(
             research_cycle.research.run_id
         ),

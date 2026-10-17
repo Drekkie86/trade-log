@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.database.repository import (
+    EXPECTED_SCHEMA_VERSION,
     create_market_snapshot,
 )
 from src.operations.historical_research import (
@@ -419,7 +420,7 @@ def test_historical_analysis_hash_excludes_storage_schema_version(
                     run_id,
                 ),
                 source="HOT",
-                source_schema_version=34,
+                source_schema_version=EXPECTED_SCHEMA_VERSION,
             )
         )
 
@@ -433,7 +434,7 @@ def test_historical_analysis_hash_excludes_storage_schema_version(
         )
         assert (
             v34.source_schema_version
-            == 34
+            == EXPECTED_SCHEMA_VERSION
         )
 
     finally:
@@ -511,7 +512,7 @@ def test_hybrid_historical_session_is_read_only_and_exposes_hot_schema(
         )
 
         assert archive_quotes == 1
-        assert hot_schema == 34
+        assert hot_schema == EXPECTED_SCHEMA_VERSION
         assert query_only == 1
         assert (
             manifest.session_date

@@ -235,7 +235,13 @@ def assess_exit_monitor(candidate: dict[str, Any], risk: RiskPlan) -> dict[str, 
 
 def _research_priority_key(candidate: dict[str, Any]) -> tuple:
     validated = int(candidate.get("validated_outcomes") or 0)
-    marks = int(candidate.get("mark_count") or 0)
+    # Only marks that carry a valuation count toward inspection priority;
+    # NO_THETADATA_SNAPSHOT placeholders from unsampled cycles do not.
+    marks = int(
+        candidate.get("complete_mark_count")
+        if candidate.get("complete_mark_count") is not None
+        else candidate.get("mark_count") or 0
+    )
     abs_residual = abs(_as_float(candidate.get("abs_iv_residual")) or 0.0)
     admitted = 1 if candidate.get("admission_decision") == "ADMITTED" else 0
     inputs_complete = 1 if candidate.get("model_input_complete") else 0

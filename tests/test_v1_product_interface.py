@@ -148,11 +148,15 @@ def test_shadow_lab_separates_thesis_and_validated_trade_result():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     read_model = (ROOT / "src/dashboard/read_model.py").read_text(encoding="utf-8")
 
-    assert "Thesis assessment" in app
-    assert "Validated trade result" in app
+    # The UI no longer shows a "Thesis assessment" or "Validated trade result"
+    # metric: neither had a production writer, so both were permanently empty.
+    # The expiry-intrinsic result is shown instead and the frozen validated
+    # package-outcome population stays separately visible.
+    assert "Result at expiry" in app
+    assert "Valued / placeholder marks" in app
     assert "Christiania does not infer thesis correctness from a profitable mark" in app
-    assert "validated_trade_result" in read_model
-    assert "thesis_assessment" in read_model
+    assert "expiry_result" in read_model
+    assert "v_shadow_expiry_outcomes_latest_v1" in read_model
     assert "outcome_eligible = 1" in read_model
 
 
@@ -316,7 +320,7 @@ def test_research_visuals_have_explanatory_microcopy():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     assert "How much evidence Christiania has collected" in app
     assert "A surfaced observation is a question to investigate" in app
-    assert "Thesis assessment asks whether the original market idea was right" in app
+    assert "Result at expiry is the deterministic intrinsic payoff" in app
     assert "This is the pre-flight checklist for the product" in app
 
 
