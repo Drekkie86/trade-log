@@ -124,3 +124,61 @@ def test_ecb_failure_skips_lifecycle_and_marks(monkeypatch, db_path):
     assert summary.status == "FAILED" and summary.error_type == "EcbFxError"
     assert calls == []            # neither lifecycle advancement nor mark collection ran
     assert summary.research_run_id is None   # the (committed) research run is detached from the iteration
+
+
+# ---------------------------------------------------------------------------
+# Finding: quotes are DTE-filtered (7..45) at fetch time, so a tracked
+# candidate loses all leg quotes once its expiration is < 7 days away and every
+# later mark is INCOMPLETE_LEG_MARK. Marks can only exist for the first
+# (DTE0 - 7) days of a candidate's life.
+# ---------------------------------------------------------------------------
+from datetime import date as _date
+
+from src.research.thetadata_live_adapter import filter_dte_window
+
+
+def test_tracked_candidate_leg_quotes_vanish_inside_min_dte():
+    rows = ({"expiration": "2026-10-23", "strike": 100.0, "right": "CALL"},)
+    # candidate admitted at DTE 14 is still markable ...
+    assert filter_dte_window(rows, reference_date=_date(2026, 10, 9), min_dte=7, max_dte=45)
+    # ... but 6 days before expiry the chain row is dropped before persistence
+    assert filter_dte_window(rows, reference_date=_date(2026, 10, 17), min_dte=7, max_dte=45) == ()
+    # so _quote_for_leg() finds nothing -> QUOTE_MISSING -> INCOMPLETE_LEG_MARK
+
+
+# ---------------------------------------------------------------------------
+# Finding: one failing underlying aborts the whole run. Symbols after it are
+# never fetched, the run is FAILED, the cycle raises, and the daemon skips
+# bridge/admission/lifecycle/MARK COLLECTION for every tracked candidate.
+# A bare TimeoutError (what urlopen raises on a stalled body read) is not even
+# recognised as transient.
+# ---------------------------------------------------------------------------
+def test_single_bad_underlying_fails_whole_run_and_skips_the_rest(db_path):
+    from datetime import datetime
+    import pytest
+    from tests.test_independent_runner import FakeMassive, FakeTheta, NY
+    from src.database.repository import get_connection
+    from src.research.independent_runner import run_independent_research
+
+    class FlakyMassive(FakeMassive):
+        def get_option_chain(self, underlying, **kw):
+            if underlying == "BAD":
+                raise TimeoutError("The read operation timed out")
+            return super().get_option_chain(underlying, **kw)
+
+    with pytest.raises(TimeoutError):
+        run_independent_research(
+            symbols=["AAPL", "BAD", "MSFT"],
+            massive_client=FlakyMassive(), theta_client=FakeTheta(),
+            observed_at=datetime(2026, 8, 31, 14, 0, 5, tzinfo=NY),
+            code_git_sha="t", db_path=db_path,
+        )
+    conn = get_connection(db_path)
+    try:
+        run = conn.execute("SELECT status FROM research_runs ORDER BY id DESC LIMIT 1").fetchone()
+        seen = [r[0] for r in conn.execute("SELECT underlying FROM research_run_underlyings ORDER BY id")]
+        print("run:", run["status"], "| underlyings attempted:", seen)
+        assert run["status"] == "FAILED"
+        assert "MSFT" not in seen          # never even attempted
+    finally:
+        conn.close()
