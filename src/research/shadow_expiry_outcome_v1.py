@@ -60,11 +60,14 @@ def _due_candidates(*, session_day: date, db_path=None) -> list[dict[str, Any]]:
                 sc.id            AS candidate_id,
                 sc.underlying,
                 sc.structure_json,
-                sc.max_theoretical_loss_minor,
                 lrc.expiration,
                 sad.proposal_id,
                 sad.fx_observation_id,
                 sad.estimated_cost_usd_minor,
+                -- USD, from the admission decision. shadow_candidates.
+                -- max_theoretical_loss_minor is EUR (converted at admission)
+                -- and must not be labelled or ratioed as USD.
+                sad.proposal_max_loss_usd_minor,
                 ssp.entry_pricing_json,
                 fx.rate          AS entry_eur_to_usd
             FROM shadow_candidates AS sc
@@ -148,7 +151,7 @@ def record_shadow_expiry_outcomes(
             expiration=expiration,
             settlement_basis=SETTLEMENT_BASIS,
             measurement_role=MEASUREMENT_ROLE,
-            max_theoretical_loss_usd_minor=cand["max_theoretical_loss_minor"],
+            max_theoretical_loss_usd_minor=int(cand["proposal_max_loss_usd_minor"]),
             entry_fx_observation_id=int(cand["fx_observation_id"]),
             entry_eur_to_usd=float(cand["entry_eur_to_usd"]),
             estimated_cost_usd_minor=int(cand["estimated_cost_usd_minor"]),

@@ -260,3 +260,29 @@ def test_schema_guards(db_path):
             ins(outcome_state="UNRESOLVED", reason_code="X")
     finally:
         conn.close()
+
+
+def test_defined_risk_is_recorded_in_usd_not_the_eur_candidate_column(db_path):
+    """shadow_candidates.max_theoretical_loss_minor is EUR (converted at
+    admission); the outcome's max-loss column is USD and must come from the
+    admission decision. Built on the production admission path so the two
+    columns genuinely differ (20000 USD vs 16667 EUR at 1.20)."""
+    from src.research.shadow_admission import admit_shadow_proposals
+    from tests._shadow_admission_seed import fx, seed_proposal
+
+    seeded = seed_proposal(db_path, max_loss_usd_minor=20_000)
+    admit_shadow_proposals(fx=fx(), proposal_ids=[seeded["proposal_id"]], db_path=db_path)
+    conn = get_connection(db_path)
+    try:
+        cand = conn.execute(
+            "SELECT id, max_theoretical_loss_minor FROM shadow_candidates"
+        ).fetchone()
+        assert cand["max_theoretical_loss_minor"] == round(20_000 / fx().rate)  # EUR
+        after = _insert_run(conn, started="2026-09-21T14:00:00Z", session_date="2026-09-21")
+        conn.commit()
+    finally:
+        conn.close()
+    record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path)
+    o = _outcome(db_path, cand["id"])
+    assert o["max_theoretical_loss_usd_minor"] == 20_000
+    assert o["max_theoretical_loss_usd_minor"] != cand["max_theoretical_loss_minor"]
