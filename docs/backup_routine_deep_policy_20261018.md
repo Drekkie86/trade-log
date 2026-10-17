@@ -71,9 +71,17 @@ acceptance drill before claiming deep verification.
   copy present; the 17 Oct incomplete copy is **not** verified.
 * Do not perform schema 35/36 deployment until fresh recovery and
   rollback readiness are demonstrated.
-* Retention economics, compression installation, timer wiring, root-volume
-  cleanup, full restore, off-host recovery and production latency proof are
-  **not** complete just because tests are green.
+* A follow-up scheduled-unit patch runs `backup_christiania.py
+  --compress-after`: first resume any incomplete compression of a newly
+  sidecar-verified routine copy, then evaluate whether another snapshot is
+  due, and immediately compress a successful new snapshot. A failure
+  prevents another large copy and preserves the plaintext recovery point.
+  The existing separate compression timer must remain disabled during this
+  transition. No compression of old unmanifested plaintext is automatic.
+* Retention economics, verified offsite copies, timer installation and
+  configuration, root-volume cleanup, full restore and release performance
+  proof remain **incomplete** until independently demonstrated. A
+  compressed source is not an off-host backup just because it is small.
 
 See GitHub issue #113 for the operational acceptance backlog. PR #129 / migration
 037 is separate and must not be deployed as part of the backup fix.

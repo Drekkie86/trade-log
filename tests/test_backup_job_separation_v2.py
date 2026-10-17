@@ -73,7 +73,7 @@ def test_backup_entrypoint_only_creates_verified_backup(
     assert payload["backup"]["backup_path"] == result.backup_path
     assert "compression" not in payload
     assert "Starting Christiania verified SQLite backup" in captured.err
-    assert "Verified backup promoted" in captured.err
+    assert "Routine backup promoted" in captured.err
 
 
 def test_backup_entrypoint_skips_when_policy_says_nothing_new(
