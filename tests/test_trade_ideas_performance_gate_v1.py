@@ -47,9 +47,10 @@ def test_release_scripts_require_actual_trade_ideas_perf_evidence():
         assert "trade_ideas.within_budget" in script
         assert "trade_ideas.cached" in script
         assert "Trade Ideas" in script
-        assert "probe_version -lt 6" in script
+        assert "probe_version -lt 7" in script
     source = (root / "christiania_performance_probe.py").read_text(encoding="utf-8")
-    assert '"probe_version": 6' in source
+    assert '"probe_version": 7' in source
+    assert '"dataset_provenance": dataset_provenance' in source
     assert '"trade_ideas": trade_ideas' in source
     probe_runner = (root / "deploy/probe_release_performance.sh").read_text(encoding="utf-8")
     assert "christiania-backup*" in probe_runner

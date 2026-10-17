@@ -80,7 +80,7 @@ while read -r unit; do
   esac
 done < <(systemctl list-units --type=service --state=running --plain --no-legend | awk '{print $1}')
 
-for required in awk chmod chown date flock grep install mktemp rm sha256sum sort sudo systemctl tar; do
+for required in awk chmod chown date flock grep install mktemp mountpoint rm sha256sum sort sudo systemctl tail tar; do
   command -v "${required}" >/dev/null 2>&1 || fail "required command missing: ${required}"
 done
 
@@ -96,8 +96,17 @@ done < <(tar -tzf "${ARCHIVE}")
 PROBE_ID="${EXPECTED_COMMIT}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 PROBE_DIR="${PROBE_ROOT}/${PROBE_ID}"
 REPORT_DIR="${STATE_ROOT}/audit/performance-probes"
+PROBE_SCRATCH=""
+RECOVERY_MOUNT=""
 
 cleanup() {
+  if [[ -n "${PROBE_SCRATCH}" && -n "${RECOVERY_MOUNT}" ]]; then
+    if mountpoint -q "${RECOVERY_MOUNT}" && [[ "${PROBE_SCRATCH}" == "${RECOVERY_MOUNT}/scratch/release-probe-${PROBE_ID}" ]]; then
+      rm -rf -- "${PROBE_SCRATCH}"
+    else
+      echo "WARNING: probe scratch not removed because recovery mount is not verifiable" >&2
+    fi
+  fi
   rm -rf -- "${PROBE_DIR}"
 }
 trap cleanup EXIT
@@ -124,6 +133,27 @@ LOCK_EXPECTED="$(grep -vE '^[[:space:]]*(#|$)' "${PROBE_DIR}/requirements-lock-l
 chown -R root:"${SERVICE_USER}" "${PROBE_DIR}"
 chmod -R g+rX,o-rwx "${PROBE_DIR}"
 
+# The source release may expect a newer schema than the still-running app.
+# Bench an online SQLite snapshot migrated inside the independent Hetzner
+# recovery volume; never mutate live data or waive the schema guard.
+RECOVERY_MOUNT="$(awk -F= '/^CHRISTIANIA_RECOVERY_VOLUME_MOUNTPOINT=/{print substr($0,index($0,"=")+1)}' "${ENV_FILE}" | tail -n 1)"
+[[ -n "${RECOVERY_MOUNT}" ]] || fail "recovery volume not configured; cannot prove schema-migration performance"
+mountpoint -q "${RECOVERY_MOUNT}" || fail "recovery volume not mounted: ${RECOVERY_MOUNT}"
+[[ -d "${RECOVERY_MOUNT}/scratch" ]] || fail "recovery-volume scratch directory unavailable"
+PROBE_SCRATCH="${RECOVERY_MOUNT}/scratch/release-probe-${PROBE_ID}"
+install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${PROBE_SCRATCH}"
+PROVENANCE="${PROBE_SCRATCH}/provenance.json"
+PROBE_DB="$(
+  cd "${PROBE_DIR}"
+  sudo -u "${SERVICE_USER}" "${PROBE_DIR}/.venv/bin/python" \
+    -m src.operations.probe_dataset_clone \
+    --env-file "${ENV_FILE}" \
+    --target "${PROBE_SCRATCH}/trade_log.db" \
+    --provenance "${PROVENANCE}" \
+    --migrations-dir "${PROBE_DIR}/migrations"
+)"
+[[ -n "${PROBE_DB}" ]] || fail "disposable migrated performance dataset missing"
+
 TMP_REPORT="$(mktemp "${REPORT_DIR}/.probe.XXXXXX")"
 trap 'rm -f "${TMP_REPORT}"; cleanup' EXIT
 
@@ -133,6 +163,8 @@ trap 'rm -f "${TMP_REPORT}"; cleanup' EXIT
     "${PROBE_DIR}/.venv/bin/python" \
     "${PROBE_DIR}/christiania_performance_probe.py" \
     --env-file "${ENV_FILE}" \
+    --db "${PROBE_DB}" \
+    --dataset-provenance "${PROVENANCE}" \
     --release-commit "${EXPECTED_COMMIT}" \
     --deployment-lock-held \
     --include-full \

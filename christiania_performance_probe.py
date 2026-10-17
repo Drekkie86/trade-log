@@ -54,6 +54,8 @@ def _measure_ops_release_manifest(path: Path, *, runs: int = 3) -> dict[str, obj
 
 PAGES = (
     "Trade Ideas",
+    "Results",
+    "System",
     "Dashboard",
     "Decision Desk",
     "Research Runs",
@@ -468,6 +470,10 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--dataset-provenance",
+        help="JSON proof for a same-schema live source or a migrated disposable production snapshot.",
+    )
+    parser.add_argument(
         "--db",
         help=(
             "Database path. Defaults to CHRISTIANIA_DB_PATH / "
@@ -529,6 +535,20 @@ def main() -> int:
             )
 
     path = resolve_db_path(args.db)
+    dataset_provenance = None
+    if args.dataset_provenance:
+        dataset_provenance = json.loads(
+            Path(args.dataset_provenance).read_text(encoding="utf-8")
+        )
+        if (
+            dataset_provenance.get("measured_schema_version") !=
+            dashboard_read_model.EXPECTED_SCHEMA_VERSION
+            or Path(dataset_provenance["measured_database_path"]).resolve() != path.resolve()
+            or dataset_provenance.get("kind") not in {
+                "disposable_live_sqlite_snapshot", "live_schema_matched"
+            }
+        ):
+            raise RuntimeError("Performance dataset provenance is invalid or not at release schema.")
     pages: tuple[str | None, ...] = tuple(args.page or PAGES)
     if args.include_full:
         pages = (*pages, None)
@@ -597,7 +617,7 @@ def main() -> int:
         }
 
     payload = {
-        "probe_version": 6,
+        "probe_version": 7,
         "release_commit": (
             None
             if args.release_commit is None
@@ -608,6 +628,7 @@ def main() -> int:
         "prospective_cache_seed": prospective_cache_seed,
         "seeded_cold_dashboard": seeded_cold_dashboard,
         "database_before": database_before,
+        "dataset_provenance": dataset_provenance,
         "database_after": database_after,
         "runtime_activity_before": runtime_activity_before,
         "runtime_activity_after": runtime_activity_after,

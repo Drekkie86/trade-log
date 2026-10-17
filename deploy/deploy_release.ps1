@@ -182,7 +182,7 @@ if ([string]$performanceReport.release_commit -ne $head) {
 if (-not [bool]$performanceReport.read_only) {
     throw "Refusing deployment: performance report does not assert read-only execution."
 }
-if ([int]$performanceReport.probe_version -lt 6) {
+if ([int]$performanceReport.probe_version -lt 7) {
     throw "Refusing deployment: performance report format is too old."
 }
 if (-not [bool]$performanceReport.deployment_lock_held) {
@@ -202,12 +202,17 @@ if ($null -eq $performanceReport.seeded_cold_dashboard -or -not [bool]$performan
 }
 
 $measuredPages = @($performanceReport.pages | ForEach-Object { [string]$_.page })
-foreach ($requiredPage in @("Trade Ideas", "Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL")) {
+foreach ($requiredPage in @("Trade Ideas", "Results", "System", "Dashboard", "Decision Desk", "Research Runs", "Calibration", "Observations", "Shadow Lab", "Ops", "FULL")) {
     if ($requiredPage -notin $measuredPages) {
         throw "Refusing deployment: performance evidence is missing required page $requiredPage."
     }
 }
 
+if ($null -eq $performanceReport.dataset_provenance -or $performanceReport.dataset_provenance.kind -notin @("disposable_live_sqlite_snapshot", "live_schema_matched") -or
+    [int]$performanceReport.dataset_provenance.measured_schema_version -lt [int]$performanceReport.dataset_provenance.source_schema_version -or
+    ([int]$performanceReport.dataset_provenance.measured_schema_version -ne [int]$performanceReport.trade_ideas.source_schema_version)) {
+    throw "Refusing deployment: production-derived release-schema performance dataset provenance is missing or inconsistent."
+}
 if ($null -eq $performanceReport.trade_ideas -or -not [bool]$performanceReport.trade_ideas.within_budget -or [bool]$performanceReport.trade_ideas.cached) {
     throw "Refusing deployment: actual Trade Ideas scoring was not measured uncached within budget."
 }

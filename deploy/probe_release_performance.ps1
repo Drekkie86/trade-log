@@ -163,7 +163,7 @@ try {
             if ([string]$report.release_commit -ne $head -or -not [bool]$report.read_only) {
                 throw "Performance report identity/read-only contract does not match target SHA."
             }
-            if ([int]$report.probe_version -lt 6 -or -not [bool]$report.deployment_lock_held) {
+            if ([int]$report.probe_version -lt 7 -or -not [bool]$report.deployment_lock_held) {
                 throw "Performance report does not prove serialized deployment-lock measurement."
             }
             if ($null -eq $report.runtime_activity_before -or $null -eq $report.runtime_activity_after) {
@@ -180,7 +180,7 @@ try {
             }
 
             $measuredPages = @($report.pages | ForEach-Object { [string]$_.page })
-            foreach ($requiredPage in @("Trade Ideas", "Dashboard", "Decision Desk", "Shadow Lab", "FULL")) {
+            foreach ($requiredPage in @("Trade Ideas", "Results", "System", "Dashboard", "Decision Desk", "Shadow Lab", "FULL")) {
                 if ($requiredPage -notin $measuredPages) {
                     throw "Performance report is missing required page: $requiredPage"
                 }
@@ -194,6 +194,10 @@ try {
             }
             if ($null -eq $report.ops_release_manifest -or -not [bool]$report.ops_release_manifest.within_budget -or [bool]$report.ops_release_manifest.deep_integrity) {
                 throw "Performance report is missing bounded, metadata-only Ops Release evidence."
+            }
+            if ($null -eq $report.dataset_provenance -or $report.dataset_provenance.kind -notin @("disposable_live_sqlite_snapshot", "live_schema_matched") -or
+                [int]$report.dataset_provenance.measured_schema_version -ne [int]$report.trade_ideas.source_schema_version) {
+                throw "Production-derived release-schema performance dataset proof is missing."
             }
             if ($null -eq $report.trade_ideas -or -not [bool]$report.trade_ideas.within_budget -or [bool]$report.trade_ideas.cached) {
                 throw "Trade Ideas uncached model scoring was not measured or exceeded budget."
