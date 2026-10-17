@@ -1147,7 +1147,7 @@ def load_command_deck(
                              THEN estimated_net_pnl_usd_minor END) AS total_net_usd_minor,
                     COUNT(DISTINCT CASE WHEN outcome_state = 'RESOLVED'
                                         THEN expiration END) AS resolved_expiration_dates
-                FROM shadow_expiry_outcomes_v1;
+                FROM v_shadow_expiry_outcomes_latest_v1;
                 '''
             ).fetchone()
             _resolved = int(expiry_row["resolved"] or 0)
@@ -1593,7 +1593,7 @@ def load_command_deck(
                     LEFT JOIN latest_marks AS rm
                       ON rm.candidate_id = sc.id
                      AND rm.row_rank = 1
-                    LEFT JOIN shadow_expiry_outcomes_v1 AS seo
+                    LEFT JOIN v_shadow_expiry_outcomes_latest_v1 AS seo
                       ON seo.candidate_id = sc.id
                     ORDER BY sc.id DESC;
                     '''
@@ -1875,9 +1875,9 @@ def load_command_deck(
                         CASE
                             WHEN seo.outcome_state IS NULL THEN 'NOT YET DUE / NOT RECORDED'
                             WHEN seo.outcome_state = 'UNRESOLVED' THEN 'UNRESOLVED'
-                            WHEN seo.estimated_net_pnl_eur_minor > 0 THEN 'PROFIT AT EXPIRY'
-                            WHEN seo.estimated_net_pnl_eur_minor < 0 THEN 'LOSS AT EXPIRY'
-                            ELSE 'FLAT AT EXPIRY'
+                            WHEN seo.estimated_net_pnl_eur_minor > 0 THEN 'MODELED POSITIVE AT EXPIRY'
+                            WHEN seo.estimated_net_pnl_eur_minor < 0 THEN 'MODELED NEGATIVE AT EXPIRY'
+                            ELSE 'MODELED FLAT AT EXPIRY'
                         END AS expiry_result,
                         rm.observed_at AS latest_mark_at,
                         rm.estimated_net_pnl_eur_minor
@@ -1918,7 +1918,7 @@ def load_command_deck(
                     LEFT JOIN validated_mark AS vm
                       ON vm.candidate_id = sc.id
                      AND vm.validated_rank = 1
-                    LEFT JOIN shadow_expiry_outcomes_v1 AS seo
+                    LEFT JOIN v_shadow_expiry_outcomes_latest_v1 AS seo
                       ON seo.candidate_id = sc.id
                     ORDER BY sc.id DESC;
                     '''

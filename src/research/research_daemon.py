@@ -875,8 +875,8 @@ def run_daemon(
 
             print()
 
-            # Underlyings with actively tracked shadow candidates must be
-            # sampled every slot, or the mark collector cannot value them.
+            # Track active shadow underlyings within a bounded provider-work
+            # budget; overload is explicitly reported as deferred pins.
             pinned_underlyings = active_pinned_underlyings(
                 db_path=db_path,
             )
@@ -896,6 +896,7 @@ def run_daemon(
                 "batch_index": batch.batch_index,
                 "batch_count": batch.batch_count,
                 "pinned_added": list(batch.pinned_added),
+                "pinned_deferred": list(batch.pinned_deferred),
             }
             print(
                 "Universe batch: "
@@ -908,6 +909,13 @@ def run_daemon(
                 )
                 + "."
             )
+            if batch.pinned_deferred:
+                print(
+                    "Shadow tracking capacity: "
+                    f"{len(batch.pinned_deferred)} active pinned symbol(s) deferred "
+                    "this slot by the 2x provider-work budget: "
+                    + ", ".join(batch.pinned_deferred)
+                )
             print(
                 "Symbols: "
                 + ", ".join(batch_symbols)

@@ -697,7 +697,7 @@ if page == "Dashboard":
     m5.metric(
         "Expiry outcomes",
         _fmt_count(expiry_pulse.get("resolved", 0)),
-        "no result yet" if _wr is None else f"{_wr * 100:.0f}% profitable · see Shadow Lab",
+        "no result yet" if _wr is None else f"{_wr * 100:.0f}% modeled-positive · see Shadow Lab",
     )
     m6.metric("Recovered samples", _fmt_count(prospective["recovered_samples"]), "provenance retained")
     _visual_note(
@@ -1359,9 +1359,9 @@ elif page == "Shadow Lab":
         expiry = snapshot.get("shadow_expiry_outcomes", {})
 
         section_heading(
-            "Did the suggested structures make money at expiry?",
-            "Deterministic expiry-intrinsic outcomes for every admitted candidate whose expiration has passed. "
-            "This is the one measurable answer Christiania can give today.",
+            "Modeled expiry-intrinsic outcomes · not realized trading profits",
+            "Descriptive hypothetical values for expired admitted candidates with stored expiry-session prices; "
+            "missing outcomes remain visible and do not count as losses or wins.",
         )
         resolved = int(expiry.get("resolved", 0) or 0)
         o1, o2, o3, o4, o5 = st.columns(5)
@@ -1378,13 +1378,13 @@ elif page == "Shadow Lab":
         )
         total_net = expiry.get("total_net_eur_minor")
         o3.metric(
-            "Total net P&L at expiry",
+            "Modeled net value at expiry",
             "—" if total_net is None else f"€{_fmt_number(total_net / 100.0, decimals=2)}",
             "after assumed round-trip costs",
         )
         mean_net = expiry.get("mean_net_eur_minor")
         o4.metric(
-            "Mean net per candidate",
+            "Mean modeled net per resolved candidate",
             "—" if mean_net is None else f"€{_fmt_number(mean_net / 100.0, decimals=2)}",
             f"{_fmt_count(expiry.get('resolved_expiration_dates', 0))} independent expiry date(s)",
         )
@@ -1396,13 +1396,13 @@ elif page == "Shadow Lab":
         )
         if resolved == 0:
             st.info(
-                "No expired candidate has an expiry outcome yet. Outcomes are recorded by the daemon "
-                "on the first completed cycle after each candidate's expiration session."
+                "No expired candidate has a resolved modeled outcome yet. Missing observations are "
+                "recorded as unresolved and can be superseded when independent data arrives."
             )
         else:
             st.warning(
-                "Terminal price is the last daemon-sampled underlying price of the expiry session, "
-                "not the official settlement value. Costs are the assumed public tariff ceiling, not fills. "
+                "Hypothetical expiry-intrinsic outcomes only: no executable fills or realized profits. "
+                "Terminal prices are last sampled expiry-session observations, not official settlement or closing prices. Costs are assumed. "
                 f"With {_fmt_count(expiry.get('resolved_expiration_dates', 0))} independent expiry date(s) this is a "
                 "descriptive tally, not a statistical claim about edge."
             )

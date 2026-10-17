@@ -51,7 +51,7 @@ def test_dashboard_and_shadow_lab_see_expiry_outcomes(db_path):
     assert row["mark_count"] == 3
     assert row["complete_mark_count"] == 1
     assert row["unsampled_cycle_count"] == 2
-    assert row["expiry_result"] == "PROFIT AT EXPIRY"
+    assert row["expiry_result"] == "MODELED POSITIVE AT EXPIRY"
     assert row["expiry_net_pnl_eur_minor"] == round(29400 / 1.20)
     assert row["expiry_terminal_underlying_price"] == 108.0
     # Frozen contract untouched and still visible.

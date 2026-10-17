@@ -13,9 +13,9 @@
 -- A defined-risk option structure held to expiry has a deterministic payoff
 -- given the terminal underlying price. That payoff needs no leg-by-leg quote
 -- crossing, so it is free of the liquidity-stress contamination that made the
--- intraday marks ineligible as outcomes. This table records that payoff, once
--- per candidate, computed from the entry cashflow persisted at admission and
--- the last stored underlying observation of the expiry session.
+-- intraday marks ineligible as outcomes. This table records that payoff as
+-- append-only per-candidate revisions: the latest derived observation counts
+-- in scoreboards, and prior missing-data evidence remains permanently visible.
 --
 -- Honesty constraints encoded in the schema:
 --   * settlement_basis is pinned to the one basis actually implemented. The
@@ -27,15 +27,19 @@
 --     (SCORED only on validated package outcomes) is left untouched.
 --   * UNRESOLVED rows are recorded, so "no outcome" is visible evidence rather
 --     than a silent gap.
---   * Rows are immutable and undeletable. One row per candidate.
+--   * Rows are immutable and undeletable. Later recovered observations
+--     append a linked revision; only the newest revision enters scoreboards.
 -- =====================================================================
 
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE shadow_expiry_outcomes_v1 (
     id                                  INTEGER PRIMARY KEY,
-    candidate_id                        INTEGER NOT NULL UNIQUE
+    candidate_id                        INTEGER NOT NULL
                                         REFERENCES shadow_candidates(id),
+    revision                            INTEGER NOT NULL DEFAULT 1,
+    supersedes_outcome_id               INTEGER UNIQUE
+                                        REFERENCES shadow_expiry_outcomes_v1(id),
     research_run_id                     INTEGER NOT NULL
                                         REFERENCES research_runs(id),
     recorded_at                         TEXT NOT NULL,
@@ -63,6 +67,9 @@ CREATE TABLE shadow_expiry_outcomes_v1 (
     measurement_role                    TEXT NOT NULL
                                         DEFAULT 'PROSPECTIVE_EXPIRY_INTRINSIC_V1',
     evidence_json                       TEXT NOT NULL,
+    UNIQUE(candidate_id, revision),
+    CHECK ((revision = 1 AND supersedes_outcome_id IS NULL)
+        OR (revision > 1 AND supersedes_outcome_id IS NOT NULL)),
     CHECK (outcome_state IN ('RESOLVED', 'UNRESOLVED')),
     CHECK (length(trim(reason_code)) > 0),
     CHECK (settlement_basis = 'LAST_STORED_EXPIRY_SESSION_UNDERLYING_SNAPSHOT'),
@@ -104,11 +111,60 @@ CREATE TABLE shadow_expiry_outcomes_v1 (
     )
 );
 
+-- Enforce linear, append-only supersession; never fork or replace evidence.
+CREATE TRIGGER trg_shadow_expiry_outcomes_revision_v1
+BEFORE INSERT ON shadow_expiry_outcomes_v1
+WHEN (
+    (NEW.revision = 1 AND EXISTS (
+        SELECT 1 FROM shadow_expiry_outcomes_v1
+        WHERE candidate_id = NEW.candidate_id
+    ))
+    OR
+    (NEW.revision > 1 AND NOT EXISTS (
+        SELECT 1 FROM shadow_expiry_outcomes_v1 AS prior
+        WHERE prior.id = NEW.supersedes_outcome_id
+          AND prior.candidate_id = NEW.candidate_id
+          AND prior.revision = NEW.revision - 1
+          AND prior.revision = (
+              SELECT MAX(revision) FROM shadow_expiry_outcomes_v1
+              WHERE candidate_id = NEW.candidate_id
+          )
+          AND (
+              (NEW.outcome_state = 'RESOLVED'
+               AND (prior.outcome_state = 'UNRESOLVED'
+                    OR (prior.outcome_state = 'RESOLVED'
+                        AND prior.snapshot_id <> NEW.snapshot_id
+                        AND NEW.snapshot_captured_at > prior.snapshot_captured_at)))
+              OR
+              (NEW.outcome_state = 'UNRESOLVED'
+               AND prior.outcome_state = 'UNRESOLVED'
+               AND NEW.reason_code <> prior.reason_code)
+          )
+    ))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Invalid expiry outcome evidence supersession.');
+END;
+
 CREATE INDEX idx_shadow_expiry_outcomes_run_v1
 ON shadow_expiry_outcomes_v1(research_run_id);
 
+CREATE INDEX idx_shadow_expiry_outcomes_candidate_revision_v1
+ON shadow_expiry_outcomes_v1(candidate_id, revision DESC);
+
 CREATE INDEX idx_shadow_expiry_outcomes_state_v1
 ON shadow_expiry_outcomes_v1(outcome_state, expiration);
+
+-- Latest-only projection; the complete evidence chain remains queryable in
+-- shadow_expiry_outcomes_v1, including prior UNRESOLVED revisions.
+CREATE VIEW v_shadow_expiry_outcomes_latest_v1 AS
+SELECT o.*
+FROM shadow_expiry_outcomes_v1 AS o
+WHERE NOT EXISTS (
+    SELECT 1 FROM shadow_expiry_outcomes_v1 AS newer
+    WHERE newer.candidate_id = o.candidate_id
+      AND newer.revision > o.revision
+);
 
 CREATE TRIGGER trg_shadow_expiry_outcomes_no_update_v1
 BEFORE UPDATE ON shadow_expiry_outcomes_v1

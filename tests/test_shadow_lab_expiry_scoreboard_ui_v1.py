@@ -53,7 +53,7 @@ def test_empty_database_renders_zero_outcomes(app_db):
     metrics = _metric_labels(app)
     assert metrics["Resolved expiry outcomes"][0] == "0"
     assert metrics["Win rate"][0] == "—"
-    assert any("No expired candidate has an expiry outcome yet" in i.value for i in app.info)
+    assert any("No expired candidate has a resolved modeled outcome yet" in i.value for i in app.info)
 
 
 def test_resolved_outcome_shows_on_both_pages(app_db):
@@ -74,14 +74,14 @@ def test_resolved_outcome_shows_on_both_pages(app_db):
     assert not app.exception, app.exception
     value, delta = _metric_labels(app)["Expiry outcomes"]
     assert value == "1"
-    assert "100% profitable" in delta
+    assert "100% modeled-positive" in delta
 
     app.sidebar.radio[0].set_value("⚗ Shadow Lab").run(timeout=60)
     assert not app.exception, app.exception
     metrics = _metric_labels(app)
     assert metrics["Resolved expiry outcomes"][0] == "1"
     assert metrics["Win rate"][0] == "100%"
-    assert metrics["Total net P&L at expiry"][0].startswith("€")
+    assert metrics["Modeled net value at expiry"][0].startswith("€")
     assert metrics["Net / defined risk"][0] == "+294.0%"
-    assert metrics["Result at expiry"][0] == "PROFIT AT EXPIRY"
-    assert any("not the official settlement value" in w.value for w in app.warning)
+    assert metrics["Result at expiry"][0] == "MODELED POSITIVE AT EXPIRY"
+    assert any("not official settlement or closing prices" in w.value for w in app.warning)

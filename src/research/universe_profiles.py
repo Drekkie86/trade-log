@@ -29,6 +29,7 @@ UNIVERSE_PROFILES = {
 }
 
 DEFAULT_ROTATING_BATCH_SIZE = 12
+MAX_SHADOW_TRACKING_BATCH_MULTIPLIER = 2
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class UniverseBatch:
     batch_count: int
     symbols: tuple[str, ...]
     pinned_added: tuple[str, ...] = ()
+    pinned_deferred: tuple[str, ...] = ()
 
 
 def symbols_for_profile(name: str) -> list[str]:
@@ -62,15 +64,12 @@ def select_symbol_batch(
     profile: str | None = None,
     pinned: Iterable[str] = (),
 ) -> UniverseBatch:
-    """Select this slot's rotating batch, then force-include pinned underlyings.
+    """Preserve universe rotation while sampling as many tracked pins as budgeted.
 
-    A pinned underlying is one with an actively tracked shadow candidate. The
-    shadow mark collector can only value a candidate whose underlying was
-    sampled in the *current* research run, so leaving pinned names to the
-    rotation starves tracked candidates of marks on every slot where their
-    batch is not up (3 of 4 slots with 48 symbols / batch 12). Pinned names
-    are appended on top of the rotating batch; they never displace it and
-    unknown pins (not in the governed universe) are ignored.
+    Total symbols cannot exceed twice the normal batch size. When there are
+    more active pins than fit, extra pins rotate fairly across slots and are
+    reported as deferred, never silently ignored. This bounds provider work
+    without claiming a guarantee of sampling every tracked symbol every slot.
     """
     if not symbols:
         raise ValueError("Universe cannot be empty.")
@@ -102,12 +101,26 @@ def select_symbol_batch(
     rotating = list(normalized[start:end])
 
     universe = set(normalized)
-    pinned_added: list[str] = []
-    for raw in pinned:
-        symbol = str(raw).strip().upper()
-        if symbol in universe and symbol not in rotating and symbol not in pinned_added:
-            pinned_added.append(symbol)
-    pinned_added.sort()
+    eligible = sorted({
+        str(raw).strip().upper()
+        for raw in pinned
+        if str(raw).strip().upper() in universe
+        and str(raw).strip().upper() not in rotating
+    })
+    max_total = min(
+        len(normalized), effective_batch * MAX_SHADOW_TRACKING_BATCH_MULTIPLIER
+    )
+    slots_remaining = max(0, max_total - len(rotating))
+    if eligible and slots_remaining:
+        offset = (slot_index * slots_remaining) % len(eligible)
+        chosen = {
+            eligible[(offset + j) % len(eligible)]
+            for j in range(min(slots_remaining, len(eligible)))
+        }
+    else:
+        chosen = set()
+    pinned_added = sorted(chosen)
+    pinned_deferred = sorted(set(eligible) - chosen)
 
     return UniverseBatch(
         profile=None if profile is None else profile.upper(),
@@ -117,4 +130,5 @@ def select_symbol_batch(
         batch_count=batch_count,
         symbols=tuple(rotating + pinned_added),
         pinned_added=tuple(pinned_added),
+        pinned_deferred=tuple(pinned_deferred),
     )

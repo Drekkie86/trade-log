@@ -7,9 +7,9 @@ of the terminal underlying price, so it needs no leg-by-leg quote crossing and
 is free of the liquidity-stress contamination of the intraday marks.
 
 Contract (see migration 035):
-  * exactly one row per candidate, written once the expiry session has passed
-    relative to the current research session (same rule the lifecycle uses to
-    close candidates);
+  * one initial observation per expired candidate; late-recovered or newer
+    expiry-session evidence creates a linked immutable revision, never UPDATE;
+  * only latest revisions count as economic results;
   * terminal price = last stored underlying observation from the expiry
     session; the basis is persisted and is NOT called a settlement price;
   * measurement_role is PROSPECTIVE_EXPIRY_INTRINSIC_V1 — distinct from the
@@ -25,7 +25,6 @@ from typing import Any
 
 from src.database.repository import get_connection
 from src.research.historical_replay_recovery_v1 import (
-    _expiry_snapshot,
     theoretical_expiry_value_usd_minor,
 )
 from src.research.shadow_outcome_collector_v2 import _entry_cashflow_usd_minor
@@ -48,10 +47,9 @@ class ShadowExpiryOutcomeResult:
 
 
 def _due_candidates(*, session_day: date, db_path=None) -> list[dict[str, Any]]:
-    """Admitted candidates whose expiration session has passed and that have
-    no expiry-outcome row yet. Lifecycle state is deliberately not a filter:
-    a candidate stuck in SHADOW_TRACKED past expiry (the WARN the dashboard
-    already shows) must still receive its outcome."""
+    """All expired admitted candidates, including previous UNRESOLVED entries.
+    Latest immutable revision is included to prevent duplicate writes. Lifecycle
+    state is deliberately not a filter; stale candidates must still be audited."""
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
@@ -69,7 +67,13 @@ def _due_candidates(*, session_day: date, db_path=None) -> list[dict[str, Any]]:
                 -- and must not be labelled or ratioed as USD.
                 sad.proposal_max_loss_usd_minor,
                 ssp.entry_pricing_json,
-                fx.rate          AS entry_eur_to_usd
+                fx.rate          AS entry_eur_to_usd,
+                prior.id         AS prior_id,
+                prior.revision   AS prior_revision,
+                prior.outcome_state AS prior_state,
+                prior.snapshot_id AS prior_snapshot_id,
+                prior.snapshot_captured_at AS prior_snapshot_captured_at,
+                prior.reason_code AS prior_reason_code
             FROM shadow_candidates AS sc
             JOIN listing_reference_contracts AS lrc
               ON lrc.id = sc.reference_contract_id
@@ -80,16 +84,64 @@ def _due_candidates(*, session_day: date, db_path=None) -> list[dict[str, Any]]:
               ON ssp.id = sad.proposal_id
             JOIN fx_observations AS fx
               ON fx.id = sad.fx_observation_id
-            WHERE lrc.expiration < ?
-              AND NOT EXISTS (
-                    SELECT 1 FROM shadow_expiry_outcomes_v1 AS o
-                    WHERE o.candidate_id = sc.id
+            LEFT JOIN shadow_expiry_outcomes_v1 AS prior
+              ON prior.id = (
+                  SELECT o.id FROM shadow_expiry_outcomes_v1 AS o
+                  WHERE o.candidate_id = sc.id
+                  ORDER BY o.revision DESC LIMIT 1
               )
+            WHERE lrc.expiration < ?
             ORDER BY sc.id;
             """,
             (session_day.isoformat(),),
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _expiry_snapshots_bulk(
+    *, candidates: list[dict[str, Any]], db_path=None
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Retrieve latest expiry-session prices by research-run index, not N scans.
+
+    Every expired candidate is reevaluated so late backfills can supersede old
+    missing evidence. Bulk loading prevents an O(candidates * full DB scan)
+    cost on each fifteen-minute daemon cycle as history grows.
+    """
+    if not candidates:
+        return {}
+    days = sorted({str(c["expiration"]) for c in candidates})
+    underlyings = sorted({str(c["underlying"]) for c in candidates})
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    conn = get_connection(db_path)
+    try:
+        # Chunk the IN list to stay below SQLite variable limits indefinitely.
+        for pos in range(0, len(days), 50):
+            chunk = days[pos : pos + 50]
+            day_params = ", ".join("?" for _ in chunk)
+            underlying_params = ", ".join("?" for _ in underlyings)
+            rows = conn.execute(
+                f"""
+                SELECT ms.id, ms.provider, ms.captured_at, ms.underlying,
+                       ms.underlying_price, rr.us_session_date
+                FROM research_runs AS rr
+                JOIN market_snapshots AS ms
+                     INDEXED BY idx_market_snapshots_run_provider
+                  ON ms.research_run_id = rr.id
+                WHERE rr.us_session_date IN ({day_params})
+                  AND ms.underlying IN ({underlying_params})
+                  AND ms.underlying_price IS NOT NULL
+                ORDER BY ms.captured_at DESC, ms.id DESC
+                """,
+                tuple(chunk) + tuple(underlyings),
+            ).fetchall()
+            for row in rows:
+                key = (str(row["underlying"]), str(row["us_session_date"]))
+                # SQL is sorted by captured_at DESC, id DESC, matching the
+                # legacy _expiry_snapshot semantics.
+                result.setdefault(key, dict(row))
+        return result
     finally:
         conn.close()
 
@@ -129,6 +181,7 @@ def record_shadow_expiry_outcomes(
     recorded_at = str(run["recorded_at"])
 
     due = _due_candidates(session_day=session_day, db_path=db_path)
+    expiry_snapshots = _expiry_snapshots_bulk(candidates=due, db_path=db_path)
     resolved = 0
     unresolved = 0
 
@@ -144,8 +197,12 @@ def record_shadow_expiry_outcomes(
                 "the expiry session, not the official settlement value."
             ),
         }
+        prior_id = cand["prior_id"]
+        revision = int(cand["prior_revision"] or 0) + 1
         common = dict(
             candidate_id=candidate_id,
+            revision=revision,
+            supersedes_outcome_id=(int(prior_id) if prior_id is not None else None),
             research_run_id=research_run_id,
             recorded_at=recorded_at,
             expiration=expiration,
@@ -157,12 +214,14 @@ def record_shadow_expiry_outcomes(
             estimated_cost_usd_minor=int(cand["estimated_cost_usd_minor"]),
         )
 
-        snapshot = _expiry_snapshot(
-            underlying=str(cand["underlying"]), expiration=expiration, db_path=db_path
-        )
+        snapshot = expiry_snapshots.get((str(cand["underlying"]), expiration))
         conn = get_connection(db_path)
         try:
             if snapshot is None:
+                # Do not repeatedly write the same missing-data observation.
+                # A later recovered snapshot can supersede this row immutably.
+                if prior_id is not None:
+                    continue
                 evidence["reason"] = "MISSING_EXPIRY_SESSION_UNDERLYING_SNAPSHOT"
                 _insert(
                     conn,
@@ -175,6 +234,15 @@ def record_shadow_expiry_outcomes(
                 unresolved += 1
                 continue
 
+            if prior_id is not None and cand["prior_state"] == "RESOLVED":
+                # Resolved results only change on *newer* expiry-session evidence.
+                # No changing an already recorded version in place.
+                if (
+                    int(cand["prior_snapshot_id"]) == int(snapshot["id"])
+                    or str(snapshot["captured_at"]) <= str(cand["prior_snapshot_captured_at"])
+                ):
+                    continue
+
             try:
                 structure = json.loads(str(cand["structure_json"]))
                 entry_pricing = json.loads(str(cand["entry_pricing_json"]))
@@ -186,6 +254,11 @@ def record_shadow_expiry_outcomes(
                     underlying_price=float(snapshot["underlying_price"]),
                 )
             except Exception as exc:  # recorded, never swallowed
+                if (
+                    prior_id is not None
+                    and cand["prior_reason_code"] == "ENTRY_OR_STRUCTURE_RECONSTRUCTION_UNAVAILABLE"
+                ):
+                    continue
                 evidence["reason"] = "ENTRY_OR_STRUCTURE_RECONSTRUCTION_UNAVAILABLE"
                 evidence["error"] = f"{type(exc).__name__}: {exc}"
                 _insert(
@@ -240,7 +313,7 @@ def record_shadow_expiry_outcomes(
     return ShadowExpiryOutcomeResult(
         research_run_id=research_run_id,
         session_date=session_day.isoformat(),
-        candidates_due=len(due),
+        candidates_due=resolved + unresolved,
         resolved_written=resolved,
         unresolved_written=unresolved,
     )

@@ -156,7 +156,7 @@ def test_shadow_lab_separates_thesis_and_validated_trade_result():
     assert "Valued / placeholder marks" in app
     assert "Christiania does not infer thesis correctness from a profitable mark" in app
     assert "expiry_result" in read_model
-    assert "shadow_expiry_outcomes_v1" in read_model
+    assert "v_shadow_expiry_outcomes_latest_v1" in read_model
     assert "outcome_eligible = 1" in read_model
 
 
