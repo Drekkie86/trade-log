@@ -48,11 +48,14 @@ def test_verified_backup_reports_copy_verification_and_promotion(tmp_path):
         progress=messages.append,
     )
 
-    assert result.integrity_check == "ok"
+    assert result.verification_level == "routine"
+    assert result.quick_check == "ok"
+    assert result.integrity_check is None
     joined = "\n".join(messages)
     assert "copy: started" in joined
     assert "copy: completed" in joined
-    assert "integrity_check started" in joined
-    assert "integrity_check completed result=ok" in joined
+    assert "quick_check(1) started level=routine" in joined
+    assert "quick_check(1) completed result=ok" in joined
+    assert "integrity_check started" not in joined
     assert "foreign_key_check completed violations=0" in joined
     assert "promotion: completed" in joined

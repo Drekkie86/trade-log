@@ -19,6 +19,13 @@ from src.operations.backup_compression import (
     backup_data_files,
     manifest_path_for,
 )
+from src.operations.backup_verification import (
+    SqliteVerification,
+    evidence_path_for,
+    hash_snapshot,
+    publish_plain_evidence,
+    verify_sqlite_snapshot,
+)
 
 
 DEFAULT_BACKUP_RETENTION = 14
@@ -66,9 +73,12 @@ class BackupResult:
     source_path: str
     backup_path: str
     schema_version: int
-    integrity_check: str
+    integrity_check: str | None
     foreign_key_violation_count: int
     pruned_count: int
+    verification_level: str = "unknown"
+    quick_check: str | None = None
+    source_sha256: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -451,69 +461,13 @@ def _verify_backup(
     path: Path,
     *,
     progress: Callable[[str], None] | None = None,
-) -> tuple[int, str, int]:
-    conn = sqlite3.connect(path)
-
-    try:
-        version_row = conn.execute(
-            '''
-            SELECT MAX(version)
-            FROM schema_version;
-            '''
-        ).fetchone()
-
-        if (
-            version_row is None
-            or version_row[0] is None
-        ):
-            raise RuntimeError(
-                "Backup contains no schema version."
-            )
-
-        version = int(version_row[0])
-
-        if progress is not None:
-            progress("verification: integrity_check started")
-
-        integrity = str(
-            conn.execute(
-                "PRAGMA integrity_check;"
-            ).fetchone()[0]
-        )
-
-        if progress is not None:
-            progress(
-                "verification: integrity_check completed "
-                f"result={integrity}"
-            )
-            progress(
-                "verification: foreign_key_check started"
-            )
-
-        fk_rows = conn.execute(
-            "PRAGMA foreign_key_check;"
-        ).fetchall()
-
-        if progress is not None:
-            progress(
-                "verification: foreign_key_check completed "
-                f"violations={len(fk_rows)}"
-            )
-
-    finally:
-        conn.close()
-
-    if integrity != "ok":
-        raise RuntimeError(
-            f"Backup integrity_check failed: {integrity}"
-        )
-
-    if fk_rows:
-        raise RuntimeError(
-            "Backup foreign_key_check returned violations."
-        )
-
-    return version, integrity, len(fk_rows)
+) -> SqliteVerification:
+    return verify_sqlite_snapshot(
+        path,
+        expected_schema=EXPECTED_SCHEMA_VERSION,
+        level="routine",
+        progress=progress,
+    )
 
 
 def _vacuum_into_snapshot(
@@ -592,8 +546,10 @@ def _prune_backups(
 
         if stale.name.endswith(".db.gz"):
             manifest = manifest_path_for(stale)
-            if manifest.exists():
-                manifest.unlink()
+        else:
+            manifest = evidence_path_for(stale)
+        if manifest.exists():
+            manifest.unlink()
 
         pruned += 1
 
@@ -640,24 +596,12 @@ def create_verified_backup(
             "Existing verified backups were left untouched."
         )
 
-    # A new full backup temporarily coexists with retained recovery points.
-    # Capacity planning treats configured retention as a maximum target and
-    # may safely retain fewer old copies when disk headroom requires it.
-    # The newest known-good normal recovery point is never pre-deleted.
-    preprune_keep = (
-        capacity_plan.preprune_keep
-    )
-    prepruned = _prune_backups(
-        target_dir,
-        keep=preprune_keep,
-    )
-
-    if progress is not None and prepruned:
-        progress(
-            "retention: pre-pruned "
-            f"{prepruned} stale backup(s) before capacity check"
-        )
-
+    # Never pre-delete any recovery point to make room for a new copy.
+    # The capacity planner is advisory here: conservative instantaneous
+    # headroom must be present without reclaiming any existing backups.
+    # Routine verification does not authorize destruction of older deep
+    # recovery points, even if their age exceeds the requested retention.
+    prepruned = 0
     assert_backup_capacity(
         source=source,
         target_dir=target_dir,
@@ -708,22 +652,13 @@ def create_verified_backup(
                 f"temp_bytes={temp_path.stat().st_size}"
             )
 
-        version, integrity, fk_count = (
-            _verify_backup(
-                temp_path,
-                progress=progress,
-            )
-        )
-
-        if version != EXPECTED_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"Backup schema v{version} does not match "
-                f"expected v{EXPECTED_SCHEMA_VERSION}."
-            )
-
-        os.replace(
-            temp_path,
-            final_path,
+        verification = _verify_backup(temp_path, progress=progress)
+        # Full content hash is independent from the bounded SQLite routine
+        # verification. Its matching sidecar will be required by compression.
+        digest = hash_snapshot(temp_path, progress=progress)
+        os.replace(temp_path, final_path)
+        publish_plain_evidence(
+            final_path, verification, sha256=digest,
         )
 
         if progress is not None:
@@ -735,29 +670,33 @@ def create_verified_backup(
     except BaseException:
         if temp_path.exists():
             if progress is not None:
-                progress(
-                    "cleanup: removing incomplete temp backup "
-                    f"path={temp_path}"
-                )
+                progress(f"cleanup: removing incomplete backup {temp_path}")
             temp_path.unlink()
+        # Promotion and evidence publication form a fail-closed pair. Never
+        # leave an unmanifested promoted backup from a failed attempt.
+        if final_path.exists():
+            final_path.unlink()
+        evidence = evidence_path_for(final_path)
+        if evidence.exists():
+            evidence.unlink()
         raise
 
-    pruned = prepruned + _prune_backups(
-        target_dir,
-        keep=keep,
-    )
-
+    # Retention deletion is disabled until a recovery-point-aware policy
+    # can prove the replacements and preserve the minimum independent copies.
+    # Compression and a separate audited retention job handle capacity;
+    # creation itself must never quietly destroy old recovery evidence.
+    pruned = prepruned
     if progress is not None:
-        progress(
-            "retention: completed "
-            f"pruned={pruned}"
-        )
+        progress("retention: protected existing recovery points; pruned=0")
 
     return BackupResult(
         source_path=str(source),
         backup_path=str(final_path),
-        schema_version=version,
-        integrity_check=integrity,
-        foreign_key_violation_count=fk_count,
+        schema_version=verification.schema_version,
+        integrity_check=verification.integrity_check,
+        foreign_key_violation_count=verification.foreign_key_violation_count,
         pruned_count=pruned,
+        verification_level=verification.level,
+        quick_check=verification.quick_check,
+        source_sha256=digest,
     )

@@ -68,7 +68,9 @@ def test_vacuum_snapshot_remains_consistent_while_daemon_commits(tmp_path):
     assert not worker.is_alive()
     assert not failures
     assert updates
-    assert result.integrity_check == "ok"
+    assert result.verification_level == "routine"
+    assert result.quick_check == "ok"
+    assert result.integrity_check is None
     assert result.foreign_key_violation_count == 0
     with sqlite3.connect(result.backup_path) as copy:
         seq, mirror = copy.execute(

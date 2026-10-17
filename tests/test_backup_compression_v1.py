@@ -47,7 +47,9 @@ def test_compressed_backup_roundtrip_is_verified(db_path, tmp_path):
     )
 
     assert manifest.schema_version == EXPECTED_SCHEMA_VERSION
-    assert manifest.integrity_check == "ok"
+    assert manifest.verification_level == "routine"
+    assert manifest.quick_check == "ok"
+    assert manifest.integrity_check is None
     assert manifest.foreign_key_violation_count == 0
 
     drill = run_restore_drill(compressed)
