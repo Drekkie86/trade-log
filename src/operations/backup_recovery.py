@@ -9,7 +9,9 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from src.config import get_runtime_setting
 from src.database.repository import EXPECTED_SCHEMA_VERSION
+from src.operations.recovery_volume_guard import require_recovery_volume_path
 from src.operations.sqlite_runtime import (
     DEFAULT_BACKUP_MIN_FREE_BYTES,
     resolve_backup_dir,
@@ -303,7 +305,28 @@ def resolve_restore_drill_backup(
     return max(plain, key=lambda path: path.stat().st_mtime)
 
 
-def _restore_drill_capacity_preflight(source: Path) -> int:
+def _restore_drill_scratch_directory() -> Path:
+    """Require explicit mounted scratch when using the recovery volume.
+
+    Without a volume configuration, preserve the existing platform temp dir.
+    When the volume is configured, never silently fall back to the root disk.
+    """
+    configured = get_runtime_setting("CHRISTIANIA_RESTORE_DRILL_SCRATCH_DIR")
+    mountpoint = get_runtime_setting("CHRISTIANIA_RECOVERY_VOLUME_MOUNTPOINT")
+    if bool(configured) != bool(mountpoint):
+        raise RuntimeError(
+            "RECOVERY_SCRATCH_CONFIGURATION_INCOMPLETE: both recovery mount "
+            "and restore-drill scratch directory must be configured together."
+        )
+    if not configured:
+        return Path(tempfile.gettempdir())
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        raise RuntimeError("RESTORE_DRILL_SCRATCH_MUST_BE_ABSOLUTE")
+    return require_recovery_volume_path(candidate, must_exist=True)
+
+
+def _restore_drill_capacity_preflight(source: Path, *, scratch_dir: Path | None = None) -> int:
     """Budget the restored database plus reserve before expensive verification.
 
     This is deliberately read-only. Full recovery evidence is proved only by
@@ -316,7 +339,9 @@ def _restore_drill_capacity_preflight(source: Path) -> int:
     )
     if source_bytes <= 0:
         raise RuntimeError("Restore drill source has no valid positive size.")
-    disk = shutil.disk_usage(tempfile.gettempdir())
+    disk = shutil.disk_usage(
+        scratch_dir if scratch_dir is not None else _restore_drill_scratch_directory()
+    )
     # 15 GiB reserve on a 150 GiB production disk. On smaller CI runners
     # retain a proportional reserve rather than demanding more than the disk.
     reserve_bytes = min(
@@ -344,8 +369,11 @@ def run_restore_drill(backup_path: str | Path) -> RestoreDrillResult:
     if not source.is_file():
         raise FileNotFoundError(f"Backup not found: {source}")
 
-    expected_size = _restore_drill_capacity_preflight(source)
-    with tempfile.TemporaryDirectory(prefix="christiania_restore_drill_") as td:
+    scratch_dir = _restore_drill_scratch_directory()
+    expected_size = _restore_drill_capacity_preflight(source, scratch_dir=scratch_dir)
+    with tempfile.TemporaryDirectory(
+        prefix="christiania_restore_drill_", dir=scratch_dir
+    ) as td:
         restored = Path(td) / "restored.db"
 
         if source.name.endswith(".db.gz"):
