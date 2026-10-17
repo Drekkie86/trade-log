@@ -538,6 +538,8 @@ _PAGE_SECTIONS: dict[str, frozenset[str]] = {
         "shadow",
     }),
     "Trade Ideas": frozenset({"runtime"}),
+    "Results": frozenset({"prospective", "counts", "lifecycle"}),
+    "System": frozenset({"runtime"}),
     "Quant Models": frozenset(),
     "Storm Cellar / 0DTE Lab": frozenset(),
     "Ops": frozenset({

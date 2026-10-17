@@ -221,6 +221,14 @@ def scan_research_run(
              AND pmo.provider = 'THETADATA'
             WHERE ms.research_run_id = ?
               AND ms.provider = 'THETADATA'
+              -- Failed underlying collectors can leave partial immutable
+              -- evidence behind. Never use it as a complete scan signal.
+              AND NOT EXISTS (
+                  SELECT 1 FROM research_run_underlyings AS child
+                  WHERE child.run_id = ms.research_run_id
+                    AND child.underlying = ms.underlying
+                    AND child.status = 'FAILED'
+              )
             ORDER BY
                 ms.underlying,
                 oq.expiration,

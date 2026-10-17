@@ -362,7 +362,7 @@ def _start_underlying(
 
 
 def _is_safe_transient_massive_error(exc: Exception) -> bool:
-    if isinstance(exc, (MassiveNetworkError, MassiveRateLimitError)):
+    if isinstance(exc, (TimeoutError, MassiveNetworkError, MassiveRateLimitError)):
         return True
     return (
         isinstance(exc, MassiveResponseError)
@@ -1310,6 +1310,7 @@ def run_independent_research(
     summaries: list[
         UnderlyingResearchSummary
     ] = []
+    first_underlying_failure: Exception | None = None
 
     try:
         for underlying in config["symbols"]:
@@ -1363,7 +1364,12 @@ def run_independent_research(
                         failure_reason=f"{type(exc).__name__}: {exc}",
                         db_path=db_path,
                     )
-                    raise
+                    if first_underlying_failure is None:
+                        first_underlying_failure = exc
+                    # The failed underlying is recorded and its partial
+                    # quotes are excluded by the structural scanner. Other
+                    # underlyings must still be collected and evaluated.
+                    break
                 else:
                     summaries.append(summary)
                     _finish_underlying(
@@ -1382,6 +1388,10 @@ def run_independent_research(
                         )
                     break
 
+        if not summaries and first_underlying_failure is not None:
+            # Every symbol failed: preserve the original provider exception
+            # and the current single-symbol fail-closed contract.
+            raise first_underlying_failure
     except Exception as exc:
         _finish_run(
             run_id=run_id,
@@ -1398,7 +1408,9 @@ def run_independent_research(
         run_id=run_id,
         status="COMPLETED",
         notes=(
-            "Independent evidence collection completed. "
+            f"Independent evidence collection completed for {len(summaries)} "
+            f"of {len(config['symbols'])} symbols. "
+            "Failed underlyings are marked FAILED and excluded from scanning. "
             "No candidate creation or trading action performed."
         ),
         db_path=db_path,

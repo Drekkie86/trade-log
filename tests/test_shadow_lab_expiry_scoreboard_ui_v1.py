@@ -37,6 +37,13 @@ def app_db(db_path, tmp_path, monkeypatch):
     return db_path
 
 
+def _open_advanced(app, tool):
+    """Old pages now live under Advanced tools."""
+    if not app.sidebar.selectbox:
+        app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=60)
+    app.sidebar.selectbox[0].set_value(tool).run(timeout=60)
+
+
 def _metric_labels(app):
     return {m.label: (m.value, m.delta) for m in app.metric}
 
@@ -44,12 +51,12 @@ def _metric_labels(app):
 def test_empty_database_renders_zero_outcomes(app_db):
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
     app.run(timeout=60)  # opens on Trade Ideas, the default page
-    app.sidebar.radio[0].set_value("⚓ Dashboard").run(timeout=60)
+    _open_advanced(app, "Dashboard")
     assert not app.exception, app.exception
     metrics = _metric_labels(app)
     assert metrics["Expiry outcomes"][0] == "0"
 
-    app.sidebar.radio[0].set_value("⚗ Shadow Lab").run(timeout=60)
+    _open_advanced(app, "Shadow Lab")
     assert not app.exception, app.exception
     metrics = _metric_labels(app)
     assert metrics["Resolved expiry outcomes"][0] == "0"
@@ -72,13 +79,13 @@ def test_resolved_outcome_shows_on_both_pages(app_db):
 
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
     app.run(timeout=60)  # opens on Trade Ideas, the default page
-    app.sidebar.radio[0].set_value("⚓ Dashboard").run(timeout=60)
+    _open_advanced(app, "Dashboard")
     assert not app.exception, app.exception
     value, delta = _metric_labels(app)["Expiry outcomes"]
     assert value == "1"
     assert "100% modeled-positive" in delta
 
-    app.sidebar.radio[0].set_value("⚗ Shadow Lab").run(timeout=60)
+    _open_advanced(app, "Shadow Lab")
     assert not app.exception, app.exception
     metrics = _metric_labels(app)
     assert metrics["Resolved expiry outcomes"][0] == "1"
@@ -87,3 +94,13 @@ def test_resolved_outcome_shows_on_both_pages(app_db):
     assert metrics["Net / defined risk"][0] == "+294.0%"
     assert metrics["Result at expiry"][0] == "MODELED POSITIVE AT EXPIRY"
     assert any("not official settlement or closing prices" in w.value for w in app.warning)
+
+
+def test_results_and_system_pages_render(app_db):
+    app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    app.run(timeout=60)
+    app.sidebar.radio[0].set_value("📈 Results").run(timeout=60)
+    assert not app.exception, app.exception
+    assert "Ideas found" in _metric_labels(app)
+    app.sidebar.radio[0].set_value("🩺 System").run(timeout=60)
+    assert not app.exception, app.exception

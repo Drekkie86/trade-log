@@ -21,6 +21,13 @@ import src.providers.thetadata_control as thetadata_control
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _open_advanced(app, tool):
+    """Old pages now live under Advanced tools."""
+    if not app.sidebar.selectbox:
+        app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=60)
+    app.sidebar.selectbox[0].set_value(tool).run(timeout=60)
+
+
 @pytest.fixture
 def recorded(db_path, tmp_path, monkeypatch):
     monkeypatch.setenv("CHRISTIANIA_DB_PATH", str(db_path))
@@ -55,7 +62,7 @@ def recorded(db_path, tmp_path, monkeypatch):
 
 def _open_ops(app):
     app.run(timeout=60)
-    app.sidebar.radio[0].set_value("⚙ Ops").run(timeout=60)
+    _open_advanced(app, "Ops")
     return app
 
 
@@ -108,7 +115,7 @@ def test_clear_observation_filters_clears_state_without_crashing(recorded, monke
     monkeypatch.setattr(read_model, "load_command_deck", loader_with_anomalies)
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
     app.run(timeout=60)
-    app.sidebar.radio[0].set_value("◉ Observations").run(timeout=60)
+    _open_advanced(app, "Observations")
     app.session_state["_chr_observation_filters"] = {"underlying": "COIN"}
     app.run(timeout=60)
     clear = [b for b in app.button if b.label == "Clear filters"]

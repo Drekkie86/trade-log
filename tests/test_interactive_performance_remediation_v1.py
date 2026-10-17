@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_navigation_is_resolved_before_expensive_runtime_snapshot():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
 
-    assert app.index('page = st.radio(') < app.index(
+    assert app.index('_primary = st.radio(') < app.index(
         'snapshot, backup_inventory = _load_runtime_state(page)'
     )
 
@@ -27,7 +27,7 @@ def test_interactive_runtime_is_page_scoped_and_background_refreshed():
     assert "page=page" in cache_block
     assert "include_provider_health=False" in cache_block
     assert "inventory_backups_fast().as_dict()" in cache_block
-    assert 'if page == "Dashboard"' in cache_block
+    assert 'if page in {"Dashboard", "System"}' in cache_block
 
 
 def test_normal_runtime_snapshot_does_not_probe_theta_inline():

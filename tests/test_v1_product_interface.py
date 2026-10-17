@@ -261,7 +261,9 @@ def test_compact_tables_expose_full_long_text():
 def test_ops_navigation_is_consolidated():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
 
-    assert '"⚙ Ops"' in app
+    # Ops now lives under the "Advanced tools" picker, not the primary nav.
+    assert '"🧰 Advanced tools"' in app
+    assert '    "Ops",\n]' in app
     assert '["Readiness", "Release", "System"]' in app
     assert '"✓ Readiness"' not in app
     assert '"◆ Release Status"' not in app
@@ -356,7 +358,7 @@ def test_interaction_layer_has_no_external_javascript_or_trade_mutation_words():
 def test_decision_desk_is_visible_and_fails_closed():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
 
-    assert '"🎯 Decision Desk"' in app
+    assert '    "Decision Desk",\n' in app  # lives in ADVANCED_PAGES
     assert 'CURRENT GLOBAL CONCLUSION: NO TRADE' in app
     assert 'Cash-settlement verified' in app
     assert 'Full model dossier' in app
