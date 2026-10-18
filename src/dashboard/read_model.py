@@ -664,6 +664,7 @@ def load_command_deck(
         "admission_blocked": 0,
         "shadow_candidates": 0,
         "shadow_marks": 0,
+        "market_snapshot_days": 0,
     }
     models: list[dict[str, Any]] = []
     hypotheses: list[dict[str, Any]] = []
@@ -892,6 +893,20 @@ def load_command_deck(
                 )
                 for key in counts_row.keys()
             }
+            research_counts["market_snapshot_days"] = 0
+            if page == "Results":
+                # Avoid additional aggregation on FULL/Dashboard: page budget
+                # is release-blocking and only Results displays this metric.
+                # Market-data coverage is NOT the same as prospective
+                # research evidence: count stored snapshot session dates,
+                # including historical/recovered data, only when Results
+                # actually needs this metric. Does not scan option_quotes.
+                market_dates = conn.execute(
+                    """SELECT COUNT(DISTINCT us_session_date)
+                       FROM market_snapshots
+                       WHERE us_session_date IS NOT NULL;"""
+                ).fetchone()
+                research_counts["market_snapshot_days"] = int(market_dates[0] or 0)
 
             timings["counts_ms"] = round(
                 (time.perf_counter() - _section_started) * 1000.0,
