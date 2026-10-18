@@ -1486,7 +1486,7 @@ elif page == "Shadow Lab":
                         for r in modeled_proxy["rows"]
                     ],
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                 )
                 st.caption(
                     "Every proxy remains excluded from the validated-package-outcome "
