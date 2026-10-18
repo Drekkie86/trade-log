@@ -193,7 +193,17 @@ def test_receiver_preflights_before_activation():
     current_gate = script[current_control_plane:current_database]
     assert '"${PREVIOUS_TARGET}/christiania_status.py"' in current_gate
     assert '"${RELEASE_DIR}/christiania_status.py"' not in current_gate
-    assert "--deployment-safe" in current_gate
+    # The prior release may have a retired backup-timer policy. Its own
+    # JSON must still be used, then the audited transition validates only
+    # those specific old-timer failures; no target-status substitution.
+    assert (
+        "--deployment-safe" in current_gate
+        or (
+            '"${PREVIOUS_TARGET}/christiania_status.py"' in current_gate
+            and 'CHRISTIANIA_TRANSITION_STATUS_JSON="${CURRENT_STATUS_JSON}"' in current_gate
+            and '"${RELEASE_DIR}/src/operations/deployment_transition_gate.py"' in current_gate
+        )
+    )
 
 
 def test_receiver_has_rollback_path():
