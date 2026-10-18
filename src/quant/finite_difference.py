@@ -88,7 +88,37 @@ def _crank_nicolson_on_grid(
     banded[1, :] = diag_l
     banded[2, :-1] = lower_l[1:]
 
+    # Rannacher start-up: replace the first Crank-Nicolson step with two
+    # backward-Euler half steps to damp the payoff-kink high-frequency modes.
+    half_dt = 0.5 * dt
+    be_lower_l = -half_dt * a
+    be_diag_l = 1.0 - half_dt * b
+    be_upper_l = -half_dt * c
+    be_banded = np.zeros((3, m - 1))
+    be_banded[0, 1:] = be_upper_l[:-1]
+    be_banded[1, :] = be_diag_l
+    be_banded[2, :-1] = be_lower_l[1:]
+
     for step in range(n):
+        if step == 0:
+            for half_step in (1, 2):
+                tau_new_half = half_step * half_dt
+                if call:
+                    low_new_half = 0.0
+                    high_new_half = (
+                        s_max * math.exp(-option.dividend_yield * tau_new_half)
+                        - option.strike * math.exp(-option.rate * tau_new_half)
+                    )
+                else:
+                    low_new_half = option.strike * math.exp(-option.rate * tau_new_half)
+                    high_new_half = 0.0
+                rhs_be = values[1:m].copy()
+                rhs_be[0] -= be_lower_l[0] * low_new_half
+                rhs_be[-1] -= be_upper_l[-1] * high_new_half
+                values[1:m] = solve_banded((1, 1), be_banded, rhs_be)
+                values[0] = low_new_half
+                values[m] = high_new_half
+            continue
         tau_old = step * dt
         tau_new = (step + 1) * dt
         if call:
@@ -144,7 +174,9 @@ def crank_nicolson_diagnostic(
     Domain truncation is considered resolved only when the price sensitivity to
     another domain widening is no larger than the observed grid-resolution
     sensitivity. This uses the solver's own numerical evidence rather than a
-    volatility cutoff or a hand-picked pricing-error threshold.
+    volatility cutoff for domain truncation. For options expiring within
+    seven days, two extra spatial/time-grid refinements test whether the
+    payoff kink is actually resolved; otherwise the result fails closed.
     """
     option.validate()
     _validate_grid(
@@ -221,6 +253,65 @@ def crank_nicolson_diagnostic(
         last_time_steps = int(time_steps) * 2
 
         if domain_shift <= resolution_shift + roundoff_allowance:
+            if option.time_to_expiry <= 7.0 / 365.0:
+                # Near expiry, the payoff kink may produce a 1-5% pricing
+                # error even when widening the domain makes zero difference.
+                # Independently require spatial/time-grid convergence.
+                # With a second-order spatial stencil, a contracted 2x-grid
+                # difference estimates the remaining fine-grid error as
+                # delta/(2^2 - 1). This estimate is conservative only after
+                # observing contraction. Fail closed if that is not seen.
+                previous_grid_price = refined
+                previous_grid_shift = resolution_shift
+                extra_spot_steps = current_spot_steps * 2
+                extra_time_steps = time_steps * 2
+                for _ in range(2):
+                    if extra_spot_steps * 2 > 8192 or extra_time_steps * 2 > 4096:
+                        break  # bounded CPU/memory; a nonconverged result follows
+                    extra_spot_steps *= 2
+                    extra_time_steps *= 2
+                    better = _crank_nicolson_on_grid(
+                        option,
+                        spot_steps=extra_spot_steps,
+                        time_steps=extra_time_steps,
+                        spot_max_multiple=current_multiple,
+                    )
+                    new_shift = abs(better - previous_grid_price)
+                    estimated_remaining = new_shift / 3.0
+                    # Five-tenths of a percent AND half a cent per share
+                    # form an explicit numerical error budget, not a claim
+                    # of market execution accuracy.
+                    allowed_error = min(0.005, 0.005 * abs(better))
+                    if (new_shift <= 0.5 * previous_grid_shift and
+                            estimated_remaining <= allowed_error):
+                        return FiniteDifferenceConvergence(
+                            price=float(better),
+                            converged=True,
+                            state="CONVERGED_DOMAIN_AND_RESOLUTION",
+                            initial_spot_max_multiple=float(spot_max_multiple),
+                            final_spot_max_multiple=current_multiple,
+                            base_spot_steps=int(spot_steps),
+                            final_spot_steps=extra_spot_steps,
+                            final_time_steps=extra_time_steps,
+                            domain_refinements=refinement,
+                            domain_shift=float(domain_shift),
+                            resolution_shift=float(new_shift),
+                        )
+                    previous_grid_price = better
+                    previous_grid_shift = new_shift
+                return FiniteDifferenceConvergence(
+                    price=float(previous_grid_price),
+                    converged=False,
+                    state="RESOLUTION_CONVERGENCE_NOT_DEMONSTRATED",
+                    initial_spot_max_multiple=float(spot_max_multiple),
+                    final_spot_max_multiple=current_multiple,
+                    base_spot_steps=int(spot_steps),
+                    final_spot_steps=extra_spot_steps,
+                    final_time_steps=extra_time_steps,
+                    domain_refinements=refinement,
+                    domain_shift=float(domain_shift),
+                    resolution_shift=float(previous_grid_shift),
+                )
             return FiniteDifferenceConvergence(
                 price=float(refined),
                 converged=True,
@@ -275,6 +366,6 @@ def crank_nicolson_price(
     )
     if not result.converged:
         raise QuantInputError(
-            "Crank-Nicolson domain convergence was not demonstrated within the configured refinement budget"
+            "Crank-Nicolson domain convergence or grid resolution was not demonstrated within the configured refinement budget"
         )
     return result.price
