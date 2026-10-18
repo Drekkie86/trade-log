@@ -1,0 +1,24 @@
+[Unit]
+Description=Christiania independent archive weekly restored-file audit
+After=local-fs.target
+RequiresMountsFor=/mnt/HC_Volume_107172834/backups
+AssertPathExists=/var/lib/christiania/audit/christiania_volume_backup_routine_20261018.py
+
+[Service]
+Type=oneshot
+User=christiania
+Group=christiania
+WorkingDirectory=/var/lib/christiania/audit
+ExecStart=/usr/bin/python3 /var/lib/christiania/audit/christiania_volume_backup_routine_20261018.py --restore-audit
+TimeoutStartSec=3600s
+TimeoutStopSec=90s
+MemoryHigh=805306368
+MemoryMax=1610612736
+CPUQuota=85%
+IOWeight=100
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/mnt/HC_Volume_107172834/backups
+UMask=0077

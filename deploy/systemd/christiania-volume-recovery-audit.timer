@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly Christiania restored archive evidence
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00 UTC
+RandomizedDelaySec=15min
+AccuracySec=1min
+Persistent=false
+Unit=christiania-volume-recovery-audit.service
+
+[Install]
+WantedBy=timers.target
