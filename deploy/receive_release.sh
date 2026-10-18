@@ -692,11 +692,18 @@ else
   # production release and its currently installed systemd policy. Using the
   # target release here makes legitimate resource-policy changes impossible
   # to deploy because target canonical values are compared against old units.
-  sudo -u "${SERVICE_USER}" \
-    "${PREVIOUS_TARGET}/.venv/bin/python" \
-    "${PREVIOUS_TARGET}/christiania_status.py" \
-    --json \
-    --deployment-safe
+  CURRENT_STATUS_JSON="$(
+    sudo -u "${SERVICE_USER}" \
+      "${PREVIOUS_TARGET}/.venv/bin/python" \
+      "${PREVIOUS_TARGET}/christiania_status.py" \
+      --json
+  )"
+  printf '%s\n' "${CURRENT_STATUS_JSON}"
+  # Fail closed on everything except the exact legacy-to-volume timer
+  # transition supported by a restored, independently verified backup.
+  CHRISTIANIA_TRANSITION_STATUS_JSON="${CURRENT_STATUS_JSON}" \
+    "${RELEASE_DIR}/.venv/bin/python" \
+    "${RELEASE_DIR}/src/operations/deployment_transition_gate.py"
 fi
 phase_done
 

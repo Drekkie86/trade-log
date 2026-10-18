@@ -79,15 +79,17 @@ PUBLIC_EDGE_ENABLED_STATES = {
 }
 
 EXPECTED_ENABLED_TIMERS = (
-    "christiania-backup.timer",
+    "christiania-volume-recovery-backup.timer",
+    "christiania-volume-recovery-audit.timer",
     "christiania-audit.timer",
-    "christiania-restore-drill.timer",
     "christiania-supervisor.timer",
     "christiania-theta-watchdog.timer",
     "christiania-theta-refresh.timer",
 )
 
 INTENTIONALLY_DISABLED_TIMERS = (
+    "christiania-backup.timer",
+    "christiania-restore-drill.timer",
     "christiania-backup-compress.timer",
     "christiania-health.timer",
     "christiania-burn-in.timer",
