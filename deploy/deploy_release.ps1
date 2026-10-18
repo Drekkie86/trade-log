@@ -225,6 +225,28 @@ foreach ($page in $performanceReport.pages) {
 Write-Host "  seeded_dashboard_cold=$($performanceReport.seeded_cold_dashboard.wall_ms)ms history_rebuild_avoided=$($performanceReport.seeded_cold_dashboard.history_rebuild_avoided)"
 Write-Host "  wal_delta_bytes=$($performanceReport.wal_delta_bytes)"
 
+# An exact-SHA release can already be active when a second workstation launch
+# arrives. Treat that as an idempotent no-op ONLY after the active target and
+# the entire deployment-safe operational health check have both succeeded.
+# Never create a FAILED transient unit for a healthy, already-deployed commit.
+$activeTargetOutput = & ssh @SshOptions -i $KeyPath "${User}@${Server}" "readlink /opt/christiania"
+if ($LASTEXITCODE -ne 0) {
+    throw "Cannot determine the active Christiania release. No deployment started."
+}
+$activeTarget = ($activeTargetOutput | Out-String).Trim()
+if ($activeTarget -eq "/opt/christiania-releases/$head") {
+    & ssh @SshOptions -i $KeyPath "${User}@${Server}" (
+        "sudo /usr/local/bin/christiania-status --json --deployment-safe >/dev/null"
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Already-active release $head failed operational readiness. No redundant deployment attempted."
+    }
+    Write-Host "Christiania release is already active and operationally healthy."
+    Write-Host "commit=$head"
+    Write-Host "result=ALREADY_ACTIVE_VERIFIED"
+    return
+}
+
 $tempRoot = Join-Path $env:TEMP "christiania-release-$head"
 $archiveName = "christiania-$head.tar.gz"
 $archivePath = Join-Path $tempRoot $archiveName
