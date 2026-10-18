@@ -363,6 +363,13 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
 
 def _evidence_text(report: EvidenceReport) -> str:
     lines = [report.headline]
+    if report.primary_signal_mean_net_usd is not None:
+        lines.append(
+            f"- Selected trades average {usd(report.primary_signal_mean_net_usd, signed=True)} "
+            f"net; matched random-strike twins average "
+            f"{usd(report.primary_placebo_mean_net_usd, signed=True)} net. "
+            "Both are paper estimates after assumed costs."
+        )
     if report.primary_excess_usd is not None:
         lines.append(
             f"- 'Worth a look' trades finished: {report.primary_bets} on {report.primary_expiry_dates} "

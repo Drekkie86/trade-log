@@ -15,13 +15,12 @@ score = net edge after costs / (dollar value of the quote uncertainty)
 
 * ``net / gross`` is the share of the gross edge that survives the spread and
   the fees.  It is negative when costs exceed the edge.
-* ``sigma_total`` combines (a) measurement noise of the quotes the fair value
-  is built from and (b) disagreement between the fits.  (a) is derived, not
-  invented: a quote is only known to lie somewhere between bid and ask, so its
-  standard deviation is width/sqrt(12) (uniform), converted to implied-vol
-  units through the option's vega.  For a butterfly the fair value at the
-  centre strike is the chord of the wing IVs, so its noise is the quadrature
-  sum with the chord weights.
+* ``sigma_total`` combines a *bid/ask-only* quote uncertainty model with
+  dispersion between fits that share the same quotes. Neither measures latent
+  midpoint error, stale quote variation, or full fair-IV estimation error.
+  The quoted spread is converted to a uniform width/sqrt(12) IV uncertainty
+  through option vega and chord wing weights. This is an *incomplete* proxy,
+  not a calibrated two-sigma confidence statement.
 
 Nothing here is fitted to outcomes.  The thresholds below are fixed *a priori*
 (two sigma is the conventional bar for "clearly bigger than noise"); whether
@@ -65,8 +64,8 @@ VERDICT_PLACEBO = "PLACEBO"
 VERDICT_RANK = {VERDICT_WORTH: 0, VERDICT_MARGINAL: 1, VERDICT_SKIP: 2}
 
 HEADLINES = {
-    "WORTH": "Costs paid, the edge is still clearly bigger than the noise in the quotes.",
-    "MARGINAL": "The edge survives costs but is small next to the noise in the quotes.",
+    "WORTH": "Estimated edge exceeds spread-derived noise after assumed costs; midpoint noise and real profitability are unverified.",
+    "MARGINAL": "Estimated edge exceeds modeled costs but remains near spread-derived uncertainty; not a verified opportunity.",
     "WITHIN_NOISE": "The price gap is within the noise of the quotes.",
     "COSTS_EAT_EDGE": "Costs eat the edge: the price gap is smaller than the cost of trading it.",
     "NO_EDGE": "The models do not see this structure as underpriced.",
@@ -198,6 +197,10 @@ def assess_idea(idea: TradeIdea) -> OpportunityAssessment:
         "sigma_wing_hi_vol_pts": sig_hi * 100.0,
         "fees_usd": structure_fees_usd(legs),
         "direction": idea.anomaly_direction,
+        "quote_uncertainty_basis": "BID_ASK_WIDTH_UNIFORM_ONLY",
+        "latent_midpoint_noise_measured": False,
+        "model_fit_independence_assumed": False,
+        "prospective_profitability_proven": False,
     }
     common = dict(
         fair_iv=fair,

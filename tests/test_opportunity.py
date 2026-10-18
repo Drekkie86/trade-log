@@ -23,6 +23,7 @@ from src.decision.opportunity_evidence import (
     STATE_EVIDENCE,
     STATE_NO_DATA,
     STATE_NOT_BETTER,
+    STATE_RELATIVE_NOT_PROFITABLE,
     STATE_TOO_EARLY,
     cluster_bootstrap_ci,
     evaluate,
@@ -77,6 +78,10 @@ def test_assessment_is_deterministic_and_complete(db_path):
     assert a.headline and a.reason_code
     for key in ("dte", "fair_ivs", "max_spread_to_mid", "fees_usd", "sigma_target_vol_pts"):
         assert key in a.features
+    assert a.features["quote_uncertainty_basis"] == "BID_ASK_WIDTH_UNIFORM_ONLY"
+    assert a.features["latent_midpoint_noise_measured"] is False
+    assert a.features["model_fit_independence_assumed"] is False
+    assert a.features["prospective_profitability_proven"] is False
 
 
 def test_score_is_net_over_noise_scaled_edge(db_path):
@@ -222,6 +227,25 @@ def test_real_edge_is_detected_and_null_is_not():
     assert real.state == STATE_EVIDENCE and real.primary_ci_usd[0] > 0
     null = evaluate(_rows(120, 15, signal_edge=-24.0))
     assert null.state == STATE_NOT_BETTER and null.primary_ci_usd[0] <= 0 <= null.primary_ci_usd[1]
+
+
+def test_relative_placebo_outperformance_is_not_mistaken_for_profit():
+    # A clearly stronger strike choice is still economically unprofitable
+    # when the selected positions lose net money after assumed costs.
+    losing = evaluate(_rows(120, 15, signal_edge=-30.0, placebo_edge=-100.0, noise=1.0))
+    assert losing.primary_ci_usd is not None and losing.primary_ci_usd[0] > 0
+    assert losing.primary_signal_mean_net_usd < 0
+    assert losing.primary_placebo_mean_net_usd < 0
+    assert losing.state == STATE_RELATIVE_NOT_PROFITABLE
+    assert "not evidence of a profitable strategy" in losing.headline
+
+    # Even an absolute-profit sample is inconclusive under the deliberately
+    # stronger operating rule when a random-strike control also earns money.
+    both_win = evaluate(_rows(120, 15, signal_edge=50.0, placebo_edge=10.0, noise=1.0))
+    assert both_win.primary_ci_usd[0] > 0
+    assert both_win.primary_signal_mean_net_usd > 0
+    assert both_win.primary_placebo_mean_net_usd > 0
+    assert both_win.state == STATE_RELATIVE_NOT_PROFITABLE
 
 
 def test_false_positive_rate_of_the_test_is_controlled():

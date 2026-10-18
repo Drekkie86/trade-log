@@ -120,6 +120,12 @@ def _score_panel() -> None:
         st.info("Not available until the database is updated.")
         return
     (st.success if report.state == STATE_EVIDENCE else st.warning)(report.headline)
+    if report.primary_signal_mean_net_usd is not None:
+        st.caption(
+            f"Average net per selected trade: ${report.primary_signal_mean_net_usd:+,.2f}; "
+            f"matched random-strike trade: ${report.primary_placebo_mean_net_usd:+,.2f}. "
+            "Paper estimates after assumed costs, not brokerage fills."
+        )
     if report.primary_excess_usd is not None:
         lo, hi = report.primary_ci_usd or (None, None)
         st.caption(

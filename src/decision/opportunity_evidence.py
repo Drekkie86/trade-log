@@ -52,6 +52,7 @@ STATE_NO_DATA = "NO_DATA"
 STATE_TOO_EARLY = "TOO_EARLY"
 STATE_NOT_BETTER = "NOT_BETTER_THAN_CHANCE"
 STATE_EVIDENCE = "EVIDENCE_OF_EDGE"
+STATE_RELATIVE_NOT_PROFITABLE = "RELATIVE_EDGE_NOT_PROFITABLE"
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ class EvidenceReport:
     bets_without_placebo: int
     rank_correlation: float | None
     buckets: tuple[BucketStats, ...] = field(default_factory=tuple)
+    primary_signal_mean_net_usd: float | None = None
+    primary_placebo_mean_net_usd: float | None = None
 
 
 def _dedupe(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -153,6 +156,8 @@ def evaluate(rows: Sequence[Mapping[str, Any]]) -> EvidenceReport:
     dates = {r["expiration"] for r in primary}
     excess_vals = [r["signal_net"] - r["placebo_net"] for r in primary]
     excess_mean = float(np.mean(excess_vals)) if excess_vals else None
+    primary_signal_mean = float(np.mean([r["signal_net"] for r in primary])) if primary else None
+    primary_placebo_mean = float(np.mean([r["placebo_net"] for r in primary])) if primary else None
 
     def report(state: str, headline: str, ci=None) -> EvidenceReport:
         return EvidenceReport(
@@ -166,6 +171,8 @@ def evaluate(rows: Sequence[Mapping[str, Any]]) -> EvidenceReport:
             bets_without_placebo=without,
             rank_correlation=rank_corr,
             buckets=buckets,
+            primary_signal_mean_net_usd=primary_signal_mean,
+            primary_placebo_mean_net_usd=primary_placebo_mean,
         )
 
     if not bets:
@@ -180,6 +187,19 @@ def evaluate(rows: Sequence[Mapping[str, Any]]) -> EvidenceReport:
     if ci is None:
         return report(STATE_TOO_EARLY, "Too early to tell: not enough independent expiry dates.")
     if ci[0] > 0.0:
+        # The preregistered *relative* test may pass while every selected
+        # bet loses money. Distinguish ranking evidence from a profitable
+        # strategy; also require the matched placebo to lose in this sample.
+        if primary_signal_mean is None or primary_signal_mean <= 0 or (
+            primary_placebo_mean is None or primary_placebo_mean >= 0
+        ):
+            return report(
+                STATE_RELATIVE_NOT_PROFITABLE,
+                "The score beat random strikes on paper, but positive average net "
+                "profit AND a loss-making placebo have not both been shown. "
+                "This is not evidence of a profitable strategy.",
+                ci,
+            )
         return report(
             STATE_EVIDENCE,
             "Evidence of an edge on paper: 'worth a look' trades beat the random-strike placebo "
