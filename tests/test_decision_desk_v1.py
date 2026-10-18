@@ -63,6 +63,7 @@ def test_cash_settlement_is_hard_gate_even_if_other_inputs_pass():
     board = build_candidate_review_board(
         [_candidate(underlying="SPY", exercise_style="AMERICAN")], models=_models(True), hypotheses=_hypotheses(True),
         max_trade_risk_eur=25.0, stop_loss_fraction=0.5,
+        bankroll_eur=500.0,
         now=datetime(2026, 9, 5, 20, 0, 20, tzinfo=UTC),
     )
     assert board[0]["decision_desk_disposition"] == "NO TRADE"
@@ -77,7 +78,7 @@ def test_risk_plan_requires_explicit_configuration():
 
 
 def test_risk_plan_computes_monitoring_trigger_without_calling_it_guaranteed():
-    plan = build_risk_plan(_candidate(reserved_risk_eur_minor=2_000), max_trade_risk_eur=25.0, stop_loss_fraction=0.5)
+    plan = build_risk_plan(_candidate(reserved_risk_eur_minor=2_000), max_trade_risk_eur=25.0, stop_loss_fraction=0.5, bankroll_eur=500.0)
     assert plan.passes_risk_budget is True
     assert plan.reserved_risk_eur == 20.0
     assert plan.planned_loss_trigger_eur == 10.0
@@ -85,7 +86,7 @@ def test_risk_plan_computes_monitoring_trigger_without_calling_it_guaranteed():
 
 
 def test_risk_budget_blocks_candidate_above_explicit_limit():
-    plan = build_risk_plan(_candidate(reserved_risk_eur_minor=4_000), max_trade_risk_eur=25.0, stop_loss_fraction=0.5)
+    plan = build_risk_plan(_candidate(reserved_risk_eur_minor=4_000), max_trade_risk_eur=25.0, stop_loss_fraction=0.5, bankroll_eur=500.0)
     assert plan.passes_risk_budget is False
     assert plan.state == "BLOCKED_RISK_BUDGET_EXCEEDED"
 
@@ -94,6 +95,7 @@ def test_manual_review_cannot_be_reached_while_event_ev_and_exact_tte_are_missin
     board = build_candidate_review_board(
         [_candidate()], models=_models(True), hypotheses=_hypotheses(True),
         max_trade_risk_eur=25.0, stop_loss_fraction=0.5,
+        bankroll_eur=500.0,
         now=datetime(2026, 9, 5, 20, 0, 20, tzinfo=UTC),
     )
     assert board[0]["decision_desk_disposition"] == "CONTINUE SHADOW"
@@ -114,6 +116,7 @@ def test_v1_manual_review_disposition_is_unreachable_even_for_favorable_candidat
         hypotheses=_hypotheses(True),
         max_trade_risk_eur=25.0,
         stop_loss_fraction=0.5,
+        bankroll_eur=500.0,
         now=datetime(2026,9,5,20,0,20,tzinfo=UTC),
     )
     row = board[0]

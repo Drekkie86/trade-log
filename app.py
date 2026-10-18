@@ -880,17 +880,22 @@ elif page == "Decision Desk":
                 "Defined-risk maximum loss is primary; the loss threshold is only a monitoring trigger."
             )
             rc1, rc2, rc3 = st.columns(3)
-            max_trade_risk_eur = rc1.number_input(
-                "Maximum loss budget per trade (€)", min_value=0.0, max_value=500.0,
-                value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)), step=5.0,
-                key="decision_max_trade_risk_eur",
+            allocated_capital_eur = rc1.number_input(
+                "Capital allocated to Christiania (€)", min_value=0.0,
+                value=float(st.session_state.get("_chr_allocated_capital_eur", 0.0)),
+                step=50.0, key="decision_allocated_capital_eur",
             )
-            stop_loss_pct = rc2.number_input(
+            max_trade_risk_eur = rc2.number_input(
+                "Maximum loss budget per trade (€)", min_value=0.0,
+                value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)),
+                step=5.0, key="decision_max_trade_risk_eur",
+            )
+            stop_loss_pct = rc3.number_input(
                 "Planned loss threshold (% of reserved risk)", min_value=0.0, max_value=100.0,
                 value=float(st.session_state.get("_chr_stop_loss_pct", 0.0)), step=5.0,
                 key="decision_stop_loss_pct",
             )
-            rc3.metric("Active bankroll cap", "€500", "no compounding")
+            st.session_state["_chr_allocated_capital_eur"] = allocated_capital_eur
             st.session_state["_chr_max_trade_risk_eur"] = max_trade_risk_eur
             st.session_state["_chr_stop_loss_pct"] = stop_loss_pct
             st.caption("A stop threshold is a monitoring rule, not a guaranteed fill. Defined-risk maximum loss remains the primary protection.")
@@ -901,6 +906,7 @@ elif page == "Decision Desk":
             hypotheses=snapshot.get("hypotheses", []),
             max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
             stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
+            bankroll_eur=allocated_capital_eur if allocated_capital_eur > 0 else None,
         )
 
         no_trade_count = sum(1 for row in board if row.get("decision_desk_disposition") == "NO TRADE")
@@ -949,6 +955,7 @@ elif page == "Decision Desk":
             risk_plan = build_risk_plan(
                 full_selected, max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
                 stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
+                bankroll_eur=allocated_capital_eur if allocated_capital_eur > 0 else None,
             )
             governance = resolve_candidate_governance(full_selected, models=snapshot.get("models", []), hypotheses=snapshot.get("hypotheses", []))
             market_quality = assess_market_quality(full_selected)

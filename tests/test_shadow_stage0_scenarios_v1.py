@@ -16,16 +16,16 @@ class Stage0PresetTests(unittest.TestCase):
             with self.subTest(key=key):
                 s,p=hypothetical_scenario(key,decision_time=ANCHOR)
                 self.assertIn("SYNTHETIC",s.signal_version)
-                self.assertEqual(p.bankroll_eur,Decimal("500"))
+                self.assertIsNone(p.bankroll_eur)
                 self.assertFalse(p.verified_share_inventory)
                 self.assertTrue(all(leg.source_id=="SYNTHETIC_NOT_A_MARKET_RECORD" for leg in s.legs))
-                result=evaluate(s,p)
+                result=evaluate(s,replace(p,bankroll_eur=Decimal("2500")))
                 self.assertNotEqual(result.state,"FAILED_STRUCTURE")
                 self.assertNotEqual(result.state,"UNSCORABLE")
                 self.assertNotEqual(result.state,"TRADE_APPROVED")
     def test_assumed_vertical_is_only_indicative(self):
         s,p=hypothetical_scenario("S03",decision_time=ANCHOR)
-        r=evaluate(s,p)
+        r=evaluate(s,replace(p,bankroll_eur=Decimal("700")))
         self.assertEqual(r.state,"INDICATIVELY_AFFORDABLE_NOT_EXECUTABLE")
         self.assertEqual(r.gross_max_loss_usd,"300.00")
         self.assertEqual(r.conservative_capital_eur,"285.46")
@@ -38,7 +38,7 @@ class Stage0PresetTests(unittest.TestCase):
     def test_bad_manually_assumed_quote_blocks(self):
         s,p=hypothetical_scenario("S03",decision_time=ANCHOR)
         l=replace(s.legs[0],ask=Decimal("4"))
-        r=evaluate(replace(s,legs=(l,s.legs[1])),p)
+        r=evaluate(replace(s,legs=(l,s.legs[1])),replace(p,bankroll_eur=Decimal("1000")))
         self.assertEqual(r.state,"UNSCORABLE")
         self.assertIn("CROSSED_OR_INVALID_QUOTE",r.reasons)
 if __name__=="__main__":
