@@ -15,6 +15,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  quality-gate-linux-full:
+    name: Ubuntu / Python 3.13 full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache CI virtual environment
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: christiania-ci-venv-v2-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('requirements.txt', 'requirements-ci.txt') }}
+
+      - name: Ensure CI dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.venv-cache.outputs.cache-hit }}" != "true" ]]; then
+            python -m venv .venv
+            .venv/bin/python -m pip install --disable-pip-version-check --no-compile -r requirements-ci.txt
+          fi
+          test -x .venv/bin/python
+          .venv/bin/python -m pip check
+
+      - name: Run complete Linux test suite without exclusions
+        shell: bash
+        env:
+          PYTEST_ADDOPTS: "--durations=25 --durations-min=0.5"
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m pytest -q
+
   quality-gate-windows:
     name: Windows / Python 3.13
     runs-on: windows-latest
