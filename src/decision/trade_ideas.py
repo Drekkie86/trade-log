@@ -432,12 +432,19 @@ def profit_profile(
     lo = min(min(strikes), market.spot) * math.exp(-6.0 * sigma_t)
     hi = max(max(strikes), market.spot) * math.exp(6.0 * sigma_t)
     grid = np.exp(np.linspace(math.log(lo), math.log(hi), grid_points))
-    pay = np.array([payoff(float(s)) for s in grid])
+    # Price the *same* contractual legs at every grid point using NumPy.
+    # Avoid thousands of Python payoff calls and scalar scipy.stats.cdf calls
+    # on each uncached Trade Ideas render; do not change the entry basis,
+    # terminal payoff signs, fees, probability model or sampling grid.
+    pay = np.full(grid.shape, cash - fees_usd, dtype=float)
+    for leg in legs:
+        if _right_name(leg.right) == "CALL":
+            intrinsic = np.maximum(grid - leg.strike, 0.0)
+        else:
+            intrinsic = np.maximum(leg.strike - grid, 0.0)
+        pay += leg.sign * leg.quantity * leg.multiplier * intrinsic
 
-    def cdf(x: float) -> float:
-        return float(norm.cdf((math.log(x / market.spot) - drift) / sigma_t))
-
-    probs = np.array([cdf(float(s)) for s in grid])
+    probs = norm.cdf((np.log(grid / market.spot) - drift) / sigma_t)
     p = 0.0
     if pay[0] > 0.0:
         p += probs[0]
