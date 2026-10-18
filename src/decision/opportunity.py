@@ -48,7 +48,7 @@ from src.decision.trade_ideas import (
 from src.quant.greeks import analytic as analytic_greeks
 from src.quant.types import QuantInputError, VanillaOption
 
-SCORING_VERSION = "OPP_V1"
+SCORING_VERSION = "OPP_V2"
 
 # A priori design constants (never tuned on outcomes).
 Z_WORTH = 2.0  # edge at least two noise-sigmas above zero after costs
@@ -64,7 +64,7 @@ VERDICT_PLACEBO = "PLACEBO"
 VERDICT_RANK = {VERDICT_WORTH: 0, VERDICT_MARGINAL: 1, VERDICT_SKIP: 2}
 
 HEADLINES = {
-    "WORTH": "Estimated edge exceeds spread-derived noise after assumed costs; midpoint noise and real profitability are unverified.",
+    "WORTH": "Estimated edge exceeds spread-derived and historical quote-IV variation proxies after assumed costs; latent midpoint noise and real profitability remain unverified.",
     "MARGINAL": "Estimated edge exceeds modeled costs but remains near spread-derived uncertainty; not a verified opportunity.",
     "WITHIN_NOISE": "The price gap is within the noise of the quotes.",
     "COSTS_EAT_EDGE": "Costs eat the edge: the price gap is smaller than the cost of trading it.",
@@ -72,6 +72,8 @@ HEADLINES = {
     "QUOTES_INCONSISTENT": "The quotes do not match their own implied volatility; the gap is likely a data artefact.",
     "TOO_FEW_MODELS": "Fewer than two models could judge this trade.",
     "NO_INPUTS": "Not enough data to judge this trade.",
+    "UNVERIFIED_QUOTE_VARIATION": "A model price gap is present, but there is insufficient independent-in-time quote history to verify that it exceeds ordinary market-IV variation. Check live quotes before acting.",
+    "AMERICAN_PUT_IV_UNVERIFIED": "The put IV model has not been verified for American exercise; do not treat this score as an executable advantage.",
 }
 
 
@@ -135,8 +137,18 @@ def _skip(code: str, *, models_available: int = 0, features: Mapping[str, Any] |
     )
 
 
-def assess_idea(idea: TradeIdea) -> OpportunityAssessment:
-    """Pure assessment of one scored trade idea."""
+def assess_idea(
+    idea: TradeIdea,
+    *,
+    historical_iv_sigma_by_quote_id: Mapping[int, float] | None = None,
+    historical_iv_samples_by_quote_id: Mapping[int, int] | None = None,
+) -> OpportunityAssessment:
+    """Pure assessment; stronger verdicts require as-of prior-quote variation.
+
+    A spread-only model cannot measure latent midpoint errors. Repeated
+    historical quotes provide a conservative but imperfect IV variation proxy,
+    not independent-vendor evidence or a promise of profitable execution.
+    """
     market = idea.market
     legs = idea.legs
     target = idea.target_strike
@@ -175,7 +187,27 @@ def assess_idea(idea: TradeIdea) -> OpportunityAssessment:
     sig_lo = leg_iv_sigma(lower, market)
     sig_hi = leg_iv_sigma(upper, market)
     sigma_quote = math.sqrt(sig_t**2 + (w_lo * sig_lo) ** 2 + (w_hi * sig_hi) ** 2)
-    sigma_total = math.sqrt(sigma_quote**2 + sigma_model**2)
+    by_quote = historical_iv_sigma_by_quote_id or {}
+    by_samples = historical_iv_samples_by_quote_id or {}
+    calibrated = all(
+        l.option_quote_id in by_quote
+        and math.isfinite(float(by_quote[l.option_quote_id]))
+        and float(by_quote[l.option_quote_id]) >= 0
+        and int(by_samples.get(l.option_quote_id, 0)) >= 6
+        for l in (target_leg, lower, upper)
+    )
+    sigma_history = (
+        math.sqrt(
+            float(by_quote[target_leg.option_quote_id]) ** 2
+            + (w_lo * float(by_quote[lower.option_quote_id])) ** 2
+            + (w_hi * float(by_quote[upper.option_quote_id])) ** 2
+        )
+        if calibrated else None
+    )
+    sigma_total = math.sqrt(
+        sigma_quote**2 + sigma_model**2
+        + (sigma_history**2 if sigma_history is not None else 0.0)
+    )
 
     combined = judge_model(
         "OPP_COMBINED", legs, market, {target: fair}, max_loss_usd=float(idea.max_loss_usd)
@@ -197,7 +229,26 @@ def assess_idea(idea: TradeIdea) -> OpportunityAssessment:
         "sigma_wing_hi_vol_pts": sig_hi * 100.0,
         "fees_usd": structure_fees_usd(legs),
         "direction": idea.anomaly_direction,
-        "quote_uncertainty_basis": "BID_ASK_WIDTH_UNIFORM_ONLY",
+        "spread_only_sigma_vol_pts": sigma_quote * 100 if math.isfinite(sigma_quote) else None,
+        "quote_uncertainty_basis": (
+            "BID_ASK_WIDTH_AND_PRIOR_IV_VARIATION_PROXY"
+            if calibrated else "BID_ASK_WIDTH_UNIFORM_ONLY"
+        ),
+        "historical_iv_variation_calibrated": calibrated,
+        "historical_iv_variation_sigma_vol_pts": (
+            sigma_history * 100 if sigma_history is not None else None
+        ),
+        "historical_iv_sigma_by_quote_id": (
+            {str(l.option_quote_id): float(by_quote[l.option_quote_id])
+             for l in (target_leg, lower, upper)}
+            if calibrated else {}
+        ),
+        "historical_iv_variation_samples_by_quote_id": (
+            {str(l.option_quote_id): int(by_samples[l.option_quote_id])
+             for l in (target_leg, lower, upper)}
+            if calibrated else {}
+        ),
+        "independent_vendor_confirmation": False,
         "latent_midpoint_noise_measured": False,
         "model_fit_independence_assumed": False,
         "prospective_profitability_proven": False,
@@ -206,7 +257,10 @@ def assess_idea(idea: TradeIdea) -> OpportunityAssessment:
         fair_iv=fair,
         market_iv=float(target_leg.market_iv),
         residual_vol_pts=resid * 100.0,
-        sigma_quote_vol_pts=sigma_quote * 100.0 if math.isfinite(sigma_quote) else None,
+        sigma_quote_vol_pts=(
+            math.sqrt(sigma_quote ** 2 + (sigma_history or 0.0) ** 2) * 100.0
+            if math.isfinite(sigma_quote) else None
+        ),
         sigma_model_vol_pts=sigma_model * 100.0,
         models_available=len(available),
         models_favouring=sum(1 for j in available if j.favours),
@@ -241,12 +295,31 @@ def assess_idea(idea: TradeIdea) -> OpportunityAssessment:
         return build(VERDICT_SKIP, "WITHIN_NOISE")
     if score < Z_WORTH:
         return build(VERDICT_MARGINAL, "MARGINAL")
+    if not calibrated:
+        return build(VERDICT_MARGINAL, "UNVERIFIED_QUOTE_VARIATION")
+    if str(idea.right).upper().startswith("P"):
+        return build(VERDICT_MARGINAL, "AMERICAN_PUT_IV_UNVERIFIED")
     return build(VERDICT_WORTH, "WORTH")
 
 
-def rank_by_opportunity(ideas: Sequence[TradeIdea]) -> list[tuple[TradeIdea, OpportunityAssessment]]:
-    """Worth a look first, then by score; skipped ideas last."""
-    pairs = [(idea, assess_idea(idea)) for idea in ideas]
+def rank_by_opportunity(
+    ideas: Sequence[TradeIdea],
+    *,
+    prior_noise_by_proposal: Mapping[int, tuple[Mapping[int, float], Mapping[int, int]]] | None = None,
+) -> list[tuple[TradeIdea, OpportunityAssessment]]:
+    """One consistent as-of persisted score on UI and in research cycle."""
+    calibrated = prior_noise_by_proposal or {}
+    pairs = []
+    for idea in ideas:
+        iv_sigmas, samples = calibrated.get(idea.proposal_id, ({}, {}))
+        pairs.append((
+            idea,
+            assess_idea(
+                idea,
+                historical_iv_sigma_by_quote_id=iv_sigmas,
+                historical_iv_samples_by_quote_id=samples,
+            ),
+        ))
 
     def key(pair):
         idea, a = pair

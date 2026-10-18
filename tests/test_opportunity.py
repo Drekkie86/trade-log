@@ -109,7 +109,17 @@ def test_costs_are_charged_in_full(db_path):
 
 def test_verdict_thresholds_are_applied_in_order(db_path, monkeypatch):
     idea = _idea(db_path)
-    a = assess_idea(idea)
+    sigma = {leg.option_quote_id: 0.0001 for leg in idea.legs}
+    samples = {leg.option_quote_id: 8 for leg in idea.legs}
+
+    def calibrated():
+        return assess_idea(
+            idea,
+            historical_iv_sigma_by_quote_id=sigma,
+            historical_iv_samples_by_quote_id=samples,
+        )
+
+    a = calibrated()
     for z_worth, z_marg, expected in (
         (a.score - 0.5, a.score - 1.0, opp.VERDICT_WORTH),
         (a.score + 0.5, a.score - 0.5, opp.VERDICT_MARGINAL),
@@ -117,7 +127,7 @@ def test_verdict_thresholds_are_applied_in_order(db_path, monkeypatch):
     ):
         monkeypatch.setattr(opp, "Z_WORTH", z_worth)
         monkeypatch.setattr(opp, "Z_MARGINAL", z_marg)
-        assert assess_idea(idea).verdict == expected
+        assert calibrated().verdict == expected
 
 
 def test_too_few_models_is_skip_not_zero(db_path):
