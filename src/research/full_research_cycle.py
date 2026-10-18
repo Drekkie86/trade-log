@@ -140,39 +140,53 @@ def run_full_research_cycle(
                 db_path=db_path,
             )
 
+    run_id = int(research_cycle.research.run_id)
+
+    # Assess using the new cycle's frozen entry quotes, independently of
+    # historical expiry bookkeeping. An expiry recorder failure must never
+    # prevent a prospective opportunity assessment from being recorded.
+    try:
+        assessed = assess_new_proposals(research_run_id=run_id, db_path=db_path)
+        LOG.info(
+            "Opportunity assessment run=%d eligible=%d assessed=%d "
+            "placebos=%d without_placebo=%d errors=%d",
+            run_id, len(proposed_ids), assessed.assessed, assessed.placebos,
+            assessed.without_placebo, assessed.errors,
+        )
+        if assessed.errors:
+            LOG.error(
+                "Opportunity assessment run=%d had %d proposal errors; "
+                "see per-proposal exceptions",
+                run_id, assessed.errors,
+            )
+    except Exception:
+        LOG.exception("Opportunity assessment failed for run=%d", run_id)
+
     # The daemon collects shadow marks only after this function returns.
     # Advance expiry first so already-expired candidates stop generating dead
     # quote marks. Closing never implies scoring; the lifecycle runtime keeps
     # the validated-package-outcome evidence firewall intact.
     advance_shadow_lifecycle(
-        research_run_id=int(
-            research_cycle.research.run_id
-        ),
+        research_run_id=run_id,
         db_path=db_path,
     )
 
-    # Record the deterministic expiry-intrinsic outcome for every admitted
-    # candidate whose expiration session has passed. This is the measurable
-    # answer to "did the suggested structure make money"; it does not touch
-    # the VALIDATED_PACKAGE_OUTCOME scoring contract.
+    # Record deterministic expiry-intrinsic outcomes separately from both
+    # opportunity assessments and VALIDATED_PACKAGE_OUTCOME evidence.
     record_shadow_expiry_outcomes(
-        research_run_id=int(
-            research_cycle.research.run_id
-        ),
+        research_run_id=run_id,
         db_path=db_path,
     )
 
-    # Opportunity evidence (assess + matched placebo, then resolve expired ones).
-    # Pure research bookkeeping: it must never break or delay the cycle.
     try:
-        assess_new_proposals(
-            research_run_id=int(research_cycle.research.run_id), db_path=db_path
-        )
-        resolve_opportunity_outcomes(
-            research_run_id=int(research_cycle.research.run_id), db_path=db_path
+        resolved = resolve_opportunity_outcomes(research_run_id=run_id, db_path=db_path)
+        LOG.info(
+            "Opportunity resolution run=%d due=%d resolved=%d awaiting_price=%d",
+            run_id, resolved.due, resolved.resolved,
+            resolved.awaiting_terminal_price,
         )
     except Exception:
-        LOG.exception("Opportunity evidence step failed; research cycle continues")
+        LOG.exception("Opportunity resolution failed for run=%d", run_id)
 
     return FullResearchCycleResult(
         research_cycle=research_cycle,

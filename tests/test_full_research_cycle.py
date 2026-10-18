@@ -331,3 +331,86 @@ def test_ecb_failure_defers_admission_but_keeps_lifecycle_and_expiry(monkeypatch
     assert result.fx_observation is None
     assert "transient ECB outage" in result.admission_error
     assert calls == [("lifecycle", 17), ("expiry", 17)]
+
+
+def test_opportunity_assessment_runs_before_historical_expiry_work(monkeypatch, caplog):
+    """New prospective evidence must not depend on resolving old outcomes."""
+    from src.research import full_research_cycle as flow
+    from src.research.opportunity_pipeline import AssessResult, ResolveResult
+
+    calls = []
+    monkeypatch.setattr(flow, "run_research_cycle", lambda **kw: FakeResearchCycle())
+    monkeypatch.setattr(
+        flow, "build_shadow_structure_proposals",
+        lambda **kw: FakeBridge(1, 1, 0, (FakeProposal("PROPOSED", 101),)),
+    )
+    monkeypatch.setattr(flow, "admit_shadow_proposals", lambda **kw: FakeAdmission())
+    monkeypatch.setattr(
+        flow, "assess_new_proposals",
+        lambda **kw: (
+            calls.append(("assess", kw["research_run_id"]))
+            or AssessResult(1, 1, 0, 0)
+        ),
+    )
+    monkeypatch.setattr(
+        flow, "advance_shadow_lifecycle",
+        lambda **kw: calls.append(("lifecycle", kw["research_run_id"])),
+    )
+    monkeypatch.setattr(
+        flow, "record_shadow_expiry_outcomes",
+        lambda **kw: calls.append(("expiry", kw["research_run_id"])),
+    )
+    monkeypatch.setattr(
+        flow, "resolve_opportunity_outcomes",
+        lambda **kw: (
+            calls.append(("resolve", kw["research_run_id"]))
+            or ResolveResult(1, 0, 1)
+        ),
+    )
+    with caplog.at_level("INFO", logger=flow.__name__):
+        flow.run_full_research_cycle(
+            symbols=["AAPL"], massive_client=object(),
+            theta_client=object(), fx_fetcher=object,
+        )
+    assert calls == [
+        ("assess", 17), ("lifecycle", 17), ("expiry", 17),
+        ("resolve", 17),
+    ]
+    assert "eligible=1 assessed=1 placebos=1" in caplog.text
+    assert "due=1 resolved=0 awaiting_price=1" in caplog.text
+
+
+def test_failed_opportunity_assessment_does_not_block_expiry_or_resolution(
+    monkeypatch, caplog
+):
+    from src.research import full_research_cycle as flow
+    from src.research.opportunity_pipeline import ResolveResult
+
+    calls = []
+    monkeypatch.setattr(flow, "run_research_cycle", lambda **kw: FakeResearchCycle())
+    monkeypatch.setattr(
+        flow, "build_shadow_structure_proposals",
+        lambda **kw: FakeBridge(0, 0, 0, ()),
+    )
+
+    def broken_assessment(**kw):
+        calls.append("assess")
+        raise RuntimeError("test-only scorer failure")
+
+    monkeypatch.setattr(flow, "assess_new_proposals", broken_assessment)
+    monkeypatch.setattr(flow, "advance_shadow_lifecycle", lambda **kw: calls.append("lifecycle"))
+    monkeypatch.setattr(flow, "record_shadow_expiry_outcomes", lambda **kw: calls.append("expiry"))
+    monkeypatch.setattr(
+        flow, "resolve_opportunity_outcomes",
+        lambda **kw: calls.append("resolve") or ResolveResult(0, 0, 0),
+    )
+    with caplog.at_level("ERROR", logger=flow.__name__):
+        flow.run_full_research_cycle(
+            symbols=["AAPL"], massive_client=object(),
+            theta_client=object(),
+            fx_fetcher=lambda: (_ for _ in ()).throw(
+                AssertionError("No proposals, no FX")
+            ),
+        )
+    assert calls == ["assess", "lifecycle", "expiry", "resolve"]
+    assert "Opportunity assessment failed for run=17" in caplog.text
