@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
+import math
 from statistics import median
 from typing import Any
 
@@ -13,7 +14,6 @@ from src.quant.bench import run_vanilla_bench
 from src.quant.types import QuantInputError, VanillaOption
 from src.research.settlement_policy import classify_settlement
 
-BANKROLL_CAP_EUR = 500.0
 BENCHMARK_MODELS = (
     "BLACK_SCHOLES_MERTON",
     "CRR_BINOMIAL",
@@ -58,13 +58,25 @@ def build_risk_plan(
     *,
     max_trade_risk_eur: float | None,
     stop_loss_fraction: float | None,
+    bankroll_eur: float | None = None,
 ) -> RiskPlan:
     reserved = _minor_to_major(candidate.get("reserved_risk_eur_minor"))
+    # The trader declares capital; never silently inject an assumed €500 wallet.
+    funded = (
+        bankroll_eur is not None
+        and math.isfinite(bankroll_eur)
+        and bankroll_eur > 0
+    )
+    exposure_fraction = (
+        reserved / bankroll_eur if funded and reserved is not None else None
+    )
     configured = bool(
-        max_trade_risk_eur is not None
-        and max_trade_risk_eur > 0
-        and max_trade_risk_eur <= BANKROLL_CAP_EUR
+        funded
+        and max_trade_risk_eur is not None
+        and math.isfinite(max_trade_risk_eur)
+        and 0 < max_trade_risk_eur <= bankroll_eur
         and stop_loss_fraction is not None
+        and math.isfinite(stop_loss_fraction)
         and 0 < stop_loss_fraction <= 1
     )
     if not configured:
@@ -74,10 +86,10 @@ def build_risk_plan(
             stop_loss_fraction=stop_loss_fraction,
             reserved_risk_eur=reserved,
             planned_loss_trigger_eur=None,
-            bankroll_fraction=None if reserved is None else reserved / BANKROLL_CAP_EUR,
+            bankroll_fraction=exposure_fraction,
             passes_risk_budget=False,
             state="BLOCKED_RISK_POLICY_NOT_CONFIGURED",
-            note="Set an explicit per-trade loss budget (no more than the €500 active bankroll) and a monitoring loss fraction. A threshold is not a guaranteed fill.",
+            note="Set your allocated Christiania capital, a per-trade loss budget within that allocation and a monitoring loss fraction. A threshold is not a guaranteed fill.",
         )
     passes = reserved is not None and reserved <= float(max_trade_risk_eur)
     base = None if reserved is None else min(reserved, float(max_trade_risk_eur))
@@ -88,7 +100,7 @@ def build_risk_plan(
         stop_loss_fraction=float(stop_loss_fraction),
         reserved_risk_eur=reserved,
         planned_loss_trigger_eur=trigger,
-        bankroll_fraction=None if reserved is None else reserved / BANKROLL_CAP_EUR,
+        bankroll_fraction=exposure_fraction,
         passes_risk_budget=passes,
         state="RISK_POLICY_PASS" if passes else "BLOCKED_RISK_BUDGET_EXCEEDED",
         note="Defined-risk maximum loss remains the primary protection. The planned loss threshold is a manual monitoring threshold, not a guaranteed execution price; option prices can gap through it.",
@@ -256,6 +268,7 @@ def build_candidate_review_board(
     scientific_decision_enabled: bool | None = None,
     max_trade_risk_eur: float | None = None,
     stop_loss_fraction: float | None = None,
+    bankroll_eur: float | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     # scientific_decision_enabled remains accepted for backwards compatibility.
@@ -270,7 +283,7 @@ def build_candidate_review_board(
             candidate.get("underlying"), observed_exercise_style=candidate.get("exercise_style"),
             reference_contract_id=candidate.get("reference_contract_id"), shares_per_contract=candidate.get("target_shares_per_contract"),
         )
-        risk = build_risk_plan(candidate, max_trade_risk_eur=max_trade_risk_eur, stop_loss_fraction=stop_loss_fraction)
+        risk = build_risk_plan(candidate, max_trade_risk_eur=max_trade_risk_eur, stop_loss_fraction=stop_loss_fraction, bankroll_eur=bankroll_eur)
         governance = resolve_candidate_governance(candidate, models=models, hypotheses=hypotheses)
         market = assess_market_quality(candidate, now=now)
         evidence = assess_prospective_evidence(candidate)

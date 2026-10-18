@@ -14,7 +14,6 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from typing import Any, Mapping
 
 VERSION = "STRATEGY_FALSIFICATION_STAGE0_V1"
-BANKROLL_EUR = Decimal("500")
 CENTS = Decimal("0.01")
 
 # A research family is not a predictive trading signal. Reference hedges are
@@ -96,7 +95,7 @@ class QuoteCostPolicy:
     fx_provenance: str | None
     max_quote_age_seconds: int | None
     verified_share_inventory: bool = False
-    bankroll_eur: Decimal = BANKROLL_EUR
+    bankroll_eur: Decimal | None = None  # Explicit trader allocation; never a fixed €500
     max_leg_quote_skew_seconds: int | None = None
     additional_round_trip_cost_usd: Decimal | None = None  # slippage, fees and FX cost budget
     tax_cost_usd: Decimal | None = None
@@ -304,6 +303,12 @@ def evaluate(s: Structure, policy: QuoteCostPolicy) -> Feasibility:
             return _bad("UNSCORABLE", s, "DECISION_TIMESTAMP_TZ_MISSING_OR_INVALID")
         if not s.signal_version:
             return _bad("FAILED_STRUCTURE", s, "MISSING_SIGNAL_VERSION")
+        try:
+            allocated_capital_eur = dec(policy.bankroll_eur)
+        except ValueError:
+            return _bad("UNSCORABLE", s, "CAPITAL_ALLOCATION_NOT_CONFIGURED")
+        if allocated_capital_eur <= 0:
+            return _bad("UNSCORABLE", s, "CAPITAL_ALLOCATION_NOT_CONFIGURED")
         reasons: list[str] = []
         quote_times: list[datetime] = []
         cashflow = Decimal(0)
@@ -386,8 +391,8 @@ def evaluate(s: Structure, policy: QuoteCostPolicy) -> Feasibility:
             capital_usd = max(gross_loss, max(-cashflow, Decimal(0))) + fees
             capital_eur = (capital_usd / policy.eur_to_usd).quantize(
                 CENTS, rounding=ROUND_CEILING)
-            if capital_eur > policy.bankroll_eur:
-                reasons.append("EXCEEDS_EUR_500_BANKROLL")
+            if capital_eur > allocated_capital_eur:
+                reasons.append("EXCEEDS_ALLOCATED_CAPITAL")
         if any(x is not None and x < 0 for x in (
                 policy.option_cost_per_contract_side_usd,
                 policy.stock_round_trip_cost_usd,
@@ -396,8 +401,6 @@ def evaluate(s: Structure, policy: QuoteCostPolicy) -> Feasibility:
             return _bad("UNSCORABLE", s, "NEGATIVE_TRANSACTION_COST")
         if policy.max_quote_age_seconds is not None and policy.max_quote_age_seconds < 0:
             return _bad("UNSCORABLE", s, "INVALID_FRESHNESS_RULE")
-        if policy.bankroll_eur != BANKROLL_EUR:
-            return _bad("FAILED_STRUCTURE", s, "BANKROLL_LIMIT_MUST_EQUAL_EUR_500")
         if fees is not None and max_profit is not None and max_profit - fees <= 0:
             reasons.append("NON_POSITIVE_BEST_CASE_NET_EXPIRY_PAYOFF")
         if s.strategy_id == LEGACY_REVERSE_ID:
@@ -406,7 +409,7 @@ def evaluate(s: Structure, policy: QuoteCostPolicy) -> Feasibility:
             state = "REFERENCE_HEDGE_ONLY"
         elif "NON_POSITIVE_BEST_CASE_NET_EXPIRY_PAYOFF" in reasons:
             state = "ECONOMICALLY_DOMINATED_AFTER_ASSUMED_COSTS"
-        elif "EXCEEDS_EUR_500_BANKROLL" in reasons:
+        elif "EXCEEDS_ALLOCATED_CAPITAL" in reasons:
             state = "OVER_CAP"
         elif reasons:
             state = "INSUFFICIENT_EVIDENCE"

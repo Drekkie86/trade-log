@@ -8,7 +8,7 @@ import unittest
 from decimal import Decimal as D
 
 from src.research.strategy_falsification_v1 import (
-    BANKROLL_EUR, CATALOGUE, LEGACY_REVERSE_ID, Leg, Structure,
+    CATALOGUE, LEGACY_REVERSE_ID, Leg, Structure,
     QuoteCostPolicy, catalogue_without_quotes, evaluate, from_shadow_proposal,
 )
 
@@ -40,6 +40,7 @@ POLICY = QuoteCostPolicy(
     fx_provenance="SYNTHETIC_FX_TEST_ONLY",
     max_quote_age_seconds=60,
     verified_share_inventory=False,
+    bankroll_eur=D("500"),  # fixture allocation; not a system ceiling
     max_leg_quote_skew_seconds=60,  # fixture-only, not a production threshold
     additional_round_trip_cost_usd=D("0"), # fixture-only, NOT proof of free slippage
     tax_cost_usd=D("0"), # fixture-only, not a tax determination
@@ -149,8 +150,8 @@ class StrategyStage0Tests(unittest.TestCase):
                 r = evaluate(x[key], POLICY)
                 self.assertEqual(r.state, "REFERENCE_HEDGE_ONLY")
                 self.assertIn("OWNED_SHARE_INVENTORY_UNVERIFIED", r.reasons)
-                self.assertIn("EXCEEDS_EUR_500_BANKROLL", r.reasons)
-                self.assertTrue(D(r.conservative_capital_eur) > BANKROLL_EUR)
+                self.assertIn("EXCEEDS_ALLOCATED_CAPITAL", r.reasons)
+                self.assertTrue(D(r.conservative_capital_eur) > POLICY.bankroll_eur)
         self.assertEqual(evaluate(x["S01"], POLICY).gross_max_loss_usd, "9700.00")
         self.assertEqual(evaluate(x["S02"], POLICY).gross_max_loss_usd, "700.00")
         self.assertEqual(evaluate(x["S05"], POLICY).gross_max_loss_usd, "400.00")
