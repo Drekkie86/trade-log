@@ -17,6 +17,13 @@ from typing import Iterator
 from src.config import load_runtime_env_file
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
+from src.operations.large_release_guard import (
+    LARGE_DB_THRESHOLD_BYTES, verify_sqlite_backup_bounded,
+    require_recent_independent_restored_archive,
+)
+from src.operations.migration_delta_checks import (
+    capture_migration_schema, verify_additive_schema_migration,
+)
 from src.operations.sqlite_runtime import (
     assert_backup_capacity,
     backup_logical_source_bytes,
@@ -88,8 +95,12 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _verify_database(path: Path, *, expected_version: int) -> None:
-    health = inspect_database(path)
+def _verify_database(
+    path: Path, *, expected_version: int, bounded_additive: bool = False
+) -> None:
+    # Large additive releases validate *changed* schema objects separately.
+    # Do not turn every deployment into a 90-minute historical FK scan.
+    health = inspect_database(path, deep_integrity=not bounded_additive)
     if not health.exists:
         raise RuntimeError(f"Christiania database is missing: {path}")
     if health.schema_version != expected_version:
@@ -99,13 +110,14 @@ def _verify_database(path: Path, *, expected_version: int) -> None:
         )
     if health.journal_mode != "wal":
         raise RuntimeError(f"Database is not in WAL mode: {health.journal_mode}")
-    if health.quick_check != "ok":
-        raise RuntimeError(f"Database quick_check failed: {health.quick_check}")
-    if health.foreign_key_violation_count != 0:
-        raise RuntimeError(
-            "Database foreign_key_check returned "
-            f"{health.foreign_key_violation_count} violation(s)."
-        )
+    if not bounded_additive:
+        if health.quick_check != "ok":
+            raise RuntimeError(f"Database quick_check failed: {health.quick_check}")
+        if health.foreign_key_violation_count != 0:
+            raise RuntimeError(
+                "Database foreign_key_check returned "
+                f"{health.foreign_key_violation_count} violation(s)."
+            )
 
 
 def _verify_sqlite_copy(path: Path, *, expected_version: int) -> None:
@@ -248,7 +260,18 @@ def _create_rollback_backup(database: Path, backup_dir: Path, *, schema_version:
         source.close()
 
     try:
-        _verify_sqlite_copy(temp_path, expected_version=schema_version)
+        if database.stat().st_size >= LARGE_DB_THRESHOLD_BYTES:
+            proof = verify_sqlite_backup_bounded(
+                source=database, copy=temp_path,
+                expected_version=schema_version, recovery_dir=backup_dir,
+            )
+            _progress(
+                "Database preparation: bounded SQLite copy identity verified "
+                f"with prior full restore audit; pages={proof['page_count']}. "
+                "This is NOT an additional full integrity scan."
+            )
+        else:
+            _verify_sqlite_copy(temp_path, expected_version=schema_version)
         # Windows' os.fsync/_commit rejects a read-only descriptor; open the
         # already-written backup read/write so the durability barrier works on
         # both CI Windows and the production POSIX host.
@@ -393,8 +416,27 @@ def prepare_release_database(
             migrated=False,
         )
 
+    large_additive_mode = database.stat().st_size >= LARGE_DB_THRESHOLD_BYTES
+    schema_before_snapshot = None
+    if large_additive_mode:
+        require_recent_independent_restored_archive(
+            source=database, backup_dir=backup_dir,
+            expected_schema_version=schema_before,
+        )
+        read_only = sqlite3.connect(
+            database.resolve().as_uri() + "?mode=ro", uri=True, timeout=15.0
+        )
+        try:
+            schema_before_snapshot = capture_migration_schema(read_only)
+        finally:
+            read_only.close()
+        _progress(
+            "Database preparation: recent independent full restored backup PASS; "
+            "large additive release uses bounded copy identity and delta checks."
+        )
+
     with _heartbeat(
-        "Database preparation: creating and fully verifying rollback backup"
+        "Database preparation: creating rollback backup and verifying its identity"
     ):
         backup = _create_rollback_backup(
             database,
@@ -428,9 +470,27 @@ def prepare_release_database(
             )
 
         with _heartbeat(
-            "Database preparation: verifying migrated database integrity"
+            "Database preparation: validating changed structures and target schema"
         ):
-            _verify_database(database, expected_version=EXPECTED_SCHEMA_VERSION)
+            if large_additive_mode:
+                if schema_before_snapshot is None:
+                    raise RuntimeError("MISSING_PRE_MIGRATION_SCHEMA_PROOF")
+                checker = sqlite3.connect(database, timeout=15.0)
+                try:
+                    delta = verify_additive_schema_migration(
+                        checker, schema_before_snapshot
+                    )
+                finally:
+                    checker.close()
+                _progress(
+                    "Database preparation: verified additive migration delta; "
+                    f"new_tables={delta.new_tables}, "
+                    f"affected_existing_tables={delta.affected_existing_tables}."
+                )
+            _verify_database(
+                database, expected_version=EXPECTED_SCHEMA_VERSION,
+                bounded_additive=large_additive_mode,
+            )
     except BaseException:
         _progress("Database preparation failed or was interrupted; restoring rollback backup.")
         restore_backup(

@@ -32,7 +32,11 @@ def test_release_path_keeps_authoritative_deep_database_checks():
     assert receiver.count("--metadata-db-check") == 2
     assert "PRAGMA integrity_check;" in release_db
     assert "PRAGMA foreign_key_check;" in release_db
-    assert "_verify_database(database, expected_version=EXPECTED_SCHEMA_VERSION)" in release_db
+    assert "_verify_database(" in release_db
+    assert "bounded_additive=large_additive_mode" in release_db
+    assert "verify_additive_schema_migration(" in release_db
+    assert "verify_sqlite_backup_bounded(" in release_db
+    assert "require_recent_independent_restored_archive(" in release_db
     assert "deep_database: bool = True" in preflight
 
 
