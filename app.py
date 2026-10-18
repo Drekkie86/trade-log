@@ -34,6 +34,7 @@ from src.operations.release_manifest import build_release_manifest, read_deploye
 from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
 from src.research.cash_settled_universe import cash_settled_research_universe
+from src.research.shadow_expiry_model_spot_proxy_v1 import load_expiry_model_proxy_report
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
 from src.ui.home_pages import render_results_page, render_system_page
 from src.ui.trade_ideas_page import render_trade_ideas_page
@@ -437,6 +438,11 @@ def _show_selectable_table(
     if index < 0 or index >= len(source):
         return None
     return source.iloc[index].to_dict()
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_shadow_expiry_model_proxy() -> dict:
+    return load_expiry_model_proxy_report()
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -880,17 +886,22 @@ elif page == "Decision Desk":
                 "Defined-risk maximum loss is primary; the loss threshold is only a monitoring trigger."
             )
             rc1, rc2, rc3 = st.columns(3)
-            max_trade_risk_eur = rc1.number_input(
-                "Maximum loss budget per trade (€)", min_value=0.0, max_value=500.0,
-                value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)), step=5.0,
-                key="decision_max_trade_risk_eur",
+            allocated_capital_eur = rc1.number_input(
+                "Capital allocated to Christiania (€)", min_value=0.0,
+                value=float(st.session_state.get("_chr_allocated_capital_eur", 0.0)),
+                step=50.0, key="decision_allocated_capital_eur",
             )
-            stop_loss_pct = rc2.number_input(
+            max_trade_risk_eur = rc2.number_input(
+                "Maximum loss budget per trade (€)", min_value=0.0,
+                value=float(st.session_state.get("_chr_max_trade_risk_eur", 0.0)),
+                step=5.0, key="decision_max_trade_risk_eur",
+            )
+            stop_loss_pct = rc3.number_input(
                 "Planned loss threshold (% of reserved risk)", min_value=0.0, max_value=100.0,
                 value=float(st.session_state.get("_chr_stop_loss_pct", 0.0)), step=5.0,
                 key="decision_stop_loss_pct",
             )
-            rc3.metric("Active bankroll cap", "€500", "no compounding")
+            st.session_state["_chr_allocated_capital_eur"] = allocated_capital_eur
             st.session_state["_chr_max_trade_risk_eur"] = max_trade_risk_eur
             st.session_state["_chr_stop_loss_pct"] = stop_loss_pct
             st.caption("A stop threshold is a monitoring rule, not a guaranteed fill. Defined-risk maximum loss remains the primary protection.")
@@ -901,6 +912,7 @@ elif page == "Decision Desk":
             hypotheses=snapshot.get("hypotheses", []),
             max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
             stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
+            bankroll_eur=allocated_capital_eur if allocated_capital_eur > 0 else None,
         )
 
         no_trade_count = sum(1 for row in board if row.get("decision_desk_disposition") == "NO TRADE")
@@ -949,6 +961,7 @@ elif page == "Decision Desk":
             risk_plan = build_risk_plan(
                 full_selected, max_trade_risk_eur=max_trade_risk_eur if max_trade_risk_eur > 0 else None,
                 stop_loss_fraction=(stop_loss_pct / 100.0) if stop_loss_pct > 0 else None,
+                bankroll_eur=allocated_capital_eur if allocated_capital_eur > 0 else None,
             )
             governance = resolve_candidate_governance(full_selected, models=snapshot.get("models", []), hypotheses=snapshot.get("hypotheses", []))
             market_quality = assess_market_quality(full_selected)
@@ -1426,6 +1439,60 @@ elif page == "Shadow Lab":
                 f"With {_fmt_count(expiry.get('resolved_expiration_dates', 0))} independent expiry date(s) this is a "
                 "descriptive tally, not a statistical claim about edge."
             )
+
+        with st.expander("Retrospective provider-model expiry estimates (not validated trades)", expanded=True):
+            st.caption(
+                "Underlying market-snapshot prices are missing. These strictly separate "
+                "estimates use recorded, internally consistent ThetaData Greek-model "
+                "underlying inputs from the original expiry session. They are NOT "
+                "direct underlying quotes, official settlement prices, broker fills, "
+                "actual profits, or validated package outcomes."
+            )
+            try:
+                modeled_proxy = _cached_shadow_expiry_model_proxy()
+            except Exception as exc:
+                st.error(
+                    "Could not verify retrospective proxy evidence: "
+                    f"{type(exc).__name__}. The validated-outcome count remains unchanged."
+                )
+            else:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Expired admitted candidates", _fmt_count(modeled_proxy["total_expired_admitted"]))
+                m2.metric("Modeled proxy payoffs", _fmt_count(modeled_proxy["modeled_proxy_count"]))
+                m3.metric("Unresolved / no qualifying evidence", _fmt_count(modeled_proxy["unresolved_count"]))
+                m4.metric("Distinct priced expiry dates", _fmt_count(modeled_proxy["independent_expiry_dates"]))
+                if modeled_proxy["modeled_proxy_count"]:
+                    st.caption(
+                        f"Across those modeled proxies: {modeled_proxy['wins']} positive, "
+                        f"{modeled_proxy['losses']} negative. "
+                        "Cost and exercise assumptions remain unverified."
+                    )
+                st.dataframe(
+                    [
+                        {
+                            "Candidate": r["candidate_id"],
+                            "Underlying": r["underlying"],
+                            "Expiry": r["expiration"],
+                            "Evidence state": r["outcome_state"],
+                            "Source snapshot": r.get("snapshot_id"),
+                            "Theta model spot proxy ($)": r.get("proxy_price"),
+                            "Option contracts agreeing": r.get("distinct_model_option_contracts"),
+                            "Indicative net to expiry (€)": (
+                                round(r["modeled_net_pnl_eur_minor"] / 100, 2)
+                                if r.get("modeled_net_pnl_eur_minor") is not None else None
+                            ),
+                            "Reason": r["reason_code"],
+                        }
+                        for r in modeled_proxy["rows"]
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
+                st.caption(
+                    "Every proxy remains excluded from the validated-package-outcome "
+                    "population. An expiry-day model spot is not a fill or an "
+                    "independently verified settlement."
+                )
 
         section_heading("Tracking funnel")
         c1, c2, c3, c4, c5 = st.columns(5)

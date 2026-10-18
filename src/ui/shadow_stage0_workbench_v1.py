@@ -44,7 +44,7 @@ def render_shadow_stage0_workbench() -> None:
         scenario, default_policy = _stage_scenario(selected)
         st.caption(
             "Illustrative premiums and quote timestamps are generated for this simulation. "
-            "They are not fetched from ThetaData or Saxo. The €500 ceiling is fixed; "
+            "They are not fetched from ThetaData or Saxo. You choose the capital allocation; "
             "fees, slippage, tax and FX below are user assumptions, not verified brokerage costs."
         )
         with st.form("shadow_stage0_illustrative_form"):
@@ -67,6 +67,10 @@ def render_shadow_stage0_workbench() -> None:
                     ask=corrected if leg.side == "BUY" else leg.ask,
                     bid=corrected if leg.side == "SELL" else leg.bid,
                 ))
+            bankroll_allocated_eur = st.number_input(
+                "Capital allocated to Christiania (€)", min_value=0.0,
+                value=0.0, step=50.0, key="stage0_allocated_capital_eur",
+            )
             a, b, c, d = st.columns(4)
             assumed_fee = a.number_input("Option fee, USD/contract/side", 0.0, 1000.0, 3.0, 0.5)
             assumed_slippage = b.number_input("Additional round-trip costs, USD", 0.0, 1000.0, 1.0, 0.5)
@@ -76,6 +80,7 @@ def render_shadow_stage0_workbench() -> None:
         if submitted:
             assumptions = _scenario_replace(
                 default_policy,
+                bankroll_eur=_StageDecimal(str(bankroll_allocated_eur)),
                 option_cost_per_contract_side_usd=_StageDecimal(str(assumed_fee)),
                 additional_round_trip_cost_usd=_StageDecimal(str(assumed_slippage)),
                 tax_cost_usd=_StageDecimal(str(assumed_tax)),
@@ -93,7 +98,7 @@ def render_shadow_stage0_workbench() -> None:
             m2.metric("Gross maximum profit (USD)", evaluated.get("gross_max_profit_usd") or
                       ("Unbounded theory" if evaluated.get("unlimited_profit") else "Unknown"))
             m3.metric("Estimated capital (EUR)", evaluated.get("conservative_capital_eur") or "Unknown")
-            m4.metric("Budget cap (EUR)", "500")
+            m4.metric("Your allocation (EUR)", f"{bankroll_allocated_eur:,.2f}")
             st.write("**Rejection / uncertainty reasons:**",
                      list(evaluated.get("reasons") or ()) or ["None for these assumed inputs; execution still unverified"])
             st.caption(

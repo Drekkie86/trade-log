@@ -11,6 +11,7 @@ import pytest
 
 import christiania_release_database as rd
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
+from src.database.repository import EXPECTED_SCHEMA_VERSION
 from src.operations import large_release_guard as lg
 from src.operations.sqlite_runtime import inspect_database
 
@@ -32,7 +33,7 @@ def _v34(tmp_path):
     return path
 
 
-def test_real_v34_to_v36_bounded_additive_release_still_restorable(tmp_path,monkeypatch):
+def test_real_v34_to_current_bounded_additive_release_still_restorable(tmp_path,monkeypatch):
     db=_v34(tmp_path)
     backup_dir=tmp_path/"backups"
     monkeypatch.setenv("CHRISTIANIA_DB_PATH",str(db))
@@ -46,7 +47,7 @@ def test_real_v34_to_v36_bounded_additive_release_still_restorable(tmp_path,monk
         migrations_dir=ROOT/"migrations",rollback_pointer=pointer
     )
     assert result.schema_before==34
-    assert result.schema_after==36
+    assert result.schema_after==EXPECTED_SCHEMA_VERSION
     assert Path(result.backup_path).is_file()
     assert pointer.is_file() and "34\t" in pointer.read_text()
     full=inspect_database(db)

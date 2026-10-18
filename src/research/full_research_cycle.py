@@ -21,6 +21,10 @@ from src.research.shadow_intrinsic_admission_v1 import (
 from src.research.shadow_expiry_outcome_v1 import (
     record_shadow_expiry_outcomes,
 )
+from src.research.opportunity_pipeline import (
+    assess_new_proposals,
+    resolve_opportunity_outcomes,
+)
 from src.research.shadow_lifecycle_runtime import (
     advance_shadow_lifecycle,
 )
@@ -157,6 +161,18 @@ def run_full_research_cycle(
         ),
         db_path=db_path,
     )
+
+    # Opportunity evidence (assess + matched placebo, then resolve expired ones).
+    # Pure research bookkeeping: it must never break or delay the cycle.
+    try:
+        assess_new_proposals(
+            research_run_id=int(research_cycle.research.run_id), db_path=db_path
+        )
+        resolve_opportunity_outcomes(
+            research_run_id=int(research_cycle.research.run_id), db_path=db_path
+        )
+    except Exception:
+        LOG.exception("Opportunity evidence step failed; research cycle continues")
 
     return FullResearchCycleResult(
         research_cycle=research_cycle,

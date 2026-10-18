@@ -106,6 +106,35 @@ def results_verdict(expiry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _score_panel() -> None:
+    """Does the 'worth a look' score beat random strikes? Fail-soft before migration 037."""
+    import sqlite3
+
+    from src.decision.opportunity_evidence import STATE_EVIDENCE, evaluate
+    from src.research.opportunity_pipeline import load_evidence_rows
+
+    section_heading("Does the 'worth a look' score work?")
+    try:
+        report = evaluate(load_evidence_rows())
+    except (sqlite3.Error, OSError):
+        st.info("Not available until the database is updated.")
+        return
+    (st.success if report.state == STATE_EVIDENCE else st.warning)(report.headline)
+    if report.primary_signal_mean_net_usd is not None:
+        st.caption(
+            f"Average net per selected trade: ${report.primary_signal_mean_net_usd:+,.2f}; "
+            f"matched random-strike trade: ${report.primary_placebo_mean_net_usd:+,.2f}. "
+            "Paper estimates after assumed costs, not brokerage fills."
+        )
+    if report.primary_excess_usd is not None:
+        lo, hi = report.primary_ci_usd or (None, None)
+        st.caption(
+            f"{report.primary_bets} finished 'worth a look' trades on {report.primary_expiry_dates} expiry dates. "
+            f"Average versus random strikes: ${report.primary_excess_usd:+,.2f}"
+            + (f" (range ${lo:+,.2f} to ${hi:+,.2f})." if lo is not None else ".")
+        )
+
+
 def render_results_page(snapshot: dict[str, Any]) -> None:
     expiry = snapshot.get("shadow_expiry_outcomes", {}) or {}
     counts = snapshot.get("research_counts", {}) or {}
@@ -136,6 +165,8 @@ def render_results_page(snapshot: dict[str, Any]) -> None:
         r1.metric("Won / lost / flat", f"{num(wins)} / {num(losses)} / {num(flat)}")
         r2.metric("Sum of candidate estimates", eur_from_minor(expiry.get("total_net_eur_minor"), signed=True), "not portfolio P&L", delta_color="off")
         r3.metric("Average per candidate", eur_from_minor(expiry.get("mean_net_eur_minor"), signed=True))
+
+    _score_panel()
 
     with st.expander("What do these numbers mean?"):
         st.markdown(

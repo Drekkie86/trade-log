@@ -34,6 +34,11 @@ def migrations(tmp_path):
         "INSERT INTO schema_version VALUES (36);\n",
         encoding="utf-8"
     )
+    (directory / "037_probe.sql").write_text(
+        "CREATE TABLE probe_addition_37(id INTEGER PRIMARY KEY);\n"
+        "INSERT INTO schema_version VALUES (37);\n",
+        encoding="utf-8"
+    )
     return directory
 
 
@@ -58,13 +63,14 @@ def test_pre_release_probe_migrates_only_disposable_volume_copy(tmp_path, monkey
     with sqlite3.connect(source) as conn:
         assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 34
     with sqlite3.connect(target) as conn:
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 36
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 37
         assert conn.execute("SELECT value FROM live_evidence").fetchone()[0] == "immutable"
         assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name='probe_addition_36'").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name='probe_addition_37'").fetchone()[0] == 1
     proof = json.loads(provenance.read_text())
     assert proof["kind"] == "disposable_live_sqlite_snapshot"
     assert proof["source_schema_version"] == 34
-    assert proof["measured_schema_version"] == 36
+    assert proof["measured_schema_version"] == 37
     assert proof["disposable_migration"] is True
 
 
@@ -152,5 +158,5 @@ def test_probe_clone_completes_with_concurrent_wal_updates(tmp_path, monkeypatch
     assert not writer.is_alive()
     assert not failures
     with sqlite3.connect(result) as db:
-        assert db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 36
+        assert db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == clone.EXPECTED_SCHEMA_VERSION
         assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"

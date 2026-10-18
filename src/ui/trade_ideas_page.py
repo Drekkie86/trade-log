@@ -7,12 +7,27 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import json
+from dataclasses import asdict
+from datetime import UTC
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from typing import Any, Sequence
 
 import streamlit as st
 
+from src.decision.opportunity import (
+    VERDICT_MARGINAL,
+    VERDICT_SKIP,
+    VERDICT_WORTH,
+    OpportunityAssessment,
+    rank_by_opportunity,
+)
+from src.decision.opportunity_evidence import STATE_EVIDENCE, EvidenceReport, evaluate
+from src.decision.manual_trade_review import manual_trade_review
+from src.research.opportunity_pipeline import (
+    load_evidence_rows, load_prior_quote_noise_for_proposals,
+)
 from src.decision.trade_ideas import (
     MODEL_LABELS,
     MODEL_ORDER,
@@ -188,6 +203,83 @@ def _cached_records(key: str, db_path):
     return model_track_record(db_path=db_path)
 
 
+@st.cache_data(ttl=600, show_spinner="Checking the score against random strikes…")
+def _cached_evidence(key: str, db_path):
+    return evaluate(load_evidence_rows(db_path=db_path))
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _cached_prior_noise(key: str, proposal_ids: tuple[int, ...], db_path):
+    return load_prior_quote_noise_for_proposals(list(proposal_ids), db_path=db_path)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_contract_symbols(key: str, quote_ids: tuple[int, ...], db_path):
+    from src.database.repository import get_connection
+
+    if not quote_ids:
+        return {}
+    conn = get_connection(db_path)
+    try:
+        marks = ",".join("?" for _ in quote_ids)
+        return {
+            int(row["id"]): (
+                str(row["option_symbol"] or ""),
+                str(row["quote_at"] or ""),
+            )
+            for row in conn.execute(
+                f"SELECT id, option_symbol, quote_at FROM option_quotes WHERE id IN ({marks})",
+                quote_ids,
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+
+VERDICT_BADGE = {
+    VERDICT_WORTH: "● Worth a look",
+    VERDICT_MARGINAL: "◐ Marginal",
+    VERDICT_SKIP: "○ Skip",
+}
+FILTERS = {
+    "Worth a look": (VERDICT_WORTH,),
+    "Worth a look + marginal": (VERDICT_WORTH, VERDICT_MARGINAL),
+    "Everything": (VERDICT_WORTH, VERDICT_MARGINAL, VERDICT_SKIP),
+}
+
+
+def opportunity_rows(pairs: Sequence[tuple[TradeIdea, OpportunityAssessment]]) -> list[dict[str, Any]]:
+    rows = []
+    for idea, a in pairs:
+        rows.append({
+            "Verdict": VERDICT_BADGE[a.verdict],
+            "Stock": idea.underlying,
+            "Trade": structure_label(idea),
+            "Expires": f"{date.fromisoformat(idea.expiration):%d %b %Y}"
+                       + (f" · {idea.dte}d" if idea.dte is not None else ""),
+            "Why": a.headline,
+            "Edge after costs": usd(a.net_edge_usd, signed=True) if a.net_edge_usd is not None else "—",
+            "Most you can lose": usd(idea.max_loss_usd),
+            "Most you can make": usd(idea.profile.max_profit_usd) if idea.profile else "—",
+            "Status": status_text(idea),
+        })
+    return rows
+
+
+def score_banner(report: EvidenceReport | None) -> tuple[str, str]:
+    """(tone, text) for the one question that matters: has the score beaten chance?"""
+    if report is None:
+        return ("warning", "Score evidence is unavailable until the database is updated. "
+                           "Treat every verdict as a suggestion to look, not a result.")
+    if report.state == STATE_EVIDENCE:
+        return ("success", report.headline)
+    return (
+        "warning",
+        f"Not proven yet. {report.headline} A verdict is a suggestion to look, never a result. "
+        "No order is ever placed.",
+    )
+
+
 def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercised by AppTest
     import altair as alt
     import pandas as pd
@@ -201,20 +293,15 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
     def _page() -> None:
         section_heading(
             "Trade Ideas",
-            "Unexecuted trade proposals, compared using three models of the same market quotes.",
+            "Each idea gets one verdict: is the price gap clearly bigger than costs and quote noise?",
         )
         ideas, errors, session_date = _cached_ideas(key, db_path)
         try:
-            records, resolved_total = _cached_records(key, db_path)
-        except sqlite3.OperationalError as exc:
-            records, resolved_total = None, 0
-            st.error(
-                "The track record could not be read because the database schema is out of date "
-                f"({exc}). Run the database migrations, then reload."
-            )
-        else:
-            tone, text = evidence_banner(records, resolved_total)
-            (st.warning if tone == "warning" else st.info)(text)
+            report = _cached_evidence(key, db_path)
+        except sqlite3.OperationalError:
+            report = None
+        tone, text = score_banner(report)
+        {"success": st.success, "warning": st.warning}[tone](text)
 
         if not ideas:
             st.info(
@@ -236,34 +323,39 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
                 f"These ideas come from the {session_date} market session, "
                 "not current quotes. Review as historical observations only."
             )
-        as_of = max((i.as_of for i in ideas if i.as_of), default=None)
-        agree2 = sum(1 for i in ideas if i.favouring >= 2)
-        st.caption(
-            f"{len(ideas)} ideas · {agree2} where at least 2 models see an edge"
-            + (f" · market data from {format_local_datetime(as_of)}" if as_of else "")
-        )
 
-        min_models = st.select_slider(
-            "Minimum models showing a positive value difference (0 = all ideas)",
-            options=[0, 1, 2, 3], value=0, key="ideas_min_models",
-            help="An edge means: worth more than its price according to the model, after the bid/ask spread and fees. "
-                 "The models share the same inputs, so more agreement is not much stronger evidence.",
-        )
-        shown = [i for i in ideas if i.favouring >= min_models]
-        if not shown:
-            st.info("No trade meets this filter. Lower the number to see every idea.")
-        else:
-            rows = ideas_to_rows(shown)
-            event = st.dataframe(
-                pd.DataFrame(rows), hide_index=True, width="stretch",
-                on_select="rerun", selection_mode="single-row", key="ideas_table",
-                column_config={
-                    MODEL_LABELS[m]: st.column_config.TextColumn(
-                        help="✓ positive model-implied difference after estimated costs · ≈ costs exceed the model difference · ✗ no model-implied difference · n/a unavailable. These are not expected trading profits.")
-                    for m in MODEL_ORDER
-                },
+        try:
+            prior_noise = _cached_prior_noise(
+                key, tuple(int(idea.proposal_id) for idea in ideas), db_path
             )
-            st.caption("Click a row for details. Dollar differences are model valuations, not expected returns.")
+        except sqlite3.OperationalError:
+            prior_noise = {}
+        pairs = rank_by_opportunity(
+            ideas, prior_noise_by_proposal=prior_noise
+        )
+        counts = {v: sum(1 for _, a in pairs if a.verdict == v) for v in VERDICT_BADGE}
+        as_of = max((i.as_of for i in ideas if i.as_of), default=None)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Worth a look", counts[VERDICT_WORTH])
+        c2.metric("Marginal", counts[VERDICT_MARGINAL])
+        c3.metric("Skip", counts[VERDICT_SKIP])
+        if as_of:
+            st.caption(f"Market data from {format_local_datetime(as_of)}.")
+
+        choice = st.radio(
+            "Show", list(FILTERS), index=2, horizontal=True, key="ideas_filter",
+            help="Worth a look: after costs, the gap exceeds spread noise and an as-of historical quote-variation estimate. "
+                 "Marginal: near noise, or insufficient verified quote history even if a model scores higher.",
+        )
+        shown = [(i, a) for i, a in pairs if a.verdict in FILTERS[choice]]
+        if not shown:
+            st.info("Nothing meets this filter. Choose a wider one to see every idea.")
+        else:
+            event = st.dataframe(
+                pd.DataFrame(opportunity_rows(shown)), hide_index=True, width="stretch",
+                on_select="rerun", selection_mode="single-row", key="ideas_table",
+            )
+            st.caption("Click a row for details. Dollar figures are model values after estimated costs, not forecasts.")
             selected = None
             try:
                 picked = event.selection.rows
@@ -271,54 +363,113 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
                     selected = shown[int(picked[0])]
             except (AttributeError, IndexError, TypeError):
                 selected = None
-            _detail(selected or shown[0], alt, pd, st)
+            idea, assessment = selected or shown[0]
+            _detail(idea, assessment, report, alt, pd, st, db_path=db_path)
 
         if errors:
             with st.expander(f"{len(errors)} idea(s) could not be scored"):
                 for proposal_id, message in errors:
                     st.caption(f"Idea {proposal_id}: {message}")
 
+        if report is not None and report.buckets:
+            with st.expander("Is the score working? (finished trades vs random strikes)"):
+                st.markdown(md(_evidence_text(report)))
+                st.dataframe(pd.DataFrame(_bucket_rows(report)), hide_index=True, width="stretch")
+        try:
+            records, resolved_total = _cached_records(key, db_path)
+        except sqlite3.OperationalError:
+            records, resolved_total = None, 0
         if records is not None:
-            st.markdown("#### Retrospective check on expired trades")
-            st.dataframe(pd.DataFrame(record_rows(records)), hide_index=True, width="stretch")
+            with st.expander("Older check: the three models replayed on expired trades"):
+                tone2, text2 = evidence_banner(records, resolved_total)
+                (st.warning if tone2 == "warning" else st.info)(text2)
+                st.dataframe(pd.DataFrame(record_rows(records)), hide_index=True, width="stretch")
         with st.expander("How to read this page"):
             st.markdown(
-                "- Each model estimates an option's fair volatility from neighbouring quotes. ✓ means "
-                "a positive theoretical valuation difference after estimated spread and fees, not a guaranteed gain.\n"
-                "- The three models look at the same option prices in different ways. Because they share the "
-                "same inputs they agree easily: in our simulations of markets with no real mispricing, most "
-                "flagged trades still had 2 or more models seeing an edge. Agreement is a weak hint, not proof.\n"
-                "- The dollar difference is model-implied value after estimated costs, **not expected profit**. Prices can differ "
-                "for good reasons, and with many options scanned some will look good by chance.\n"
-                "- The expired-trade comparison is retrospective: models are rerun now on saved entry quotes. "
-                "It is not a prospective, timestamped prediction record or evidence of a live edge.\n"
+                "- **The verdict** compares the price gap (what the models think the option is worth versus its "
+                "quote) with two things: what it costs to trade and how noisy the quotes are. Noise comes from "
+                "the bid/ask width of the quotes behind the estimate, plus disagreement between the three models.\n"
+                "- **Worth a look** means the edge after costs is at least twice that noise. It does *not* mean "
+                "the trade will make money. Prices can differ for good reasons, and with many options scanned "
+                "some will look good by chance.\n"
+                "- **Is it working?** Every idea is logged with its verdict before the outcome is known, next to a "
+                "random-strike twin of the same shape. Only if 'worth a look' ideas beat their twins by more "
+                "than chance, over enough expiry dates, does the banner above say so.\n"
+                "- The three models read the same prices, so they often agree even when the gap is noise; "
+                "that is why agreement is not part of the verdict.\n"
                 "- Nothing here places an order or is advice."
             )
 
     _page()
 
 
-def _detail(idea: TradeIdea, alt, pd, st) -> None:  # pragma: no cover - rendering
+def _evidence_text(report: EvidenceReport) -> str:
+    lines = [report.headline]
+    if report.primary_signal_mean_net_usd is not None:
+        lines.append(
+            f"- Selected trades average {usd(report.primary_signal_mean_net_usd, signed=True)} "
+            f"net; matched random-strike twins average "
+            f"{usd(report.primary_placebo_mean_net_usd, signed=True)} net. "
+            "Both are paper estimates after assumed costs."
+        )
+    if report.primary_excess_usd is not None:
+        lines.append(
+            f"- 'Worth a look' trades finished: {report.primary_bets} on {report.primary_expiry_dates} "
+            f"expiry dates. Average result versus the random-strike twin: {usd(report.primary_excess_usd, signed=True)}"
+            + (f" (range {usd(report.primary_ci_usd[0], signed=True)} to {usd(report.primary_ci_usd[1], signed=True)})"
+               if report.primary_ci_usd else "")
+            + "."
+        )
+    if report.placebo_mean_net_usd is not None:
+        lines.append(f"- Random-strike twins average {usd(report.placebo_mean_net_usd, signed=True)} "
+                     "(about the cost of trading, as expected if strike choice is random).")
+    if report.bets_without_placebo:
+        lines.append(f"- {report.bets_without_placebo} trade(s) had no eligible twin and are not compared.")
+    return "\n".join(lines)
+
+
+def _bucket_rows(report: EvidenceReport) -> list[dict[str, Any]]:
+    rows = []
+    for b in report.buckets:
+        rows.append({
+            "Verdict": VERDICT_BADGE.get(b.verdict, b.verdict),
+            "Finished trades": b.bets,
+            "Expiry dates": b.expiry_dates,
+            "Average result": usd(b.mean_net_usd, signed=True),
+            "Random-strike twin": usd(b.mean_placebo_net_usd, signed=True),
+            "Difference": usd(b.mean_excess_usd, signed=True),
+        })
+    return rows
+
+
+def _sigma_total(a: OpportunityAssessment) -> float | None:
+    if a.sigma_quote_vol_pts is None or a.sigma_model_vol_pts is None:
+        return None
+    return (a.sigma_quote_vol_pts ** 2 + a.sigma_model_vol_pts ** 2) ** 0.5
+
+
+def _detail(idea: TradeIdea, a: OpportunityAssessment, report, alt, pd, st, *, db_path=None) -> None:  # pragma: no cover - rendering
     st.markdown(f"#### {idea.underlying} · {structure_label(idea)} · expires {idea.expiration}")
-    st.markdown(md(_summary(idea)))
-    cols = st.columns(len(MODEL_ORDER))
-    for col, model_id in zip(cols, MODEL_ORDER, strict=True):
-        j = idea.judgements[model_id]
-        with col:
-            st.markdown(f"**{MODEL_LABELS[model_id]}**")
-            if not j.available:
-                st.caption(j.reason or "Could not judge this trade.")
-                continue
-            st.metric(_verdict_words(j), usd(j.net_edge_usd, signed=True, decimals=2),
-                      help="Model-implied valuation difference after estimated spread and fees; not a forecast or expected trading profit.")
-            fair = j.fair_iv_by_strike.get(idea.target_strike)
-            market = next((l.market_iv for l in idea.legs if l.strike == idea.target_strike), None)
-            if fair is not None and market is not None:
-                st.caption(f"Volatility at {idea.target_strike:g}: model {fair * 100:.1f}%, market {market * 100:.1f}%.")
-            st.caption(md(
-                f"Before costs {usd(j.gross_edge_usd, signed=True, decimals=2)}, "
-                f"spread −{usd(j.spread_cost_usd, decimals=2)}, fees −{usd(j.fees_usd, decimals=2)}."
-            ))
+    st.markdown(f"**{VERDICT_BADGE[a.verdict]}.** {a.headline}")
+    if idea.profile is not None:
+        st.markdown(md(
+            f"You risk at most {usd(idea.max_loss_usd)} to make at most {usd(idea.profile.max_profit_usd)}. "
+            f"At expiry it is positive if the stock ends {zone_text(idea).replace('–', 'to')}."
+        ))
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Edge after costs", usd(a.net_edge_usd, signed=True, decimals=2) if a.net_edge_usd is not None else "—",
+              help="Model value minus the half-spread and fees. A valuation gap, not a forecast of profit.")
+    c2.metric("Noise in the quotes",
+              f"±{_sigma_total(a):.1f} vol pts" if _sigma_total(a) is not None else "—",
+              help="How far the quotes could be off just from bid/ask width, plus disagreement between models.")
+    c3.metric("Price gap",
+              f"{a.residual_vol_pts:+.1f} vol pts" if a.residual_vol_pts is not None else "—",
+              help="Model volatility minus market volatility at the centre strike.")
+    if a.fair_iv is not None and a.market_iv is not None:
+        st.caption(f"Volatility at {idea.target_strike:g}: models say {a.fair_iv * 100:.1f}%, market says {a.market_iv * 100:.1f}%.")
+    if a.score is not None:
+        st.caption(f"Score {a.score:.1f} (edge after costs ÷ noise). Worth a look needs 2.0, marginal 1.0.")
+    st.caption(f"{a.models_favouring} of {a.models_available} models see an edge. They read the same prices, so this is not independent confirmation.")
 
     if idea.profile is not None and idea.legs and idea.spot:
         em = idea.profile.expected_move_1sd
@@ -347,6 +498,7 @@ def _detail(idea: TradeIdea, alt, pd, st) -> None:  # pragma: no cover - renderi
             "Bid": l.bid, "Ask": l.ask, "Price used": l.entry_price,
         } for l in idea.legs])
         st.dataframe(legs, hide_index=True, width="stretch")
+    _manual_execution_review(idea, a, st, db_path=db_path)
     for note in idea.notes:
         st.caption(f"Note: {note}")
 
@@ -376,3 +528,103 @@ def _summary(idea: TradeIdea) -> str:
         f"(a {idea.profile.p_profit * 100:.0f}% risk-neutral model probability, "
         "not an observed or real-world success rate)."
     )
+
+
+def _manual_execution_review(idea: TradeIdea, assessment: OpportunityAssessment, st, *, db_path=None) -> None:
+    """A risk-gated manual execution checklist; explicitly never submits orders."""
+    with st.expander("Manual trade review (no broker order submission)"):
+        st.caption(
+            "Live decision support, not automatic trading. Recheck every price and "
+            "commission at your own broker; nothing on this page transmits an order "
+            "or confirms an executed position."
+        )
+        base = f"manual_{idea.proposal_id}"
+        cash = st.number_input(
+            "Capital allocated to Christiania (€)", min_value=0.0,
+            value=0.0, step=10.0, key=base + "_cash",
+        )
+        exposure = st.number_input(
+            "Existing open maximum risk (€)", min_value=0.0,
+            value=0.0, step=10.0, key=base + "_exposure",
+        )
+        broker_fx = st.number_input(
+            "EUR/USD rate verified in broker", min_value=0.0,
+            value=0.0, format="%.4f", step=0.001, key=base + "_fx",
+        )
+        positions_confirmed = st.checkbox(
+            "I checked all existing open risk and available balance",
+            value=False, key=base + "_positions",
+        )
+        prices_confirmed = st.checkbox(
+            "I checked executable bid/ask prices, fees and multi-leg availability in my broker",
+            value=False, key=base + "_broker",
+        )
+        qids = tuple(int(l.option_quote_id) for l in idea.legs)
+        try:
+            symbols = _cached_contract_symbols(_db_cache_key(db_path), qids, db_path)
+        except sqlite3.OperationalError:
+            symbols = {}
+        reviewed = manual_trade_review(
+            idea, assessment, now=datetime.now(UTC),
+            contract_symbols_by_quote_id={
+                qid: values[0] for qid, values in symbols.items()
+            },
+            leg_quote_at_by_quote_id={
+                qid: values[1] for qid, values in symbols.items()
+            },
+            available_cash_eur=float(cash),
+            current_open_risk_eur=float(exposure),
+            eur_to_usd=float(broker_fx) if broker_fx > 0 else None,
+            broker_prices_and_fees_confirmed=bool(prices_confirmed),
+            current_positions_confirmed=bool(positions_confirmed),
+        )
+        if reviewed.conservative_risk_eur is not None:
+            st.metric(
+                "Conservative one-package risk", f"€{reviewed.conservative_risk_eur:.2f}",
+                help="Includes an additional commission allowance; price may change before execution.",
+            )
+        st.caption(
+            f"Available risk after other positions: €{reviewed.available_capital_eur:.2f}. "
+            f"Maximum new risk per package: €{reviewed.max_risk_per_trade_eur:.2f} "
+            "(10% of the capital you allocated to Christiania; no fixed euro bankroll ceiling)."
+        )
+        if reviewed.legs:
+            st.dataframe(
+                [
+                    {
+                        "Contract": leg.contract_symbol or "NOT VERIFIED",
+                        "Action": leg.action, "Qty": leg.quantity,
+                        "Indicative leg price ($)": leg.estimated_entry_per_share_usd,
+                    }
+                    for leg in reviewed.legs
+                ],
+                hide_index=True, width="stretch",
+            )
+        if not reviewed.ready_for_manual_broker_requote:
+            st.warning(
+                "Not ready for an execution checklist: "
+                + ", ".join(reason.replace("_", " ").lower() for reason in reviewed.reasons)
+            )
+        else:
+            st.info(
+                "Risk and quote checklist passed at this instant. "
+                "Requote as a package in your broker; fills, exercise risk and actual "
+                "commissions remain unverified. This is not an order authorization."
+            )
+            ticket = {
+                "trade_idea_proposal_id": idea.proposal_id,
+                "underlying": idea.underlying,
+                "expiration": idea.expiration,
+                "as_of_quote": idea.as_of,
+                "reviewed_at_utc": datetime.now(UTC).isoformat(),
+                "scoring_verdict": assessment.verdict,
+                "order_status": "NOT_SUBMITTED_MANUAL_BROKER_CHECK_REQUIRED",
+                "review": asdict(reviewed),
+            }
+            st.download_button(
+                "Download manual review ticket",
+                data=json.dumps(ticket, sort_keys=True, indent=2),
+                file_name=f"christiania-manual-review-{idea.proposal_id}.json",
+                mime="application/json",
+                key=base + "_download",
+            )
