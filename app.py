@@ -34,6 +34,7 @@ from src.operations.release_manifest import build_release_manifest, read_deploye
 from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
 from src.research.cash_settled_universe import cash_settled_research_universe
+from src.research.shadow_expiry_model_spot_proxy_v1 import load_expiry_model_proxy_report
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
 from src.ui.home_pages import render_results_page, render_system_page
 from src.ui.trade_ideas_page import render_trade_ideas_page
@@ -437,6 +438,11 @@ def _show_selectable_table(
     if index < 0 or index >= len(source):
         return None
     return source.iloc[index].to_dict()
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _cached_shadow_expiry_model_proxy() -> dict:
+    return load_expiry_model_proxy_report()
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -1433,6 +1439,60 @@ elif page == "Shadow Lab":
                 f"With {_fmt_count(expiry.get('resolved_expiration_dates', 0))} independent expiry date(s) this is a "
                 "descriptive tally, not a statistical claim about edge."
             )
+
+        with st.expander("Retrospective provider-model expiry estimates (not validated trades)", expanded=True):
+            st.caption(
+                "Underlying market-snapshot prices are missing. These strictly separate "
+                "estimates use recorded, internally consistent ThetaData Greek-model "
+                "underlying inputs from the original expiry session. They are NOT "
+                "direct underlying quotes, official settlement prices, broker fills, "
+                "actual profits, or validated package outcomes."
+            )
+            try:
+                modeled_proxy = _cached_shadow_expiry_model_proxy()
+            except Exception as exc:
+                st.error(
+                    "Could not verify retrospective proxy evidence: "
+                    f"{type(exc).__name__}. The validated-outcome count remains unchanged."
+                )
+            else:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Expired admitted candidates", _fmt_count(modeled_proxy["total_expired_admitted"]))
+                m2.metric("Modeled proxy payoffs", _fmt_count(modeled_proxy["modeled_proxy_count"]))
+                m3.metric("Unresolved / no qualifying evidence", _fmt_count(modeled_proxy["unresolved_count"]))
+                m4.metric("Distinct priced expiry dates", _fmt_count(modeled_proxy["independent_expiry_dates"]))
+                if modeled_proxy["modeled_proxy_count"]:
+                    st.caption(
+                        f"Across those modeled proxies: {modeled_proxy['wins']} positive, "
+                        f"{modeled_proxy['losses']} negative. "
+                        "Cost and exercise assumptions remain unverified."
+                    )
+                st.dataframe(
+                    [
+                        {
+                            "Candidate": r["candidate_id"],
+                            "Underlying": r["underlying"],
+                            "Expiry": r["expiration"],
+                            "Evidence state": r["outcome_state"],
+                            "Source snapshot": r.get("snapshot_id"),
+                            "Theta model spot proxy ($)": r.get("proxy_price"),
+                            "Option contracts agreeing": r.get("distinct_model_option_contracts"),
+                            "Indicative net to expiry (€)": (
+                                round(r["modeled_net_pnl_eur_minor"] / 100, 2)
+                                if r.get("modeled_net_pnl_eur_minor") is not None else None
+                            ),
+                            "Reason": r["reason_code"],
+                        }
+                        for r in modeled_proxy["rows"]
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                st.caption(
+                    "Every proxy remains excluded from the validated-package-outcome "
+                    "population. An expiry-day model spot is not a fill or an "
+                    "independently verified settlement."
+                )
 
         section_heading("Tracking funnel")
         c1, c2, c3, c4, c5 = st.columns(5)
