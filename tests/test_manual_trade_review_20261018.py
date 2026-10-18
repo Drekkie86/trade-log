@@ -87,3 +87,42 @@ def test_nans_and_naive_times_are_not_accepted(db_path):
         _review(idea, a, symbols, available_cash_eur=float("nan"))
     with pytest.raises(ValueError, match="timezone"):
         _review(idea, a, symbols, now=datetime(2026, 10, 19, 15, 0))
+
+
+@pytest.mark.parametrize(
+    "allocated_eur,expected_single_trade_limit_eur",
+    [(750.0, 75.0), (2_500.0, 250.0), (10_000.0, 1_000.0)],
+)
+def test_user_allocated_capital_is_not_clamped_to_500_eur(
+    db_path, allocated_eur, expected_single_trade_limit_eur
+):
+    idea, assessment, symbols = _fixture(db_path)
+    review = _review(
+        idea, assessment, symbols, available_cash_eur=allocated_eur
+    )
+    assert review.ready_for_manual_broker_requote
+    assert review.max_risk_per_trade_eur == pytest.approx(expected_single_trade_limit_eur)
+    assert review.available_capital_eur == pytest.approx(allocated_eur)
+    assert review.broker_order_submitted is False
+
+
+def test_larger_user_allocation_may_support_larger_defined_risk(db_path):
+    idea, assessment, symbols = _fixture(db_path)
+    larger_idea = replace(idea, max_loss_usd=650.0)
+    small = _review(
+        larger_idea, assessment, symbols, available_cash_eur=500.0
+    )
+    larger = _review(
+        larger_idea, assessment, symbols, available_cash_eur=10_000.0
+    )
+    assert "TRADE_EXCEEDS_TEN_PERCENT_CAP" in small.reasons
+    assert larger.ready_for_manual_broker_requote
+    assert larger.max_risk_per_trade_eur == pytest.approx(1_000.0)
+    assert larger.conservative_risk_eur > 500.0
+
+
+def test_user_allocated_capital_must_remain_nonnegative_and_finite(db_path):
+    idea, assessment, symbols = _fixture(db_path)
+    for allocation in (float("inf"), float("-inf"), -1.0):
+        with pytest.raises(ValueError, match="finite|negative"):
+            _review(idea, assessment, symbols, available_cash_eur=allocation)

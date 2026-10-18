@@ -16,7 +16,6 @@ import pandas as pd
 from src.decision.opportunity import OpportunityAssessment, VERDICT_WORTH
 from src.decision.trade_ideas import TradeIdea, structure_fees_usd
 
-MAX_BANKROLL_EUR = 500.0
 MAX_SINGLE_TRADE_FRACTION = 0.10
 MAX_QUOTE_AGE_SECONDS = 120
 _NYSE = xcals.get_calendar("XNYS")
@@ -74,7 +73,8 @@ def manual_trade_review(
         raise ValueError("Cash and existing risk must be finite.")
     if available_cash_eur < 0 or current_open_risk_eur < 0:
         raise ValueError("Cash and existing risk cannot be negative.")
-    bankroll = min(MAX_BANKROLL_EUR, float(available_cash_eur))
+    # The trader declares available Christiania capital; no product-level euro cap.
+    bankroll = float(available_cash_eur)
     exposure = float(current_open_risk_eur)
     single_cap = bankroll * MAX_SINGLE_TRADE_FRACTION
     available = max(0.0, bankroll - exposure)

@@ -540,7 +540,7 @@ def _manual_execution_review(idea: TradeIdea, assessment: OpportunityAssessment,
         )
         base = f"manual_{idea.proposal_id}"
         cash = st.number_input(
-            "Available cash in broker (€)", min_value=0.0, max_value=500.0,
+            "Capital allocated to Christiania (€)", min_value=0.0,
             value=0.0, step=10.0, key=base + "_cash",
         )
         exposure = st.number_input(
@@ -586,7 +586,7 @@ def _manual_execution_review(idea: TradeIdea, assessment: OpportunityAssessment,
         st.caption(
             f"Available risk after other positions: €{reviewed.available_capital_eur:.2f}. "
             f"Maximum new risk per package: €{reviewed.max_risk_per_trade_eur:.2f} "
-            "(10% of declared cash, hard €500 total bankroll cap)."
+            "(10% of the capital you allocated to Christiania; no fixed euro bankroll ceiling)."
         )
         if reviewed.legs:
             st.dataframe(
