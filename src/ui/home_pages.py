@@ -149,7 +149,14 @@ def render_results_page(snapshot: dict[str, Any]) -> None:
     c1.metric("Ideas found", num(counts.get("surfaced_total", 0)))
     c2.metric("Recorded paper candidates", num(counts.get("shadow_candidates", 0)))
     c3.metric("Resolved outcomes", num(resolved), f"{num(expiry.get('unresolved', 0))} unresolved", delta_color="off")
-    c4.metric("Days of data", num(prospective.get("independent_dates", 0)), "need 5 for a first look", delta_color="off")
+    c4.metric("Market-data days", num(counts.get("market_snapshot_days", 0)),
+              "distinct stored market sessions", delta_color="off")
+    st.caption(
+        "Market-data days include historical and recovered snapshots. "
+        f"Prospective research evidence spans {num(prospective.get('independent_dates', 0))} "
+        "independent session day(s); those are a separate, narrower population "
+        "and cannot be increased by historical backfills."
+    )
 
     if resolved:
         section_heading("Resolved candidate outcomes — not independent bets")
@@ -167,7 +174,9 @@ def render_results_page(snapshot: dict[str, Any]) -> None:
             "- **Recorded paper candidates**: all stored candidate entries, including closed ones.\n"
             "- **Resolved outcomes**: candidate entries with a modelled expiry result, "
             "not independent bets. Multiple entries may refer to the same underlying idea.\n"
-            "- **Days of data**: separate market days. Ten ideas from one day count as one day.\n\n"
+            "- **Market-data days**: distinct US session dates with stored market snapshots, "
+            "including historical and recovered observations. This is not a count of "
+            "independent prospective results.\n\n"
             "Results use stored prices and assumed costs. They are not real profits or "
             "a deduplicated portfolio, and candidates without usable evidence are not counted as wins."
         )

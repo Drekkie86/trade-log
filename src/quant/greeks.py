@@ -22,6 +22,8 @@ def analytic(option: VanillaOption) -> Greeks:
     disc_r = math.exp(-option.rate * t)
     pdf = norm.pdf(d1)
 
+    # Charm is -d(delta)/d(time_to_expiry). For q != 0 the derivative
+    # of exp(-q*T) contributes a positive call term and a negative put term.
     if right == "CALL":
         delta = disc_q * norm.cdf(d1)
         theta = (
@@ -38,7 +40,7 @@ def analytic(option: VanillaOption) -> Greeks:
                     - d2 * sigma * root_t
                 )
                 / (2.0 * t * sigma * root_t)
-                + option.dividend_yield * norm.cdf(d1)
+                - option.dividend_yield * norm.cdf(d1)
             )
         )
     else:
@@ -57,7 +59,7 @@ def analytic(option: VanillaOption) -> Greeks:
                     - d2 * sigma * root_t
                 )
                 / (2.0 * t * sigma * root_t)
-                - option.dividend_yield * norm.cdf(-d1)
+                + option.dividend_yield * norm.cdf(-d1)
             )
         )
 

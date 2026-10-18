@@ -104,3 +104,59 @@ def test_preexisting_destination_refuses_overwrite(tmp_path, monkeypatch):
             volume=volume,
         )
     assert target.read_bytes() == b"important"
+
+
+def test_probe_clone_completes_with_concurrent_wal_updates(tmp_path, monkeypatch):
+    """Daemon-like updates must not restart the scratch snapshot."""
+    from threading import Event, Thread
+
+    source = sample_source(tmp_path)
+    with sqlite3.connect(source) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.commit()
+
+    volume = tmp_path / "recovery-volume"
+    scratch = volume / "scratch" / "wal-probe"
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(clone, "_mounted_volume_is_separate", lambda *_: True)
+    monkeypatch.setattr(clone, "RESERVE_MIN_BYTES", 1)
+    monkeypatch.setattr(clone, "RESERVE_FRACTION", 0.0)
+    stopped = Event()
+    started = Event()
+    failures: list[Exception] = []
+
+    def write_daemon_updates() -> None:
+        try:
+            with sqlite3.connect(source, timeout=5) as conn:
+                while not stopped.is_set():
+                    conn.execute(
+                        "UPDATE live_evidence SET value='updated' WHERE id=1"
+                    )
+                    conn.commit()
+                    started.set()
+                    stopped.wait(0.005)
+        except Exception as exc:
+            failures.append(exc)
+            started.set()
+
+    writer = Thread(target=write_daemon_updates, daemon=True)
+    writer.start()
+    try:
+        assert started.wait(timeout=5)
+        assert not failures
+        result = clone.prepare_probe_dataset(
+            source=source,
+            target=scratch / "probe.db",
+            provenance=scratch / "provenance.json",
+            migrations_dir=migrations(tmp_path),
+            volume=volume,
+        )
+    finally:
+        stopped.set()
+        writer.join(timeout=5)
+
+    assert not writer.is_alive()
+    assert not failures
+    with sqlite3.connect(result) as db:
+        assert db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == clone.EXPECTED_SCHEMA_VERSION
+        assert db.execute("PRAGMA quick_check").fetchone()[0] == "ok"

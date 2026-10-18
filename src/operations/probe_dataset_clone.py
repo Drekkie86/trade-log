@@ -61,7 +61,8 @@ def prepare_probe_dataset(
         raise RuntimeError("PERFORMANCE_DATASET_INVALID_DESTINATION_OR_MIGRATIONS")
 
     with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=60) as original:
-        original.execute("PRAGMA query_only=ON")
+        # mode=ro prevents source mutations. PRAGMA query_only would also
+        # prohibit VACUUM INTO even though it only writes the scratch output.
         from_version = get_schema_version(original)
         if from_version > expected_version:
             raise RuntimeError("PERFORMANCE_DATASET_SOURCE_SCHEMA_NEWER_THAN_RELEASE")
@@ -81,16 +82,42 @@ def prepare_probe_dataset(
             # created exclusively with service-user-only permissions.
             fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             os.close(fd)
+            # Incremental sqlite3.backup restarts when concurrent daemon
+            # writes land during a multi-minute copy; its reported progress can
+            # loop indefinitely. VACUUM INTO takes one consistent read snapshot,
+            # exactly as the verified production backup path does. The source
+            # remains opened with mode=ro and only this isolated target is written.
+            _log("VACUUM_INTO_BEGIN")
+            started = time.monotonic()
+            last_log = [started]
+            timed_out = [False]
+
+            def vacuum_progress() -> int:
+                now = time.monotonic()
+                elapsed = now - started
+                if elapsed >= 1800:
+                    timed_out[0] = True
+                    return 1
+                if now - last_log[0] >= 120:
+                    _log(f"COPY_PROGRESS_VACUUM_ELAPSED_{int(elapsed)}S")
+                    last_log[0] = now
+                return 0
+
+            original.set_progress_handler(vacuum_progress, 10_000)
+            try:
+                original.execute("VACUUM main INTO ?", (str(target),))
+            except sqlite3.OperationalError as exc:
+                if timed_out[0]:
+                    raise RuntimeError(
+                        "PERFORMANCE_DATASET_SNAPSHOT_TIMEOUT_1800S"
+                    ) from exc
+                raise
+            finally:
+                original.set_progress_handler(None, 0)
+
+            _log("COPY_COMPLETE_MIGRATING")
             target_conn = sqlite3.connect(target, timeout=90)
             try:
-                last_log = [time.monotonic()]
-                def progress(_status: int, _remaining: int, _total: int) -> None:
-                    now = time.monotonic()
-                    if now - last_log[0] >= 120:
-                        _log(f"COPY_PROGRESS_{_total - _remaining}_OF_{_total}_PAGES")
-                        last_log[0] = now
-                original.backup(target_conn, pages=4096, progress=progress, sleep=0.05)
-                _log("COPY_COMPLETE_MIGRATING")
                 target_conn.execute("PRAGMA foreign_keys=ON")
                 to_version = apply_pending_migrations(target_conn, migrations_dir)
                 if to_version != expected_version:

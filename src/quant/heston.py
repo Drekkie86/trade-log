@@ -130,16 +130,31 @@ def _probability(
         value = cmath.exp(-1j * u * log_k) * numerator / denominator
         return float(value.real)
 
+    # A finite integration_limit is a *segment boundary*, not a hard
+    # Fourier cutoff. The legacy truncation at 80/120 silently produced
+    # several-percent and larger option-pricing errors under difficult
+    # Heston regimes. Always price the remaining [limit, infinity) tail.
+    # An infinite boundary integrates the entire range in one pass.
+    segments = (
+        ((0.0, math.inf),)
+        if math.isinf(integration_limit)
+        else ((0.0, integration_limit), (integration_limit, math.inf))
+    )
+    parts: list[float] = []
+    errors: list[float] = []
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", IntegrationWarning)
-        integral, error_estimate = quad(
-            integrand,
-            0.0,
-            integration_limit,
-            epsabs=1e-8,
-            epsrel=1e-7,
-            limit=250,
-        )
+        for lower, upper in segments:
+            part, error = quad(
+                integrand, lower, upper,
+                epsabs=1e-9,
+                epsrel=1e-8,
+                limit=350,
+            )
+            parts.append(part)
+            errors.append(error)
+    integral = math.fsum(parts)
+    error_estimate = math.fsum(errors)
 
     integration_warnings = [
         item for item in caught if issubclass(item.category, IntegrationWarning)
@@ -173,10 +188,15 @@ def price(
     *,
     integration_limit: float = 120.0,
 ) -> float:
+    """European Heston price with the entire Fourier tail accounted for.
+
+    Finite integration_limit is now a quadrature split point, not a truncation
+    bound. The result includes the tail through positive infinity.
+    """
     option.validate()
     params.validate()
-    if integration_limit <= 0:
-        raise QuantInputError("integration_limit must be positive")
+    if math.isnan(integration_limit) or integration_limit <= 0:
+        raise QuantInputError("integration_limit must be positive or positive infinity")
     if option.time_to_expiry == 0:
         return bsm_price(option)
     if params.vol_of_vol <= 1e-10:
@@ -232,6 +252,10 @@ def calibrate(
     max_nfev: int = 80,
     integration_limit: float = 80.0,
 ) -> HestonCalibrationResult:
+    """Fit to tail-complete Heston prices, including the calibration tail.
+
+    integration_limit controls the quadrature split, never a cutoff.
+    """
     if len(options) != len(market_prices) or len(options) < 5:
         raise QuantInputError("Heston calibration requires >=5 matched observations")
     if any(p <= 0 or not math.isfinite(p) for p in market_prices):
