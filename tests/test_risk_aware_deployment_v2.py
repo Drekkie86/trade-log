@@ -170,7 +170,7 @@ def test_receiver_uses_deployment_safety_and_requires_live_edge_before_success()
         current_gate,
     )
     deployment_safe = receiver.index(
-        "--deployment-safe",
+        '"${RELEASE_DIR}/src/operations/deployment_transition_gate.py"',
         current_status,
     )
     db_prepare = receiver.index(

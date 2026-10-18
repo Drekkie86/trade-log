@@ -696,7 +696,8 @@ else
     sudo -u "${SERVICE_USER}" \
       "${PREVIOUS_TARGET}/.venv/bin/python" \
       "${PREVIOUS_TARGET}/christiania_status.py" \
-      --json
+      --json \
+      || true
   )"
   printf '%s\n' "${CURRENT_STATUS_JSON}"
   # Fail closed on everything except the exact legacy-to-volume timer
