@@ -10,7 +10,7 @@ import sqlite3
 import json
 from dataclasses import asdict
 from datetime import UTC
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any, Sequence
 
@@ -38,6 +38,7 @@ from src.decision.trade_ideas import (
     ModelRecord,
     TradeIdea,
     load_current_ideas,
+    load_session_research_funnel,
     model_track_record,
     payoff_curve,
 )
@@ -198,6 +199,11 @@ def _cached_ideas(key: str, db_path):
     return load_current_ideas(db_path=db_path)
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _cached_session_funnel(key: str, session_date: str | None, db_path):
+    return load_session_research_funnel(session_date, db_path=db_path)
+
+
 @st.cache_data(ttl=600, show_spinner="Checking each model against resolved expiries…")
 def _cached_records(key: str, db_path):
     return model_track_record(db_path=db_path)
@@ -280,6 +286,19 @@ def score_banner(report: EvidenceReport | None) -> tuple[str, str]:
     )
 
 
+def _render_session_funnel(key: str, session_date: str | None, db_path) -> None:
+    funnel = _cached_session_funnel(key, session_date, db_path)
+    st.caption(
+        "Latest completed research session: "
+        + (session_date or "none recorded")
+        + ". Historical observations, not executable quotes."
+    )
+    f1, f2, f3 = st.columns(3)
+    f1.metric("Symbols actually sampled", funnel["symbols_sampled"])
+    f2.metric("Built proposals", funnel["structures_proposed"])
+    f3.metric("Builder blocked", funnel["structures_blocked"])
+
+
 def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercised by AppTest
     import altair as alt
     import pandas as pd
@@ -304,24 +323,32 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
         {"success": st.success, "warning": st.warning}[tone](text)
 
         if not ideas:
-            st.info(
-                "No trade ideas right now"
-                + (f" (latest session {session_date})." if session_date else ".")
-                + " They appear when the system spots a mispriced option and builds a limited-risk trade around it."
+            _render_session_funnel(key, session_date, db_path)
+            st.markdown("**NO TRADE.** No scorable proposed structures in the latest completed session.")
+            st.caption(
+                "The system does not recycle proposals from previous sessions. "
+                "No idea is preferable to a stale or unpriceable trade."
             )
             if errors:
-                st.caption(f"{len(errors)} idea(s) could not be scored.")
+                with st.expander(f"{len(errors)} proposals could not be scored"):
+                    for proposal_id, message in errors:
+                        st.caption(f"Proposal {proposal_id}: {message}")
             return
 
-        try:
-            today_ny = datetime.now(ZoneInfo("America/New_York")).date()
-            age_days = (today_ny - date.fromisoformat(session_date)).days if session_date else 0
-        except ValueError:
-            age_days = 0
-        if age_days >= 3:
+        last_snapshot_at = max((idea.as_of for idea in ideas if idea.as_of), default=None)
+        last_snapshot_age = None
+        if last_snapshot_at:
+            try:
+                captured = datetime.fromisoformat(last_snapshot_at.replace("Z", "+00:00"))
+                if captured.tzinfo is not None:
+                    last_snapshot_age = datetime.now(UTC) - captured
+            except ValueError:
+                pass
+        if last_snapshot_age is None or last_snapshot_age > timedelta(minutes=15) or last_snapshot_age < timedelta(0):
             st.warning(
-                f"These ideas come from the {session_date} market session, "
-                "not current quotes. Review as historical observations only."
+                "These are not live, executable quotes. The latest research snapshot "
+                "is missing, in the future, or more than 15 minutes old. "
+                "A new research assessment and a broker re-quote are required before any trade."
             )
 
         try:
@@ -339,11 +366,33 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
         c1.metric("Worth a look", counts[VERDICT_WORTH])
         c2.metric("Marginal", counts[VERDICT_MARGINAL])
         c3.metric("Skip", counts[VERDICT_SKIP])
+        _render_session_funnel(key, session_date, db_path)
+        calibrated = sum(
+            bool(a.features.get("historical_iv_variation_calibrated"))
+            for _, a in pairs
+        )
+        if calibrated < len(pairs):
+            st.caption(
+                f"Quote-variation calibration available for {calibrated} of {len(pairs)} "
+                "ideas. An uncalibrated idea cannot receive the strongest "
+                "opportunity verdict, even if its theoretical edge is positive."
+            )
         if as_of:
-            st.caption(f"Market data from {format_local_datetime(as_of)}.")
+            st.caption(f"Most recent candidate snapshot: {format_local_datetime(as_of)}.")
+        if not counts[VERDICT_WORTH]:
+            st.markdown("**NO TRADE.** None of the latest-session model candidates clears the opportunity gate.")
+            rejected_for_cost = sum(
+                assessment.reason_code == "COSTS_EAT_EDGE"
+                for _, assessment in pairs
+            )
+            if rejected_for_cost:
+                st.caption(
+                    f"{rejected_for_cost} of {len(pairs)} candidates have their modeled "
+                    "gross price gap wiped out by spreads and assumed transaction fees."
+                )
 
         choice = st.radio(
-            "Show", list(FILTERS), index=2, horizontal=True, key="ideas_filter",
+            "Show", list(FILTERS), index=0, horizontal=True, key="ideas_filter",
             help="Worth a look: after costs, the gap exceeds spread noise and an as-of historical quote-variation estimate. "
                  "Marginal: near noise, or insufficient verified quote history even if a model scores higher.",
         )

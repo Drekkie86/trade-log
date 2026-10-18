@@ -779,8 +779,12 @@ def score_proposal(proposal_id: int, *, db_path=None) -> TradeIdea:
 def load_current_ideas(
     *, db_path=None
 ) -> tuple[list[TradeIdea], list[tuple[int, str]], str | None]:
-    """Score every proposal from the most recent research session, one per
-    (underlying, expiration, right, target strike), newest first.
+    """Score the latest *completed research session*, never the last
+    session that happened to yield a viable proposal.
+
+    A later completed session containing only BLOCKED proposals must show
+    NO TRADE rather than silently resurrecting older recommendations.
+    Within that session, de-duplicate by underlying/expiry/right/strike.
 
     Returns (ideas ranked best-first, [(proposal_id, error)], session_date).
     """
@@ -790,8 +794,7 @@ def load_current_ideas(
             """
             SELECT MAX(rr.us_session_date) AS d
             FROM research_runs AS rr
-            JOIN shadow_structure_proposals AS ssp ON ssp.research_run_id = rr.id
-            WHERE ssp.proposal_state = 'PROPOSED';
+            WHERE rr.status = 'COMPLETED';
             """
         ).fetchone()
         session_date = latest["d"] if latest else None
@@ -802,6 +805,7 @@ def load_current_ideas(
             + """
             JOIN research_runs AS rr ON rr.id = ssp.research_run_id
             WHERE ssp.proposal_state = 'PROPOSED'
+              AND rr.status = 'COMPLETED'
               AND rr.us_session_date = ?
               AND ssp.expiration >= ?
               AND ssp.id = (
@@ -812,6 +816,7 @@ def load_current_ideas(
                       AND p2.right = ssp.right
                       AND p2.target_strike = ssp.target_strike
                       AND p2.proposal_state = 'PROPOSED'
+                      AND r2.status = 'COMPLETED'
                       AND r2.us_session_date = rr.us_session_date)
             ORDER BY ssp.id DESC;
             """,
@@ -825,6 +830,53 @@ def load_current_ideas(
             except Exception as exc:  # one bad proposal must not hide the rest
                 errors.append((int(row["proposal_id"]), f"{type(exc).__name__}: {exc}"))
         return rank_ideas(ideas), errors, str(session_date)
+    finally:
+        conn.close()
+
+
+def load_session_research_funnel(
+    session_date: str | None, *, db_path=None
+) -> dict[str, int]:
+    """Bounded, read-only accounting for the latest completed session.
+
+    Count actual distinct sampled underlyings, not an assumed configured
+    universe size; blocked/proposed are construction states, not trades.
+    """
+    result = {
+        "symbols_sampled": 0,
+        "market_snapshots": 0,
+        "structures_proposed": 0,
+        "structures_blocked": 0,
+    }
+    if not session_date:
+        return result
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT ms.underlying), COUNT(*)
+            FROM market_snapshots AS ms
+            JOIN research_runs AS rr ON rr.id = ms.research_run_id
+            WHERE rr.us_session_date = ? AND rr.status = 'COMPLETED';
+            """, (session_date,)
+        ).fetchone()
+        result["symbols_sampled"] = int(row[0])
+        result["market_snapshots"] = int(row[1])
+        states = conn.execute(
+            """
+            SELECT ssp.proposal_state, COUNT(*) AS n
+            FROM shadow_structure_proposals AS ssp
+            JOIN research_runs AS rr ON rr.id = ssp.research_run_id
+            WHERE rr.us_session_date = ? AND rr.status = 'COMPLETED'
+            GROUP BY ssp.proposal_state;
+            """, (session_date,)
+        ).fetchall()
+        for state, count in states:
+            if state == "PROPOSED":
+                result["structures_proposed"] = int(count)
+            elif state == "BLOCKED":
+                result["structures_blocked"] = int(count)
+        return result
     finally:
         conn.close()
 
