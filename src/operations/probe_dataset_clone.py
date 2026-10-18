@@ -19,6 +19,9 @@ import time
 from src.config import get_runtime_setting, load_runtime_env_file
 from src.database.migration_runner import apply_pending_migrations, get_schema_version
 from src.database.repository import EXPECTED_SCHEMA_VERSION, resolve_db_path
+from src.operations.migration_delta_checks import (
+    capture_migration_schema, verify_additive_schema_migration,
+)
 
 RESERVE_MIN_BYTES = 15 * 1024**3
 RESERVE_FRACTION = 0.15
@@ -119,15 +122,13 @@ def prepare_probe_dataset(
             target_conn = sqlite3.connect(target, timeout=90)
             try:
                 target_conn.execute("PRAGMA foreign_keys=ON")
+                schema_before = capture_migration_schema(target_conn)
                 to_version = apply_pending_migrations(target_conn, migrations_dir)
                 if to_version != expected_version:
                     raise RuntimeError("PERFORMANCE_DATASET_MIGRATION_NOT_AT_RELEASE_VERSION")
-                _log("MIGRATED_VERIFYING")
-                quick = str(target_conn.execute("PRAGMA quick_check(1)").fetchone()[0])
-                if quick != "ok":
-                    raise RuntimeError(f"PERFORMANCE_DATASET_QUICK_CHECK_FAILED:{quick}")
-                if target_conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
-                    raise RuntimeError("PERFORMANCE_DATASET_FOREIGN_KEY_VIOLATION")
+                _log("MIGRATED_VERIFYING_ADDITIVE_DELTA")
+                delta = verify_additive_schema_migration(target_conn, schema_before)
+                _log("MIGRATED_DELTA_VERIFIED_" + "_".join(delta.new_tables))
             finally:
                 target_conn.close()
             measured_path = target
