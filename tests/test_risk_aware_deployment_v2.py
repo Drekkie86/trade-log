@@ -31,7 +31,7 @@ def test_no_migration_fast_path_precedes_backup_and_deep_verification():
         fast_guard,
     )
     backup_phase = source.index(
-        '"Database preparation: creating and fully verifying rollback backup"',
+        '"Database preparation: creating rollback backup and verifying its identity"',
         fast_return,
     )
 
