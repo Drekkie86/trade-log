@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import json
+from dataclasses import asdict
+from datetime import UTC
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from typing import Any, Sequence
@@ -21,6 +24,7 @@ from src.decision.opportunity import (
     rank_by_opportunity,
 )
 from src.decision.opportunity_evidence import STATE_EVIDENCE, EvidenceReport, evaluate
+from src.decision.manual_trade_review import manual_trade_review
 from src.research.opportunity_pipeline import (
     load_evidence_rows, load_prior_quote_noise_for_proposals,
 )
@@ -209,6 +213,29 @@ def _cached_prior_noise(key: str, proposal_ids: tuple[int, ...], db_path):
     return load_prior_quote_noise_for_proposals(list(proposal_ids), db_path=db_path)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_contract_symbols(key: str, quote_ids: tuple[int, ...], db_path):
+    from src.database.repository import get_connection
+
+    if not quote_ids:
+        return {}
+    conn = get_connection(db_path)
+    try:
+        marks = ",".join("?" for _ in quote_ids)
+        return {
+            int(row["id"]): (
+                str(row["option_symbol"] or ""),
+                str(row["quote_at"] or ""),
+            )
+            for row in conn.execute(
+                f"SELECT id, option_symbol, quote_at FROM option_quotes WHERE id IN ({marks})",
+                quote_ids,
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+
 VERDICT_BADGE = {
     VERDICT_WORTH: "● Worth a look",
     VERDICT_MARGINAL: "◐ Marginal",
@@ -337,7 +364,7 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
             except (AttributeError, IndexError, TypeError):
                 selected = None
             idea, assessment = selected or shown[0]
-            _detail(idea, assessment, report, alt, pd, st)
+            _detail(idea, assessment, report, alt, pd, st, db_path=db_path)
 
         if errors:
             with st.expander(f"{len(errors)} idea(s) could not be scored"):
@@ -421,7 +448,7 @@ def _sigma_total(a: OpportunityAssessment) -> float | None:
     return (a.sigma_quote_vol_pts ** 2 + a.sigma_model_vol_pts ** 2) ** 0.5
 
 
-def _detail(idea: TradeIdea, a: OpportunityAssessment, report, alt, pd, st) -> None:  # pragma: no cover - rendering
+def _detail(idea: TradeIdea, a: OpportunityAssessment, report, alt, pd, st, *, db_path=None) -> None:  # pragma: no cover - rendering
     st.markdown(f"#### {idea.underlying} · {structure_label(idea)} · expires {idea.expiration}")
     st.markdown(f"**{VERDICT_BADGE[a.verdict]}.** {a.headline}")
     if idea.profile is not None:
@@ -471,6 +498,7 @@ def _detail(idea: TradeIdea, a: OpportunityAssessment, report, alt, pd, st) -> N
             "Bid": l.bid, "Ask": l.ask, "Price used": l.entry_price,
         } for l in idea.legs])
         st.dataframe(legs, hide_index=True, width="stretch")
+    _manual_execution_review(idea, a, st, db_path=db_path)
     for note in idea.notes:
         st.caption(f"Note: {note}")
 
@@ -500,3 +528,103 @@ def _summary(idea: TradeIdea) -> str:
         f"(a {idea.profile.p_profit * 100:.0f}% risk-neutral model probability, "
         "not an observed or real-world success rate)."
     )
+
+
+def _manual_execution_review(idea: TradeIdea, assessment: OpportunityAssessment, st, *, db_path=None) -> None:
+    """A risk-gated manual execution checklist; explicitly never submits orders."""
+    with st.expander("Manual trade review (no broker order submission)"):
+        st.caption(
+            "Live decision support, not automatic trading. Recheck every price and "
+            "commission at your own broker; nothing on this page transmits an order "
+            "or confirms an executed position."
+        )
+        base = f"manual_{idea.proposal_id}"
+        cash = st.number_input(
+            "Available cash in broker (€)", min_value=0.0, max_value=500.0,
+            value=0.0, step=10.0, key=base + "_cash",
+        )
+        exposure = st.number_input(
+            "Existing open maximum risk (€)", min_value=0.0,
+            value=0.0, step=10.0, key=base + "_exposure",
+        )
+        broker_fx = st.number_input(
+            "EUR/USD rate verified in broker", min_value=0.0,
+            value=0.0, format="%.4f", step=0.001, key=base + "_fx",
+        )
+        positions_confirmed = st.checkbox(
+            "I checked all existing open risk and available balance",
+            value=False, key=base + "_positions",
+        )
+        prices_confirmed = st.checkbox(
+            "I checked executable bid/ask prices, fees and multi-leg availability in my broker",
+            value=False, key=base + "_broker",
+        )
+        qids = tuple(int(l.option_quote_id) for l in idea.legs)
+        try:
+            symbols = _cached_contract_symbols(_db_cache_key(db_path), qids, db_path)
+        except sqlite3.OperationalError:
+            symbols = {}
+        reviewed = manual_trade_review(
+            idea, assessment, now=datetime.now(UTC),
+            contract_symbols_by_quote_id={
+                qid: values[0] for qid, values in symbols.items()
+            },
+            leg_quote_at_by_quote_id={
+                qid: values[1] for qid, values in symbols.items()
+            },
+            available_cash_eur=float(cash),
+            current_open_risk_eur=float(exposure),
+            eur_to_usd=float(broker_fx) if broker_fx > 0 else None,
+            broker_prices_and_fees_confirmed=bool(prices_confirmed),
+            current_positions_confirmed=bool(positions_confirmed),
+        )
+        if reviewed.conservative_risk_eur is not None:
+            st.metric(
+                "Conservative one-package risk", f"€{reviewed.conservative_risk_eur:.2f}",
+                help="Includes an additional commission allowance; price may change before execution.",
+            )
+        st.caption(
+            f"Available risk after other positions: €{reviewed.available_capital_eur:.2f}. "
+            f"Maximum new risk per package: €{reviewed.max_risk_per_trade_eur:.2f} "
+            "(10% of declared cash, hard €500 total bankroll cap)."
+        )
+        if reviewed.legs:
+            st.dataframe(
+                [
+                    {
+                        "Contract": leg.contract_symbol or "NOT VERIFIED",
+                        "Action": leg.action, "Qty": leg.quantity,
+                        "Indicative leg price ($)": leg.estimated_entry_per_share_usd,
+                    }
+                    for leg in reviewed.legs
+                ],
+                hide_index=True, width="stretch",
+            )
+        if not reviewed.ready_for_manual_broker_requote:
+            st.warning(
+                "Not ready for an execution checklist: "
+                + ", ".join(reason.replace("_", " ").lower() for reason in reviewed.reasons)
+            )
+        else:
+            st.info(
+                "Risk and quote checklist passed at this instant. "
+                "Requote as a package in your broker; fills, exercise risk and actual "
+                "commissions remain unverified. This is not an order authorization."
+            )
+            ticket = {
+                "trade_idea_proposal_id": idea.proposal_id,
+                "underlying": idea.underlying,
+                "expiration": idea.expiration,
+                "as_of_quote": idea.as_of,
+                "reviewed_at_utc": datetime.now(UTC).isoformat(),
+                "scoring_verdict": assessment.verdict,
+                "order_status": "NOT_SUBMITTED_MANUAL_BROKER_CHECK_REQUIRED",
+                "review": asdict(reviewed),
+            }
+            st.download_button(
+                "Download manual review ticket",
+                data=json.dumps(ticket, sort_keys=True, indent=2),
+                file_name=f"christiania-manual-review-{idea.proposal_id}.json",
+                mime="application/json",
+                key=base + "_download",
+            )
