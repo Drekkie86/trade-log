@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly Christiania independent-volume recovery
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+RandomizedDelaySec=10min
+AccuracySec=1min
+Persistent=false
+Unit=christiania-volume-recovery-backup.service
+
+[Install]
+WantedBy=timers.target
