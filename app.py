@@ -1475,6 +1475,9 @@ elif page == "Shadow Lab":
                             "Expiry": r["expiration"],
                             "Evidence state": r["outcome_state"],
                             "Source snapshot": r.get("snapshot_id"),
+                            "Source captured (Brussels)": format_local_datetime(
+                                r.get("snapshot_captured_at")
+                            ),
                             "Theta model spot proxy ($)": r.get("proxy_price"),
                             "Option contracts agreeing": r.get("distinct_model_option_contracts"),
                             "Indicative net to expiry (€)": (
@@ -1489,9 +1492,10 @@ elif page == "Shadow Lab":
                     width="stretch",
                 )
                 st.caption(
-                    "Every proxy remains excluded from the validated-package-outcome "
-                    "population. An expiry-day model spot is not a fill or an "
-                    "independently verified settlement."
+                    "Source capture times are shown in Brussels local time (CET/CEST), "
+                    "not as US closing or settlement timestamps. Every proxy remains "
+                    "excluded from validated-package outcomes. An expiry-day model "
+                    "spot is not a fill or independently verified settlement."
                 )
 
         section_heading("Tracking funnel")

@@ -124,3 +124,18 @@ def test_missing_expiry_snapshot_is_explicitly_unresolved(db_path):
     assert report["unresolved_count"] == 1
     assert report["rows"][0]["candidate_id"] == candidate_id
     assert report["rows"][0]["reason_code"] == "NO_CONSISTENT_ASOF_PROVIDER_MODEL_SPOT"
+
+
+def test_shadow_lab_proxy_table_exposes_original_capture_time_in_local_timezone():
+    """A proxy's age must be visible alongside its candidate and source snapshot."""
+    from pathlib import Path
+    from src.ui.datetime_display import format_local_datetime
+
+    app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"Source captured (Brussels)": format_local_datetime(' in app_source
+    assert 'r.get("snapshot_captured_at")' in app_source
+    assert format_local_datetime("2026-10-16T19:45:00Z") == (
+        "16 Oct 2026, 21:45 CEST"
+    )
