@@ -21,7 +21,9 @@ from src.decision.opportunity import (
     rank_by_opportunity,
 )
 from src.decision.opportunity_evidence import STATE_EVIDENCE, EvidenceReport, evaluate
-from src.research.opportunity_pipeline import load_evidence_rows
+from src.research.opportunity_pipeline import (
+    load_evidence_rows, load_prior_quote_noise_for_proposals,
+)
 from src.decision.trade_ideas import (
     MODEL_LABELS,
     MODEL_ORDER,
@@ -202,6 +204,11 @@ def _cached_evidence(key: str, db_path):
     return evaluate(load_evidence_rows(db_path=db_path))
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _cached_prior_noise(key: str, proposal_ids: tuple[int, ...], db_path):
+    return load_prior_quote_noise_for_proposals(list(proposal_ids), db_path=db_path)
+
+
 VERDICT_BADGE = {
     VERDICT_WORTH: "● Worth a look",
     VERDICT_MARGINAL: "◐ Marginal",
@@ -290,7 +297,15 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
                 "not current quotes. Review as historical observations only."
             )
 
-        pairs = rank_by_opportunity(ideas)
+        try:
+            prior_noise = _cached_prior_noise(
+                key, tuple(int(idea.proposal_id) for idea in ideas), db_path
+            )
+        except sqlite3.OperationalError:
+            prior_noise = {}
+        pairs = rank_by_opportunity(
+            ideas, prior_noise_by_proposal=prior_noise
+        )
         counts = {v: sum(1 for _, a in pairs if a.verdict == v) for v in VERDICT_BADGE}
         as_of = max((i.as_of for i in ideas if i.as_of), default=None)
         c1, c2, c3 = st.columns(3)
@@ -302,8 +317,8 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
 
         choice = st.radio(
             "Show", list(FILTERS), index=2, horizontal=True, key="ideas_filter",
-            help="Worth a look: the edge after costs is at least twice the noise in the quotes. "
-                 "Marginal: positive after costs but between one and two times the noise.",
+            help="Worth a look: after costs, the gap exceeds spread noise and an as-of historical quote-variation estimate. "
+                 "Marginal: near noise, or insufficient verified quote history even if a model scores higher.",
         )
         shown = [(i, a) for i, a in pairs if a.verdict in FILTERS[choice]]
         if not shown:

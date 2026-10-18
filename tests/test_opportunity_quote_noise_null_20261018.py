@@ -103,11 +103,14 @@ def test_no_quote_noise_never_finds_false_worth():
 def test_high_midpoint_noise_is_not_modelled_by_bid_ask_width():
     low = run_null(noise_iv=0.006)
     high = run_null(noise_iv=0.012)
-    # Document, don't censor: old rule will label noise as an opportunity.
-    # The exact counts belong to THIS synthetic fixture and seed ONLY.
-    assert high.worth > 0
-    assert high.worth > low.worth
-    assert high.marginal_or_worth >= high.worth
+    # The former spread-only model labelled 34/600 and 212/600 as WORTH
+    # (at 0.006 and 0.012 noise, respectively). Without empirical prior quote
+    # history, V2 now refuses to certify either as WORTH; the underlying
+    # uncalibrated model gaps remain visible as marginal suggestions.
+    assert low.worth == 0
+    assert high.worth == 0
+    assert high.marginal_or_worth > low.marginal_or_worth
+    assert high.max_score is not None and high.max_score > 2
 
 
 if __name__ == "__main__":

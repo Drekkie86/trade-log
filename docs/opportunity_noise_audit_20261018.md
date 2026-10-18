@@ -26,3 +26,30 @@ Added full Ubuntu Python 3.13 pytest CI job without test exclusions, in addition
 ## Profitability versus outperforming the placebo
 
 The preregistered paired bootstrap tests whether the selected structure beats a matched random strike. This does NOT establish positive net expected return. The initial implementation could show EVIDENCE_OF_EDGE when the selected trades still lost money, but the random-strike baseline lost more. Results now separately reports the selected-trade and matched-placebo mean net paper P&L. A relative win with non-positive selected mean, or a non-losing placebo, receives RELATIVE_EDGE_NOT_PROFITABLE rather than the stronger evidence banner. This is an explicit stricter operational presentation gate, not a retrofit of the preregistered paired test or a claim that mean paper P&L is statistically significantly positive. No trading authorization follows from either state.
+
+## V2 as-of quote-variation correction (18 October, subsequent branch)
+
+The original V1 scored uncertainty solely from bid/ask width and correlated
+model-fit dispersion. Its 34/600 and 212/600 synthetic WORTH false alarms remain
+a valid diagnosis of the V1 rule, not a promise that V2 has proved profitability.
+
+V2 now refuses WORTH unless all three option legs have at least six disjoint
+prior-IV difference pairs (at least twelve quote observations per leg).
+Indexed same-contract quote-symbol history is pinned to the original
+session/capture time, and stale, future or repeated timestamps fail closed.
+Pairs are separated in time, spot moves are bounded, and an upper 95% Gaussian
+one-leg variation proxy is derived from historical IV differences. Both
+bid/ask uncertainty and historical IV variation are accounted for in scoring.
+
+This measures prior same-provider IV movement, not direct latent midpoint
+measurement error, independent vendors, alpha, or a calibrated multiple-
+comparison false discovery rate. Structural model bias and genuine changes
+in volatility remain. American puts cannot produce WORTH while the American-
+exercise implied-volatility modeling gap remains open. Missing quote history
+leads to MARGINAL/watchlist with an explicit reason, never invented sigma.
+
+Scoring version OPP_V2 is stored immutably along with the as-of sample sizes
+and leg-level sigma estimates. Evidence never silently pools V1 and V2.
+The UI reuses the persisted as-of calibration rather than later quotes.
+Actual broker submission and position/fill reconciliation are still separate
+workflows and cannot be claimed merely from a corrected score.

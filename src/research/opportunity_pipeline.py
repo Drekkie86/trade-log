@@ -27,6 +27,7 @@ from src.decision.opportunity import (
     assess_idea,
     build_placebo_legs,
 )
+from src.decision.quote_noise import prior_iv_variation_for_leg
 from src.decision.trade_ideas import (
     IdeaLeg,
     TradeIdea,
@@ -172,10 +173,10 @@ def assess_new_proposals(
         conn.close()
 
     assessed = placebos = without = errors = 0
+    noise_cache: dict[int, tuple[float, int] | None] = {}
     for pid in pids:
         try:
             idea = score_proposal(pid, db_path=db_path)
-            assessment = assess_idea(idea)
             conn = get_connection(db_path)
             try:
                 snapshot_id = int(
@@ -185,6 +186,25 @@ def assess_new_proposals(
                     ).fetchone()["snapshot_id"]
                 )
                 chain_rows = _chain(conn, snapshot_id, idea.expiration, idea.right)
+                for leg in idea.legs:
+                    if leg.option_quote_id not in noise_cache:
+                        noise_cache[leg.option_quote_id] = prior_iv_variation_for_leg(
+                            conn, leg.option_quote_id
+                        )
+                estimates = {
+                    qid: noise_cache[qid]
+                    for qid in [leg.option_quote_id for leg in idea.legs]
+                    if noise_cache[qid] is not None
+                }
+                assessment = assess_idea(
+                    idea,
+                    historical_iv_sigma_by_quote_id={
+                        qid: value[0] for qid, value in estimates.items()
+                    },
+                    historical_iv_samples_by_quote_id={
+                        qid: value[1] for qid, value in estimates.items()
+                    },
+                )
                 features = dict(assessment.features)
                 features["db"] = _db_features(conn, idea, snapshot_id, chain_rows)
                 features["models_available"] = assessment.models_available
@@ -325,8 +345,10 @@ def load_evidence_rows(*, db_path=None) -> list[dict[str, Any]]:
             SELECT a.proposal_id, a.kind, a.verdict, a.score, a.underlying, a.expiration,
                    a.right, a.target_strike, a.structure_id, o.net_pnl_usd
             FROM opportunity_assessments_v1 AS a
-            JOIN opportunity_outcomes_v1 AS o ON o.assessment_id = a.id;
-            """
+            JOIN opportunity_outcomes_v1 AS o ON o.assessment_id = a.id
+            WHERE a.scoring_version = ?;
+            """,
+            (SCORING_VERSION,),
         ).fetchall()
     finally:
         conn.close()
@@ -348,3 +370,40 @@ def load_evidence_rows(*, db_path=None) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def load_prior_quote_noise_for_proposals(
+    proposal_ids: list[int], *, db_path=None
+) -> dict[int, tuple[dict[int, float], dict[int, int]]]:
+    """Read the immutable as-of noise evidence, rather than re-query future quotes."""
+    if not proposal_ids:
+        return {}
+    conn = get_connection(db_path)
+    out: dict[int, tuple[dict[int, float], dict[int, int]]] = {}
+    try:
+        for offset in range(0, len(proposal_ids), 300):
+            ids = proposal_ids[offset:offset + 300]
+            marks = ",".join("?" for _ in ids)
+            records = conn.execute(
+                f"""SELECT proposal_id, features_json
+                    FROM opportunity_assessments_v1
+                    WHERE kind='SIGNAL' AND scoring_version=?
+                    AND proposal_id IN ({marks})""",
+                (SCORING_VERSION, *ids),
+            )
+            for record in records:
+                features = json.loads(record["features_json"])
+                if not features.get("historical_iv_variation_calibrated"):
+                    continue
+                sigmas = {
+                    int(qid): float(value) for qid, value in
+                    features["historical_iv_sigma_by_quote_id"].items()
+                }
+                counts = {
+                    int(qid): int(value) for qid, value in
+                    features["historical_iv_variation_samples_by_quote_id"].items()
+                }
+                out[int(record["proposal_id"])] = (sigmas, counts)
+        return out
+    finally:
+        conn.close()
