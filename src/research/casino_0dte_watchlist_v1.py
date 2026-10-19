@@ -15,7 +15,10 @@ import sqlite3
 
 from src.database.repository import resolve_db_path
 from src.operations.sqlite_runtime import open_readonly_connection
-from src.research.massive_underlying_observation_v1 import STOCK_PRICE_SOURCE
+from src.research.massive_underlying_observation_v1 import (
+    STOCK_PRICE_SOURCE,
+    MAX_AGE_SECONDS as MAX_STOCK_AGE_SECONDS,
+)
 from src.research.strategy_competition_v1 import _fx_asof, _quote_time_asof
 from src.research.shadow_intrinsic_admission_v1 import USD_COST_PER_CONTRACT_SIDE_MINOR
 
@@ -25,7 +28,6 @@ MAX_QUOTES_PER_SNAPSHOT = 2500
 MAX_CANDIDATES = 10
 MAX_CAPTURE_AGE_SECONDS = 600
 MAX_QUOTE_SKEW_SECONDS = 15
-MAX_STOCK_AGE_SECONDS = 600
 MAX_FX_AGE_SECONDS = 172800
 CASINO_BANKROLL_EUR = 500.0
 CASINO_SINGLE_LOSS_CAP_EUR = 25.0
