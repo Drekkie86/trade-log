@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from collections import Counter
 from datetime import UTC, datetime
 from statistics import median
 from typing import Any
@@ -123,6 +124,44 @@ def _latest_qualifying_proxy(
     return None
 
 
+def modeled_expiry_payoff_mechanism(
+    *, entry_cashflow_usd_minor: int, terminal_intrinsic_usd_minor: int,
+    assumed_fees_usd_minor: int,
+) -> str:
+    """Classify a *proxy*, not a validated loss cause or independently filled trade.
+
+    The frozen cashflow already crosses every option leg at ask/bid. Thus a
+    gross negative includes adverse entry spread *and* terminal payoff; this
+    function cannot distinguish those two mechanisms without midquote evidence.
+    """
+    if assumed_fees_usd_minor < 0:
+        raise ValueError("Assumed fees cannot be negative")
+    gross = entry_cashflow_usd_minor + terminal_intrinsic_usd_minor
+    net = gross - assumed_fees_usd_minor
+    if gross < 0:
+        return "GROSS_LOSS_AFTER_ENTRY_SPREAD_BEFORE_FEES"
+    if gross == 0 and net < 0:
+        return "ZERO_GROSS_PAYOFF_ERODED_BY_FEES"
+    if net < 0:
+        return "POSITIVE_GROSS_PAYOFF_OVERTURNED_BY_FEES"
+    if net == 0:
+        return "MODELED_BREAK_EVEN_AFTER_FEES"
+    return "MODELED_NET_POSITIVE_AFTER_FEES"
+
+
+def _economic_bet_key(underlying: str, expiration: str, structure: dict[str, Any]) -> tuple:
+    """Deduplicate identical option payoffs across frozen snapshot observations.
+
+    This does not declare the remaining keys statistically independent.
+    """
+    legs = tuple(sorted(
+        (str(leg["right"]), float(leg["strike"]), str(leg["side"]),
+         int(leg["quantity"]), float(leg["shares_per_contract"]))
+        for leg in structure["legs"]
+    ))
+    return underlying, expiration, str(structure.get("structure_id")), legs
+
+
 def load_expiry_model_proxy_report(*, db_path=None, as_of_day: str | None = None):
     """Bounded independent retrospective diagnostic; never writes to SQLite."""
     import json
@@ -178,8 +217,19 @@ def load_expiry_model_proxy_report(*, db_path=None, as_of_day: str | None = None
                 fx=float(row["entry_eur_to_usd"])
                 if not math.isfinite(fx) or fx<=0 or costs<0:
                     raise ValueError("INVALID_COST_OR_FX_EVIDENCE")
-                net=int(entry)+int(terminal)-costs
+                gross_after_spread=int(entry)+int(terminal)
+                net=gross_after_spread-costs
+                mechanism=modeled_expiry_payoff_mechanism(
+                    entry_cashflow_usd_minor=int(entry),
+                    terminal_intrinsic_usd_minor=int(terminal),
+                    assumed_fees_usd_minor=costs,
+                )
+                bet_key=_economic_bet_key(key[0], key[1], structure)
                 item.update({
+                    "structure_id":str(structure.get("structure_id") or "UNKNOWN"),
+                    "economic_bet_key":bet_key,
+                    "modeled_payoff_mechanism":mechanism,
+                    "gross_after_entry_spread_before_fees_usd_minor":gross_after_spread,
                     "outcome_state":"MODELED_PROXY_NOT_VALIDATED",
                     "reason_code":"PROVIDER_MODEL_INPUT_PROXY_NOT_SETTLEMENT",
                     "proxy_price":spot["proxy_price"],
@@ -200,6 +250,9 @@ def load_expiry_model_proxy_report(*, db_path=None, as_of_day: str | None = None
                 item["evidence_error_type"]=type(exc).__name__
             results.append(item)
         resolved=[r for r in results if r["outcome_state"]=="MODELED_PROXY_NOT_VALIDATED"]
+        mechanisms=Counter(r["modeled_payoff_mechanism"] for r in resolved)
+        family_counts=Counter(r["structure_id"] for r in resolved)
+        distinct_bets={r["economic_bet_key"] for r in resolved}
         return {
             "measurement_role":PROXY_ROLE,
             "total_expired_admitted":len(results),
@@ -208,6 +261,15 @@ def load_expiry_model_proxy_report(*, db_path=None, as_of_day: str | None = None
             "wins":sum(r["modeled_net_pnl_usd_minor"]>0 for r in resolved),
             "losses":sum(r["modeled_net_pnl_usd_minor"]<0 for r in resolved),
             "independent_expiry_dates":len({r["expiration"] for r in resolved}),
+            "distinct_economic_bet_shapes":len(distinct_bets),
+            "modeled_payoff_mechanism_counts":dict(sorted(mechanisms.items())),
+            "modeled_structure_family_counts":dict(sorted(family_counts.items())),
+            "mechanism_scope_note":(
+                "Gross includes original bid/ask crossing but excludes the separately "
+                "assumed fees. Cannot allocate gross losses between spread, adverse "
+                "underlying move or mistaken alpha without further quote evidence. "
+                "Repeated shapes and expiry dates are not independent trials."
+            ),
             "total_modeled_net_eur_minor":sum(
                 r["modeled_net_pnl_eur_minor"] for r in resolved
             ),
