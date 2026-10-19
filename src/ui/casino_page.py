@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pandas as pd
 import streamlit as st
 
 from src.research.casino_0dte_runtime_v1 import load_casino_0dte_runtime
+from src.research.casino_0dte_watchlist_v1 import load_casino_0dte_watchlist
 from src.research.casino_0dte_v1 import (
     CasinoRiskPolicy,
     ScenarioOutcome,
@@ -19,6 +22,11 @@ def _cached_casino_0dte_runtime():
     return load_casino_0dte_runtime()
 
 
+@st.cache_data(ttl=90, show_spinner=False)
+def _cached_casino_watchlist():
+    return load_casino_0dte_watchlist()
+
+
 
 def render_casino_page() -> None:
     st.title("Casino")
@@ -27,6 +35,34 @@ def render_casino_page() -> None:
         "candidates. Speculative ideas require current executable quotes and "
         "a hard loss cap, not just a high theoretical payoff."
     )
+    st.subheader("Source-backed 0DTE speculative watchlist")
+    st.caption(
+        "Today's option quotes, an independently captured stock price and "
+        "verified contract sizes only. The upside column assumes a hypothetical "
+        "5% same-day stock move. It is not a forecast, an edge estimate or a "
+        "broker-executable quote. No order is placed."
+    )
+    try:
+        watchlist = _cached_casino_watchlist()
+    except sqlite3.Error:
+        watchlist = None
+        st.warning("Casino watchlist evidence is unavailable; no conclusion can be drawn.")
+    if watchlist:
+        st.dataframe(
+            pd.DataFrame([candidate.display_row() for candidate in watchlist]),
+            hide_index=True, width="stretch",
+        )
+        st.caption(
+            "Indicative losses include a two-sided fee estimate, but exclude "
+            "unknown broker slippage, taxes, exercise and assignment. Even a "
+            "listed candidate is NOT approved or certified affordable. Casino "
+            "does not promote or influence Trade Ideas."
+        )
+    elif watchlist is not None:
+        st.caption(
+            "No fresh, source-qualified, premium-capped 0DTE candidates "
+            "currently meet this research screen. NO TRADE."
+        )
     if not st.toggle("Explore 0DTE research and scenarios", value=False, key="casino_research_open"):
         return
 
