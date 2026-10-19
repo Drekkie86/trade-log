@@ -38,6 +38,7 @@ from src.research.shadow_expiry_model_spot_proxy_v1 import load_expiry_model_pro
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
 from src.ui.home_pages import render_results_page, render_system_page
 from src.ui.trade_ideas_page import render_trade_ideas_page
+from src.ui.casino_page import render_casino_page
 from src.quant.bench import run_vanilla_bench
 from src.quant.registry import catalog as quant_model_catalog
 from src.quant.types import QuantInputError, VanillaOption
@@ -561,14 +562,13 @@ def _cached_deep_ops_readiness():
 
 
 ADVANCED_PAGES = [
+    "Results",
     "Dashboard",
     "Decision Desk",
     "Research Runs",
     "Calibration",
     "Observations",
-    "Shadow Lab",
     "Quant Models",
-    "Storm Cellar / 0DTE Lab",
     "Ops",
 ]
 
@@ -579,7 +579,7 @@ with st.sidebar:
 
     _primary = st.radio(
         "Navigation",
-        ["💡 Trade Ideas", "📈 Results", "🩺 System", "🧰 Advanced tools"],
+        ["💡 Trade Ideas", "🧪 Shadow Lab", "🎲 Casino", "🩺 System", "🧰 Advanced tools"],
         label_visibility="collapsed",
     )
     _primary = _primary.split(" ", 1)[1]
@@ -587,8 +587,10 @@ with st.sidebar:
         page = st.selectbox(
             "Tool",
             ADVANCED_PAGES,
-            help="Detailed research screens. Most people never need these.",
+            help="Results and detailed research tools.",
         )
+    elif _primary == "Casino":
+        page = "Storm Cellar / 0DTE Lab"
     else:
         page = _primary
 
@@ -1897,30 +1899,7 @@ elif page == "Quant Models":
                 )
 
 elif page == "Storm Cellar / 0DTE Lab":
-    st.markdown(
-        """
-        <div class="chr-casino">
-          <h3>🌊 Storm Cellar / 0DTE Lab — EXPERIMENTAL, SEPARATE</h3>
-          <p><strong>Speculative by charter, quantitative by discipline.</strong> Tiny capped risk, defined-risk structures, explicit slippage, jump/event risk, gamma exposure and scenario EV.</p>
-          <p><strong>NOT PART OF CORE ENGINE.</strong> No automatic promotion into the main research engine. The lab must be able to say NO TRADE.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Governance", "ISOLATED", "research-only")
-    c2.metric("Risk stance", "TINY / CAPPED", "defined risk")
-    c3.metric("Decision state", "DISABLED", "NO TRADE allowed")
-    section_heading("V1 lab charter")
-    st.markdown(
-        "- Intraday implied-vs-realized volatility\n"
-        "- Gamma exposure and convexity\n"
-        "- Jump and scheduled-event risk\n"
-        "- Transaction costs and slippage\n"
-        "- Probability-weighted scenario EV\n"
-        "- Calibration and falsification\n"
-        "- Explicit NO TRADE output"
-    )
+    render_casino_page()
 
 elif page == "Ops":
     @st.fragment

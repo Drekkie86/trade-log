@@ -28,8 +28,16 @@ def _page(name: str) -> str:
 def test_all_research_pages_cache_runtime_reads_for_180_seconds():
     for name in PAGES:
         text = _page(name)
-        assert "@st.cache_data(ttl=180, show_spinner=False)" in text
-        assert text.index("st.set_page_config(") < text.index("@st.cache_data(")
+        if name == "06_Casino_0DTE_Lab.py":
+            # Casino now shares one cached renderer with the main app.
+            shared = (ROOT / "src/ui/casino_page.py").read_text(encoding="utf-8")
+            assert "st.set_page_config(" in text
+            assert "render_casino_page()" in text
+            assert "@st.cache_data(ttl=180, show_spinner=False)" in shared
+            assert shared.index("st.toggle(") < shared.index("runtime = _cached_casino_0dte_runtime()")
+        else:
+            assert "@st.cache_data(ttl=180, show_spinner=False)" in text
+            assert text.index("st.set_page_config(") < text.index("@st.cache_data(")
 
 
 def test_heavy_forecast_and_edge_pages_route_runtime_through_cache():
