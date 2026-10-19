@@ -38,9 +38,11 @@ def app_db(db_path, tmp_path, monkeypatch):
 
 
 def _open_advanced(app, tool):
-    """Old pages now live under Advanced tools."""
-    if not app.sidebar.selectbox:
-        app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=60)
+    """Core Shadow Lab lives on the primary navigation; research details are advanced."""
+    if tool == "Shadow Lab":
+        app.sidebar.radio[0].set_value("🧪 Shadow Lab").run(timeout=60)
+        return
+    app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=60)
     app.sidebar.selectbox[0].set_value(tool).run(timeout=60)
 
 
@@ -99,7 +101,7 @@ def test_resolved_outcome_shows_on_both_pages(app_db):
 def test_results_and_system_pages_render(app_db):
     app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
     app.run(timeout=60)
-    app.sidebar.radio[0].set_value("📈 Results").run(timeout=60)
+    _open_advanced(app, "Results")
     assert not app.exception, app.exception
     assert "Ideas found" in _metric_labels(app)
     app.sidebar.radio[0].set_value("🩺 System").run(timeout=60)

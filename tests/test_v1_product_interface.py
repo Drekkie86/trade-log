@@ -35,17 +35,21 @@ def test_ui_keeps_scientific_and_execution_firewalls_visible():
     assert "not trade signals" in app
     assert "No broker-order path" in app
     assert "RESEARCH ONLY" in app
-    assert "NOT PART OF CORE ENGINE" in app
+    casino = (ROOT / "src/ui/casino_page.py").read_text(encoding="utf-8")
+    assert "NO CASINO TRADE" in casino
     assert "NO TRADE" in app
 
 
 def test_casino_is_visually_and_textually_separate():
     app = (ROOT / "app.py").read_text(encoding="utf-8")
+    casino = (ROOT / "src/ui/casino_page.py").read_text(encoding="utf-8")
     theme = (ROOT / "src/ui/theme.py").read_text(encoding="utf-8")
 
-    assert "Speculative by charter, quantitative by discipline" in app
-    assert "TINY / CAPPED" in app
-    assert "defined risk" in app
+    assert '"🎲 Casino"' in app
+    assert "render_casino_page()" in app
+    assert "NO CASINO TRADE" in casino
+    assert "casino_research_open" in casino
+    assert "CasinoRiskPolicy" in casino
     assert ".chr-casino" in theme
     assert "--chr-red" in theme
 
