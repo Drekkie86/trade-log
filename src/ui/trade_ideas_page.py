@@ -367,6 +367,45 @@ def render_trade_ideas_page(db_path=None) -> None:  # pragma: no cover - exercis
         c2.metric("Marginal", counts[VERDICT_MARGINAL])
         c3.metric("Skip", counts[VERDICT_SKIP])
         _render_session_funnel(key, session_date, db_path)
+        if st.toggle("Compare strategies using the same recorded market quotes",
+                     value=False, key="real_quote_strategy_comparison_open"):
+            from src.research.strategy_competition_v1 import compare_real_snapshot_strategies
+            st.caption(
+                "Same-snapshot structural economics for seven option-only families: "
+                "debit spreads, long volatility, butterflies and iron structures. "
+                "Stock-ownership hedges S01/S02/S05 require verified shares; X11 "
+                "requires independently measured momentum and skew/IV-RV signals. "
+                "€500 is the maximum research budget, not order approval."
+            )
+            try:
+                compared = compare_real_snapshot_strategies(
+                    ideas, allocated_eur="500", db_path=db_path
+                )
+            except (sqlite3.OperationalError, ValueError, TypeError) as exc:
+                st.warning(f"Strategy comparison unavailable: {type(exc).__name__}: {exc}")
+            else:
+                if compared:
+                    summary = []
+                    for sid in dict.fromkeys(item.strategy_id for item in compared):
+                        subset = [x for x in compared if x.strategy_id == sid]
+                        summary.append({
+                            "Strategy": subset[0].family_name,
+                            "As-of comparisons": len(subset),
+                            "Source-backed payoffs": sum(x.feasibility is not None for x in subset),
+                            "Independently proven signals": 0,
+                            "Recommendations": 0,
+                        })
+                    st.dataframe(pd.DataFrame(summary), hide_index=True, width="stretch")
+                    with st.expander("Contract-level quotes, payoff limits and missing evidence"):
+                        st.dataframe(
+                            pd.DataFrame([item.display_row() for item in compared]),
+                            hide_index=True, width="stretch",
+                        )
+                    st.caption(
+                        f"{len(compared)} frozen comparisons, not new trade signals. "
+                        "The verdict and Shadow ledger stay unchanged until "
+                        "independent strategy-specific evidence exists."
+                    )
         calibrated = sum(
             bool(a.features.get("historical_iv_variation_calibrated"))
             for _, a in pairs

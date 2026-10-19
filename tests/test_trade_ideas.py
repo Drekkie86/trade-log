@@ -176,7 +176,8 @@ def px(k, iv):
     )
 
 
-def seed_scenario(db_path, *, with_v2=False, underlying="AAPL", omit_iv_strike=None):
+def seed_scenario(db_path, *, with_v2=False, underlying="AAPL", omit_iv_strike=None,
+                  quote_at="2026-09-01T14:00:00"):
     conn = get_connection(db_path)
     try:
         run_id = int(conn.execute(
@@ -210,12 +211,13 @@ def seed_scenario(db_path, *, with_v2=False, underlying="AAPL", omit_iv_strike=N
                 """INSERT INTO option_quotes (snapshot_id, provider_contract_id, right, strike,
                     expiration, quote_at, bid, bid_source, bid_at, ask, ask_source, ask_at,
                     last_source, iv_source, delta_source, gamma_source, theta_source, vega_source,
-                    volume_source, open_interest_source)
-                   VALUES (?, ?, 'C', ?, ?, '2026-09-01T14:00:00', ?, 'FETCHED', '2026-09-01T14:00:00',
-                    ?, 'FETCHED', '2026-09-01T14:00:00', 'UNKNOWN','UNKNOWN','UNKNOWN','UNKNOWN',
-                    'UNKNOWN','UNKNOWN','UNKNOWN','UNKNOWN');""",
-                (snap_id, f"TH:{underlying}:{k}", k, EXPIRY, round(max(mid - 0.05, 0.0), 4),
-                 round(mid + 0.05, 4))).lastrowid)
+                    volume_source, open_interest_source, shares_per_contract)
+                   VALUES (?, ?, 'C', ?, ?, ?, ?, 'FETCHED', ?,
+                    ?, 'FETCHED', ?, 'UNKNOWN','UNKNOWN','UNKNOWN','UNKNOWN',
+                    'UNKNOWN','UNKNOWN','UNKNOWN','UNKNOWN',100);""",
+                (snap_id, f"TH:{underlying}:{k}", k, EXPIRY, quote_at,
+                 round(max(mid - 0.05, 0.0), 4), quote_at,
+                 round(mid + 0.05, 4), quote_at)).lastrowid)
             if omit_iv_strike == k:
                 continue
             conn.execute(
