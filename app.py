@@ -1464,10 +1464,19 @@ elif page == "Shadow Lab":
                 m3.metric("Unresolved / no qualifying evidence", _fmt_count(modeled_proxy["unresolved_count"]))
                 m4.metric("Distinct priced expiry dates", _fmt_count(modeled_proxy["independent_expiry_dates"]))
                 if modeled_proxy["modeled_proxy_count"]:
+                    mechanism = modeled_proxy["modeled_payoff_mechanism_counts"]
+                    gross_losses = mechanism.get("GROSS_LOSS_AFTER_ENTRY_SPREAD_BEFORE_FEES", 0)
+                    fee_losses = mechanism.get("POSITIVE_GROSS_PAYOFF_OVERTURNED_BY_FEES", 0)
+                    zero_gross = mechanism.get("ZERO_GROSS_PAYOFF_ERODED_BY_FEES", 0)
                     st.caption(
-                        f"Across those modeled proxies: {modeled_proxy['wins']} positive, "
-                        f"{modeled_proxy['losses']} negative. "
-                        "Cost and exercise assumptions remain unverified."
+                        f"Modeled outcomes: {modeled_proxy['wins']} positive, "
+                        f"{modeled_proxy['losses']} negative; "
+                        f"{gross_losses} negative even before separately assumed fees, "
+                        f"{fee_losses} positive before fees but negative after, "
+                        f"{zero_gross} zero gross payoff eroded by fees. "
+                        f"{modeled_proxy['distinct_economic_bet_shapes']} distinct payoff shapes. "
+                        "Entry bid/ask crossing is already included in gross; "
+                        "this does not isolate spread from market movement."
                     )
                 st.dataframe(
                     [
@@ -1476,6 +1485,16 @@ elif page == "Shadow Lab":
                             "Underlying": r["underlying"],
                             "Expiry": r["expiration"],
                             "Evidence state": r["outcome_state"],
+                            "Strategy": r.get("structure_id"),
+                            "Gross before separate fees ($)": (
+                                round(r["gross_after_entry_spread_before_fees_usd_minor"] / 100, 2)
+                                if r.get("gross_after_entry_spread_before_fees_usd_minor") is not None else None
+                            ),
+                            "Assumed fees ($)": (
+                                round(r["assumed_round_trip_cost_usd_minor"] / 100, 2)
+                                if r.get("assumed_round_trip_cost_usd_minor") is not None else None
+                            ),
+                            "Payoff mechanism": r.get("modeled_payoff_mechanism"),
                             "Source snapshot": r.get("snapshot_id"),
                             "Source captured (Brussels)": format_local_datetime(
                                 r.get("snapshot_captured_at")

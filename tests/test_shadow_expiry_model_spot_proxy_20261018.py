@@ -5,6 +5,8 @@ from src.research.shadow_expiry_model_spot_proxy_v1 import (
     PROXY_ROLE,
     select_model_spot_proxy,
     load_expiry_model_proxy_report,
+    modeled_expiry_payoff_mechanism,
+    _economic_bet_key,
 )
 from src.database.repository import get_connection
 from tests.test_shadow_outcome_collector import seed_active_candidate
@@ -107,6 +109,15 @@ def test_read_only_expiry_model_proxy_resolves_candidate_without_mutating_source
     assert row["distinct_model_option_contracts"] == 10
     assert row["verified_trading_outcome"] is False
     assert row["modeled_net_pnl_usd_minor"] > 0
+    assert row["modeled_payoff_mechanism"] == "MODELED_NET_POSITIVE_AFTER_FEES"
+    assert row["gross_after_entry_spread_before_fees_usd_minor"] == (
+        row["entry_cashflow_usd_minor"] + row["terminal_intrinsic_usd_minor"]
+    )
+    assert report["distinct_economic_bet_shapes"] == 1
+    assert report["modeled_payoff_mechanism_counts"] == {
+        "MODELED_NET_POSITIVE_AFTER_FEES": 1
+    }
+    assert sum(report["modeled_structure_family_counts"].values()) == 1
 
     c=get_connection(db_path)
     try:
@@ -138,4 +149,40 @@ def test_shadow_lab_proxy_table_exposes_original_capture_time_in_local_timezone(
     assert 'r.get("snapshot_captured_at")' in app_source
     assert format_local_datetime("2026-10-16T19:45:00Z") == (
         "16 Oct 2026, 21:45 CEST"
+    )
+
+
+
+def test_proxy_loss_mechanisms_do_not_confuse_spread_with_fees():
+    classify = modeled_expiry_payoff_mechanism
+    assert classify(entry_cashflow_usd_minor=-700, terminal_intrinsic_usd_minor=600,
+                    assumed_fees_usd_minor=24) == "GROSS_LOSS_AFTER_ENTRY_SPREAD_BEFORE_FEES"
+    assert classify(entry_cashflow_usd_minor=-500, terminal_intrinsic_usd_minor=500,
+                    assumed_fees_usd_minor=24) == "ZERO_GROSS_PAYOFF_ERODED_BY_FEES"
+    assert classify(entry_cashflow_usd_minor=-450, terminal_intrinsic_usd_minor=460,
+                    assumed_fees_usd_minor=24) == "POSITIVE_GROSS_PAYOFF_OVERTURNED_BY_FEES"
+    assert classify(entry_cashflow_usd_minor=-450, terminal_intrinsic_usd_minor=474,
+                    assumed_fees_usd_minor=24) == "MODELED_BREAK_EVEN_AFTER_FEES"
+    assert classify(entry_cashflow_usd_minor=-400, terminal_intrinsic_usd_minor=500,
+                    assumed_fees_usd_minor=24) == "MODELED_NET_POSITIVE_AFTER_FEES"
+
+
+def test_economic_bet_shape_ignores_quote_identity_not_leg_geometry():
+    legs = [
+        {"right": "C", "strike": 95.0, "side": "BUY", "quantity": 1,
+         "shares_per_contract": 100, "option_quote_id": 1001},
+        {"right": "C", "strike": 100.0, "side": "SELL", "quantity": 2,
+         "shares_per_contract": 100, "option_quote_id": 1002},
+        {"right": "C", "strike": 105.0, "side": "BUY", "quantity": 1,
+         "shares_per_contract": 100, "option_quote_id": 1003},
+    ]
+    a = {"structure_id": "LONG_1_2_1_BUTTERFLY", "legs": legs}
+    b = {"structure_id": "LONG_1_2_1_BUTTERFLY",
+         "legs": [{**leg, "option_quote_id": leg["option_quote_id"] + 20}
+                  for leg in reversed(legs)]}
+    assert _economic_bet_key("AAPL", "2026-10-16", a) == _economic_bet_key(
+        "AAPL", "2026-10-16", b
+    )
+    assert _economic_bet_key("AAPL", "2026-10-16", a) != _economic_bet_key(
+        "AAPL", "2026-10-23", b
     )
