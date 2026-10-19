@@ -402,9 +402,12 @@ def test_track_record_counts_only_trades_the_model_favoured_at_entry(db_path):
                     '2026-09-18','INTRADAY','COMPLETED');""").lastrowid)
             conn.execute(
                 """INSERT INTO market_snapshots (captured_at, underlying, provider, research_run_id,
-                    us_session_date, us_session_state, underlying_source, fx_source, underlying_price)
+                    us_session_date, us_session_state, underlying_source, fx_source,
+                    underlying_price, underlying_at, notes)
                    VALUES ('2026-09-18T19:45:00Z', ?, 'THETADATA', ?, '2026-09-18', 'INTRADAY',
-                    'FETCHED', 'UNKNOWN', ?);""", (underlying, run, price))
+                    'FETCHED', 'UNKNOWN', ?, '2026-09-18T19:45:00Z',
+                    'stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST; fixture');""",
+                    (underlying, run, price))
         after = int(conn.execute(
             """INSERT INTO research_runs (cohort_id, preregistration_hash, code_git_sha,
                 started_at, ended_at, us_session_date, us_session_state, status)
@@ -470,9 +473,12 @@ def test_track_record_counts_a_repeated_anomaly_once(db_path):
                     '2026-09-18','INTRADAY','COMPLETED');""").lastrowid)
             conn.execute(
                 """INSERT INTO market_snapshots (captured_at, underlying, provider, research_run_id,
-                    us_session_date, us_session_state, underlying_source, fx_source, underlying_price)
+                    us_session_date, us_session_state, underlying_source, fx_source,
+                    underlying_price, underlying_at, notes)
                    VALUES ('2026-09-18T19:45:00Z', ?, 'THETADATA', ?, '2026-09-18', 'INTRADAY',
-                    'FETCHED', 'UNKNOWN', ?);""", (underlying, run, price))
+                    'FETCHED', 'UNKNOWN', ?, '2026-09-18T19:45:00Z',
+                    'stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST; fixture');""",
+                    (underlying, run, price))
         after = int(conn.execute(
             """INSERT INTO research_runs (cohort_id, preregistration_hash, code_git_sha,
                 started_at, ended_at, us_session_date, us_session_state, status)
@@ -583,8 +589,12 @@ def test_track_record_uses_only_the_current_outcome_revision(db_path):
                 '2026-09-18','INTRADAY','COMPLETED');""").lastrowid)
         conn.execute(
             """INSERT INTO market_snapshots (captured_at, underlying, provider, research_run_id,
-                us_session_date, us_session_state, underlying_source, fx_source, underlying_price)
-               VALUES ('2026-09-18T19:45:00Z','AAPL','THETADATA',?,'2026-09-18','INTRADAY','FETCHED','UNKNOWN',100.0);""",
+                us_session_date, us_session_state, underlying_source, fx_source,
+                underlying_price, underlying_at, notes)
+               VALUES ('2026-09-18T19:45:00Z','AAPL','THETADATA',?,'2026-09-18',
+                'INTRADAY','FETCHED','UNKNOWN',100.0,
+                '2026-09-18T19:45:00Z',
+                'stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST; fixture');""",
             (run,))
         conn.commit()
     finally:
@@ -607,8 +617,12 @@ def test_track_record_uses_only_the_current_outcome_revision(db_path):
     try:
         conn.execute(
             """INSERT INTO market_snapshots (captured_at, underlying, provider, research_run_id,
-                us_session_date, us_session_state, underlying_source, fx_source, underlying_price)
-               VALUES ('2026-09-18T19:50:00Z','AAPL','THETADATA',?,'2026-09-18','INTRADAY','FETCHED','UNKNOWN',80.0);""",
+                us_session_date, us_session_state, underlying_source, fx_source,
+                underlying_price, underlying_at, notes)
+               VALUES ('2026-09-18T19:50:00Z','AAPL','THETADATA',?,'2026-09-18',
+                'INTRADAY','FETCHED','UNKNOWN',80.0,
+                '2026-09-18T19:50:00Z',
+                'stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST; fixture');""",
             (run,))
         conn.commit()
     finally:

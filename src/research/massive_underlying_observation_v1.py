@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 VERSION = "MASSIVE_FROZEN_UNDERLYING_OBSERVATION_V1"
+STOCK_PRICE_SOURCE = "MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST"
 MAX_AGE_SECONDS = 15  # existing Stage-0 quote-freshness window; stale cross-vendor spots are unsafe
 
 
@@ -21,7 +22,7 @@ MAX_AGE_SECONDS = 15  # existing Stage-0 quote-freshness window; stale cross-ven
 class IndependentUnderlyingObservation:
     price: float
     observed_at: str
-    source: str = "MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST"
+    source: str = STOCK_PRICE_SOURCE
     measurement_role: str = "ASOF_STOCK_PRICE_REFERENCE_NOT_SETTLEMENT"
     version: str = VERSION
 

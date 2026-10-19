@@ -323,6 +323,14 @@ def test_assess_writes_signal_and_placebo_once(db_path):
     signal = next(r for r in rows if r["kind"] == "SIGNAL")
     feats = json.loads(signal["features_json"])
     assert "db" in feats and feats["db"]["chain_strikes"] == 9
+    research = feats["strategy_comparison_v1"]
+    assert research["state"] == "RESEARCH_ONLY_NO_VALIDATED_STRATEGY_EDGE"
+    assert research["source_snapshot_id"] == ids["snapshot_id"]
+    assert len(research["variants"]) == 7
+    assert {r["strategy_id"] for r in research["variants"]} == {
+        "S03", "S04", "S06", "S07", "S08", "S09", "S10"
+    }
+    assert all(r["comparison_state"] != "RECOMMENDED" for r in research["variants"])
     assert len(json.loads(signal["legs_json"])) == 3
     if "PLACEBO" in kinds:  # needs a second eligible centre in the 9-strike chain
         p = next(r for r in rows if r["kind"] == "PLACEBO")
@@ -344,7 +352,7 @@ def test_assessments_and_outcomes_are_append_only(db_path):
         conn.close()
 
 
-def _expiry_snapshot(db_path, price, underlying="AAPL"):
+def _expiry_snapshot(db_path, price, underlying="AAPL", *, verified_source=True):
     conn = get_connection(db_path)
     try:
         rid = int(conn.execute(
@@ -354,9 +362,14 @@ def _expiry_snapshot(db_path, price, underlying="AAPL"):
             (EXPIRY,)).lastrowid)
         conn.execute(
             """INSERT INTO market_snapshots (captured_at, underlying, provider, research_run_id,
-                us_session_date, us_session_state, underlying_source, fx_source, underlying_price)
-               VALUES ('2026-09-18T19:55:00Z', ?, 'THETADATA', ?, ?, 'INTRADAY','FETCHED','UNKNOWN', ?);""",
-            (underlying, rid, EXPIRY, price))
+                us_session_date, us_session_state, underlying_source, fx_source,
+                underlying_price, underlying_at, notes)
+               VALUES ('2026-09-18T19:55:00Z', ?, 'THETADATA', ?, ?, 'INTRADAY',
+                       'FETCHED','UNKNOWN', ?, '2026-09-18T19:55:00Z',
+                        ?);""",
+            (underlying, rid, EXPIRY, price,
+             ('stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST; test fixture only.'
+              if verified_source else None)))
         later = int(conn.execute(
             """INSERT INTO research_runs (cohort_id, preregistration_hash, code_git_sha, started_at,
                 ended_at, us_session_date, us_session_state, status)
@@ -420,3 +433,29 @@ def test_evidence_loader_fails_soft_signal_before_migration(tmp_path):
     sqlite3.connect(empty).close()
     with pytest.raises(sqlite3.OperationalError):
         load_evidence_rows(db_path=empty)
+
+
+def test_unverified_terminal_price_cannot_supply_profitability_evidence(db_path):
+    ids = _seed_with_chain(db_path)
+    assess_new_proposals(research_run_id=ids["run_id"], db_path=db_path)
+    later = _expiry_snapshot(db_path, price=100.0, verified_source=False)
+    result = resolve_opportunity_outcomes(research_run_id=later, db_path=db_path)
+    assert result.resolved == 0
+    assert result.awaiting_terminal_price >= 1
+    assert load_evidence_rows(db_path=db_path) == []
+
+
+def test_unverified_quote_multipliers_never_create_a_random_strike_placebo():
+    from src.research.opportunity_pipeline import _verified_placebo_chain
+    source = {
+        "id": 1, "strike": 100, "bid": 4.5, "ask": 4.7, "iv": .3,
+        "shares_per_contract": None, "reference_multiplier": None,
+    }
+    assert _verified_placebo_chain([source]) == []
+    trusted = _verified_placebo_chain([
+        {**source, "reference_multiplier": 100},
+        {**source, "id": 2, "shares_per_contract": 10, "reference_multiplier": 100},
+        {**source, "id": 3, "shares_per_contract": 100, "reference_multiplier": None},
+    ])
+    assert [x.option_quote_id for x in trusted] == [1, 3]
+    assert all(x.multiplier == 100 for x in trusted)

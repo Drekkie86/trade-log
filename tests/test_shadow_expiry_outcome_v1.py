@@ -33,10 +33,12 @@ def _insert_snapshot(conn, *, run_id, captured_at, session_date, price):
     return int(conn.execute(
         """
         INSERT INTO market_snapshots (captured_at, underlying, provider, research_run_id,
-            us_session_date, us_session_state, underlying_source, fx_source, underlying_price)
-        VALUES (?, 'AAPL', 'THETADATA', ?, ?, 'INTRADAY', 'FETCHED', 'UNKNOWN', ?);
+            us_session_date, us_session_state, underlying_source, fx_source,
+            underlying_price, underlying_at, notes)
+        VALUES (?, 'AAPL', 'THETADATA', ?, ?, 'INTRADAY', 'FETCHED', 'UNKNOWN',
+                ?, ?, 'stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST; test fixture only.');
         """,
-        (captured_at, run_id, session_date, price),
+        (captured_at, run_id, session_date, price, captured_at),
     ).lastrowid)
 
 
@@ -359,3 +361,46 @@ def test_expiry_price_prefers_later_instant_with_different_iso_format(db_path):
         conn.close()
     record_shadow_expiry_outcomes(research_run_id=after, db_path=db_path)
     assert _outcome(db_path, candidate_id)["terminal_underlying_price"] == 108.0
+
+
+def test_terminal_evidence_gate_requires_independent_stock_source_and_close_window():
+    from src.research.shadow_expiry_outcome_v1 import _independent_near_close_price
+    base = {
+        "captured_at": "2026-09-18T19:50:12Z",
+        "underlying_at": "2026-09-18T19:50:04Z",
+        "us_session_date": "2026-09-18",
+        "underlying_source": "FETCHED",
+        "notes": "stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST; "
+                 "role=ASOF_STOCK_PRICE_REFERENCE_NOT_SETTLEMENT",
+    }
+    assert _independent_near_close_price(base)
+    for bad in (
+        {**base, "notes": None},
+        {**base, "underlying_source": "UNKNOWN"},
+        {**base, "underlying_at": None},
+        {**base, "captured_at": "2026-09-18T19:50:30Z"},
+        {**base, "underlying_at": "2026-09-18T19:50:20Z"},
+        {**base, "underlying_at": "2026-09-18T18:00:00Z"},
+        {**base, "us_session_date": "2026-09-17"},
+        {**base, "underlying_at": "2026-09-18T19:40:00Z",
+         "captured_at": "2026-09-18T19:40:05Z"},
+        {**base, "underlying_at": "2026-09-18T20:01:00Z",
+         "captured_at": "2026-09-18T20:01:05Z"},
+    ):
+        assert not _independent_near_close_price(bad), bad
+
+
+def test_winter_stock_close_gate_uses_new_york_session_not_utc_clock():
+    from src.research.shadow_expiry_outcome_v1 import _independent_near_close_price
+    reference = {
+        "captured_at": "2026-12-18T20:50:05Z",
+        "underlying_at": "2026-12-18T20:50:00Z",
+        "us_session_date": "2026-12-18",
+        "underlying_source": "FETCHED",
+        "notes": "stock price source=MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST;",
+    }
+    assert _independent_near_close_price(reference)
+    assert _independent_near_close_price({
+        **reference, "captured_at": "2026-12-18T21:01:00Z",
+        "underlying_at": "2026-12-18T21:00:59Z"
+    }) is False
