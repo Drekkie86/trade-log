@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -36,7 +37,14 @@ from src.decision.trade_ideas import (
     structure_fees_usd,
     terminal_value_usd,
 )
-from src.research.shadow_expiry_outcome_v1 import _expiry_snapshots_bulk
+from src.research.shadow_expiry_outcome_v1 import (
+    _expiry_snapshots_bulk,
+    _independent_near_close_price,
+)
+from src.research.strategy_competition_v1 import (
+    VERSION as STRATEGY_COMPARISON_VERSION,
+    compare_real_snapshot_strategies,
+)
 
 LOG = logging.getLogger(__name__)
 PLACEBO_REASON = "MATCHED_RANDOM_CENTRE"
@@ -87,7 +95,17 @@ def _chain(conn, snapshot_id: int, expiration: str, right: str) -> list[sqlite3.
         """
         SELECT oq.id, oq.strike, oq.bid, oq.ask, oq.shares_per_contract,
                oq.quote_at, oq.volume, oq.open_interest,
-               pmo.implied_volatility AS iv
+               pmo.implied_volatility AS iv,
+               (SELECT CASE WHEN COUNT(*) = 1 THEN MAX(lrc.shares_per_contract)
+                            ELSE NULL END
+                FROM listing_reference_contracts AS lrc
+                JOIN market_snapshots AS ms
+                  ON ms.research_run_id = lrc.research_run_id
+                 AND ms.underlying = lrc.underlying
+                WHERE ms.id = oq.snapshot_id AND lrc.provider = 'MASSIVE'
+                  AND lrc.expiration = oq.expiration
+                  AND lrc.right = oq.right AND lrc.strike = oq.strike
+               ) AS reference_multiplier
         FROM option_quotes AS oq
         JOIN provider_model_observations AS pmo
           ON pmo.option_quote_id = oq.id AND pmo.provider = 'THETADATA'
@@ -99,6 +117,28 @@ def _chain(conn, snapshot_id: int, expiration: str, right: str) -> list[sqlite3.
         """,
         (snapshot_id, expiration, right),
     ).fetchall()
+
+
+def _verified_placebo_chain(chain_rows) -> list[ChainQuote]:
+    """No implicit 100-share multiplier in matched random-strike controls."""
+    result: list[ChainQuote] = []
+    for quote in chain_rows:
+        actual = quote["shares_per_contract"]
+        reference = quote["reference_multiplier"]
+        if (actual is None and reference is None) or (
+            actual is not None and reference is not None
+            and float(actual) != float(reference)
+        ):
+            continue
+        multiplier = float(actual if actual is not None else reference)
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            continue
+        result.append(ChainQuote(
+            option_quote_id=int(quote["id"]), strike=float(quote["strike"]),
+            bid=float(quote["bid"]), ask=float(quote["ask"]),
+            iv=float(quote["iv"]), multiplier=multiplier,
+        ))
+    return result
 
 
 def _seconds_between(later: str | None, earlier: str | None) -> float | None:
@@ -207,19 +247,50 @@ def assess_new_proposals(
                 )
                 features = dict(assessment.features)
                 features["db"] = _db_features(conn, idea, snapshot_id, chain_rows)
+                # Freeze all seven real-quote structure comparisons into this
+                # pre-outcome SIGNAL event, with no second mutable research
+                # record or promotion authority. The same frozen snapshot is
+                # used for the headline butterfly and every alternative.
+                try:
+                    compared = compare_real_snapshot_strategies(
+                        [idea], allocated_eur="500", db_path=db_path
+                    )
+                    features["strategy_comparison_v1"] = {
+                        "version": STRATEGY_COMPARISON_VERSION,
+                        "state": "RESEARCH_ONLY_NO_VALIDATED_STRATEGY_EDGE",
+                        "source_snapshot_id": snapshot_id,
+                        "decision_at": idea.as_of,
+                        "variants": [
+                            {
+                                "strategy_id": item.strategy_id,
+                                "source_quote_ids": item.source_quote_ids,
+                                "signal_evidence": item.signal_evidence,
+                                "comparison_state": item.comparison_state,
+                                "reasons": item.reasons,
+                                "feasibility": (
+                                    asdict(item.feasibility)
+                                    if item.feasibility is not None else None
+                                ),
+                            }
+                            for item in compared
+                        ],
+                    }
+                except (ValueError, TypeError, sqlite3.Error) as exc:
+                    # Never lose the original decision/placebo to a failure
+                    # evaluating an optional research-only alternative.
+                    features["strategy_comparison_v1"] = {
+                        "version": STRATEGY_COMPARISON_VERSION,
+                        "state": "UNAVAILABLE",
+                        "reason": type(exc).__name__,
+                    }
+                    LOG.warning("Real-quote comparison unavailable for proposal %s: %s",
+                                pid, exc)
                 features["models_available"] = assessment.models_available
                 features["models_favouring"] = assessment.models_favouring
                 features["residual_vol_pts"] = assessment.residual_vol_pts
                 features["sigma_quote_vol_pts"] = assessment.sigma_quote_vol_pts
                 features["sigma_model_vol_pts"] = assessment.sigma_model_vol_pts
-                chain = [
-                    ChainQuote(
-                        option_quote_id=int(r["id"]), strike=float(r["strike"]),
-                        bid=float(r["bid"]), ask=float(r["ask"]), iv=float(r["iv"]),
-                        multiplier=float(r["shares_per_contract"] or 100.0),
-                    )
-                    for r in chain_rows
-                ]
+                chain = _verified_placebo_chain(chain_rows)
                 placebo_legs = build_placebo_legs(idea, chain, seed=pid)
                 common = (
                     pid, research_run_id, stamp, SCORING_VERSION, idea.underlying,
@@ -343,15 +414,22 @@ def load_evidence_rows(*, db_path=None) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT a.proposal_id, a.kind, a.verdict, a.score, a.underlying, a.expiration,
-                   a.right, a.target_strike, a.structure_id, o.net_pnl_usd
+                   a.right, a.target_strike, a.structure_id, o.net_pnl_usd,
+                   ms.captured_at, ms.underlying_at, ms.underlying_source,
+                   ms.notes, ms.us_session_date
             FROM opportunity_assessments_v1 AS a
             JOIN opportunity_outcomes_v1 AS o ON o.assessment_id = a.id
+            JOIN market_snapshots AS ms ON ms.id = o.snapshot_id
             WHERE a.scoring_version = ?;
             """,
             (SCORING_VERSION,),
         ).fetchall()
     finally:
         conn.close()
+    # Even legacy resolved rows cannot qualify as measured edge unless the
+    # terminal snapshot has independently identified near-close stock data.
+    # Old model-sourced or pre-close rows must never become profitability proof.
+    rows = [r for r in rows if _independent_near_close_price(dict(r))]
     placebo = {int(r["proposal_id"]): float(r["net_pnl_usd"]) for r in rows if r["kind"] == "PLACEBO"}
     out = []
     for r in rows:

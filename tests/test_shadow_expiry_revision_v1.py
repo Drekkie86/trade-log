@@ -89,10 +89,10 @@ def test_newer_expiry_snapshot_supersedes_prior_resolved_price(db_path):
     conn = get_connection(db_path)
     try:
         expiry_run = _insert_run(
-            conn, started="2026-09-18T19:00:00Z", session_date="2026-09-18"
+            conn, started="2026-09-18T19:45:00Z", session_date="2026-09-18"
         )
         first_snapshot = _insert_snapshot(
-            conn, run_id=expiry_run, captured_at="2026-09-18T19:00:00Z",
+            conn, run_id=expiry_run, captured_at="2026-09-18T19:45:00Z",
             session_date="2026-09-18", price=108.0,
         )
         after = _insert_run(conn, started="2026-09-21T14:00:00Z", session_date="2026-09-21")
@@ -105,7 +105,7 @@ def test_newer_expiry_snapshot_supersedes_prior_resolved_price(db_path):
     conn = get_connection(db_path)
     try:
         later_snapshot = _insert_snapshot(
-            conn, run_id=expiry_run, captured_at="2026-09-18T20:00:00Z",
+            conn, run_id=expiry_run, captured_at="2026-09-18T19:55:00Z",
             session_date="2026-09-18", price=95.0,
         )
         next_run = _insert_run(
@@ -184,10 +184,10 @@ def test_new_revision_accepts_later_instant_even_if_iso_text_sorts_earlier(db_pa
     conn = get_connection(db_path)
     try:
         expiry_run = _insert_run(
-            conn, started="2026-09-18T19:30:00Z", session_date="2026-09-18"
+            conn, started="2026-09-18T19:45:00Z", session_date="2026-09-18"
         )
         _insert_snapshot(
-            conn, run_id=expiry_run, captured_at="2026-09-18T19:30:00Z",
+            conn, run_id=expiry_run, captured_at="2026-09-18T19:45:00Z",
             session_date="2026-09-18", price=108.0,
         )
         after = _insert_run(
@@ -202,7 +202,7 @@ def test_new_revision_accepts_later_instant_even_if_iso_text_sorts_earlier(db_pa
     try:
         _insert_snapshot(
             conn, run_id=expiry_run,
-            captured_at="2026-09-18T19:45:00+00:00",
+            captured_at="2026-09-18T19:50:00+00:00",
             session_date="2026-09-18", price=95.0,
         )
         next_run = _insert_run(

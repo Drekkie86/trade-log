@@ -20,8 +20,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time as clock_time
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from src.research.massive_underlying_observation_v1 import (
+    MAX_AGE_SECONDS as STOCK_REFERENCE_MAX_AGE_SECONDS,
+    STOCK_PRICE_SOURCE,
+)
 
 from src.database.repository import get_connection
 from src.research.historical_replay_recovery_v1 import (
@@ -100,6 +106,33 @@ def _due_candidates(*, session_day: date, db_path=None) -> list[dict[str, Any]]:
         conn.close()
 
 
+def _independent_near_close_price(row: dict[str, Any]) -> bool:
+    """Fail closed on stock-price provenance, time alignment and expiry cut.
+
+    This still creates only a *sampled price proxy*, not official exchange /
+    OCC settlement or a broker P&L observation. Underlying-price data from
+    Greeks or from hours before option expiry must never prove trading edge.
+    """
+    if str(row.get("underlying_source")) != "FETCHED":
+        return False
+    if f"stock price source={STOCK_PRICE_SOURCE};" not in str(row.get("notes") or ""):
+        return False
+    try:
+        captured = _utc_instant(str(row["captured_at"]))
+        stock_at = _utc_instant(str(row["underlying_at"]))
+        age = (captured - stock_at).total_seconds()
+        if not 0 <= age <= STOCK_REFERENCE_MAX_AGE_SECONDS:
+            return False
+        local = stock_at.astimezone(ZoneInfo("America/New_York"))
+        return (
+            local.date().isoformat() == str(row["us_session_date"])
+            and clock_time(15, 45) <= local.time().replace(tzinfo=None)
+            <= clock_time(16, 0)
+        )
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
 def _expiry_snapshots_bulk(
     *, candidates: list[dict[str, Any]], db_path=None
 ) -> dict[tuple[str, str], dict[str, Any]]:
@@ -124,7 +157,8 @@ def _expiry_snapshots_bulk(
             rows = conn.execute(
                 f"""
                 SELECT ms.id, ms.provider, ms.captured_at, ms.underlying,
-                       ms.underlying_price, rr.us_session_date
+                       ms.underlying_price, ms.underlying_source,
+                       ms.underlying_at, ms.notes, rr.us_session_date
                 FROM research_runs AS rr
                 JOIN market_snapshots AS ms
                   ON ms.research_run_id = rr.id
@@ -134,15 +168,20 @@ def _expiry_snapshots_bulk(
                   AND ms.us_session_date = rr.us_session_date
                   AND ms.underlying IN ({underlying_params})
                   AND ms.underlying_price IS NOT NULL
+                  AND ms.underlying_source = 'FETCHED'
+                  AND ms.underlying_at IS NOT NULL
                 ORDER BY julianday(ms.captured_at) DESC, ms.id DESC
                 """,
                 tuple(chunk) + tuple(underlyings),
             ).fetchall()
             for row in rows:
+                record = dict(row)
+                if not _independent_near_close_price(record):
+                    continue
                 key = (str(row["underlying"]), str(row["us_session_date"]))
                 # SQL is sorted by captured_at DESC, id DESC, matching the
                 # legacy _expiry_snapshot semantics.
-                result.setdefault(key, dict(row))
+                result.setdefault(key, record)
         return result
     finally:
         conn.close()
