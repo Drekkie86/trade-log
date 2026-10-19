@@ -33,6 +33,10 @@ from src.research.live_pipeline import (
 from src.research.reference_persistence import (
     persist_massive_reference_and_snapshot,
 )
+from src.research.massive_underlying_observation_v1 import (
+    IndependentUnderlyingObservation,
+    extract_massive_underlying_observation,
+)
 from src.research.thetadata_live_adapter import (
     fetch_live_first_order_greek_rows,
     fetch_live_quote_rows,
@@ -719,6 +723,7 @@ def _persist_theta_market_evidence(
     ],
     captured_at: datetime,
     us_session_state: str,
+    independent_underlying: IndependentUnderlyingObservation | None = None,
     db_path=None,
 ) -> int:
     captured_utc = captured_at.astimezone(
@@ -746,11 +751,11 @@ def _persist_theta_market_evidence(
             "us_session_state":
                 us_session_state,
             "underlying_price":
-                None,
+                (independent_underlying.price if independent_underlying else None),
             "underlying_source":
-                "UNKNOWN",
+                ("FETCHED" if independent_underlying else "UNKNOWN"),
             "underlying_at":
-                None,
+                (independent_underlying.observed_at if independent_underlying else None),
             "fx_to_eur":
                 None,
             "fx_source":
@@ -758,9 +763,14 @@ def _persist_theta_market_evidence(
             "fx_at":
                 None,
             "notes":
-                "Independent runner v1 ThetaData "
-                "quote snapshot; provider Greeks "
-                "persist separately.",
+                ("Independent runner ThetaData quote cut; "
+                 "provider Greeks separately persisted; "
+                 + (f"stock price source={independent_underlying.source}; "
+                    f"role={independent_underlying.measurement_role}; "
+                    f"method={independent_underlying.version}; "
+                    "not an exchange close or option settlement."
+                    if independent_underlying else
+                    "independent stock observation unavailable.")),
         },
         _theta_option_quote_records(
             quote_rows
@@ -1181,6 +1191,11 @@ def collect_underlying(
                 classify_us_session(
                     theta_quote_observed_at
                 ),
+            independent_underlying=extract_massive_underlying_observation(
+                snapshot_rows,
+                underlying=underlying,
+                decision_at=theta_quote_observed_at,
+            ),
             db_path=db_path,
         )
     )
