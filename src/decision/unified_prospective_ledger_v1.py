@@ -19,7 +19,7 @@ from src.decision.unified_trade_ranker_v1 import (
     MANUAL_REQUOTE, OptionCandidate, rank_market_opportunities,
 )
 from src.research.massive_underlying_observation_v1 import (
-    STOCK_PRICE_SOURCE, MAX_AGE_SECONDS,
+    MAX_AGE_SECONDS, verified_stock_source_from_notes,
 )
 
 MAX_FREEZE_LAG = timedelta(minutes=15)
@@ -64,8 +64,7 @@ def _stock_source_qualified(snapshot) -> bool:
         snapshot["provider"] != "THETADATA"
         or snapshot["underlying_price"] is None
         or snapshot["underlying_source"] != "FETCHED"
-        or f"stock price source={STOCK_PRICE_SOURCE};"
-        not in str(snapshot["notes"] or "")
+        or verified_stock_source_from_notes(snapshot["notes"]) is None
     ):
         return False
     try:

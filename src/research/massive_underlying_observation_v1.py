@@ -15,7 +15,21 @@ from typing import Any, Sequence
 
 VERSION = "MASSIVE_FROZEN_UNDERLYING_OBSERVATION_V1"
 STOCK_PRICE_SOURCE = "MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST"
+DIRECT_STOCK_PRICE_SOURCE = "MASSIVE_STOCK_SNAPSHOT_LAST_TRADE"
+STOCK_PRICE_SOURCES = frozenset({
+    STOCK_PRICE_SOURCE, DIRECT_STOCK_PRICE_SOURCE,
+})
 MAX_AGE_SECONDS = 15  # existing Stage-0 quote-freshness window; stale cross-vendor spots are unsafe
+
+
+def verified_stock_source_from_notes(notes: str | None) -> str | None:
+    """Exactly one trusted direct stock-tape source, never Greek-model spot."""
+    text = str(notes or "")
+    found = [
+        source for source in STOCK_PRICE_SOURCES
+        if f"stock price source={source};" in text
+    ]
+    return found[0] if len(found) == 1 else None
 
 
 @dataclass(frozen=True)

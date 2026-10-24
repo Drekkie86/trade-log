@@ -21,6 +21,9 @@ from src.research.independent_family_discovery_v1 import (
     _stock_reference_valid, discover_independent_families,
 )
 from src.research.independent_family_read_model_v1 import _read_chain
+from src.research.massive_underlying_observation_v1 import (
+    verified_stock_source_from_notes,
+)
 from src.research.strategy_competition_v1 import _fx_asof
 from src.research.strategy_falsification_v1 import QuoteCostPolicy, dec
 
@@ -123,11 +126,10 @@ def capture_frozen_snapshot(
                 spot_check = FrozenChain(
                     snapshot_id,str(row["underlying"]),str(row["captured_at"]),
                     raw_spot,
-                    ("MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST"
-                     if row["underlying_source"]=="FETCHED"
-                     and "stock price source="
-                     "MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST;"
-                     in str(row["notes"] or "") else None),
+                    (
+                        verified_stock_source_from_notes(row["notes"])
+                        if row["underlying_source"] == "FETCHED" else None
+                    ),
                     row["underlying_at"],(),
                 )
                 if not _stock_reference_valid(spot_check):
