@@ -15,6 +15,7 @@ from src.decision.operator_profit_desk_v1 import (
     build_trading_desk_state, load_underlying_source_coverage,
 )
 from src.decision.opportunity import rank_by_opportunity
+from src.decision.unified_frozen_read_model_v1 import load_latest_frozen_book
 from src.ui.components import section_heading
 from src.ui.datetime_display import format_local_datetime
 from src.ui.trade_ideas_page import (
@@ -25,6 +26,11 @@ from src.ui.trade_ideas_page import (
 @st.cache_data(ttl=120, show_spinner=False)
 def _source_coverage(key: str, db_path):
     return load_underlying_source_coverage(db_path=db_path)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _current_frozen_book(key: str, db_path):
+    return load_latest_frozen_book(db_path=db_path)
 
 
 def _money(value: float | None) -> str:
@@ -59,11 +65,24 @@ def render_profit_desk_page(db_path=None) -> None:  # pragma: no cover - AppTest
             st.caption(f"Read-model failure: {type(exc).__name__}.")
             return
 
-        # CRITICAL: existing Trade Ideas evaluates the legacy butterfly scanner.
-        # It does NOT supply the canonical independent multi-strategy decisions.
-        # Never elevate these results to unified trading candidates.
+        # The immutable v38 multi-strategy decision book is the ONLY source
+        # of reviewed options candidates; legacy butterflies stay diagnostics.
+        try:
+            book = _current_frozen_book(key, db_path)
+        except (sqlite3.Error, OSError, ValueError, KeyError):
+            st.error(
+                "NO TRADE — the authoritative prospective decision book "
+                "is unavailable or failed integrity checks."
+            )
+            return
         desk = build_trading_desk_state(
-            pairs, latest_session=session, authoritative=None,
+            pairs, latest_session=session, authoritative=book.decision,
+            authoritative_latest_snapshot_at=book.latest_snapshot_at,
+        )
+        st.caption(
+            f"Frozen cross-strategy decisions: {book.records}; "
+            f"latest decision run: {book.last_run_id or 'none'}. "
+            "Model-only evidence cannot confer trading authority."
         )
         if desk.promotable_trades:
             st.warning(desk.verdict + " — broker re-quote required")
@@ -91,6 +110,14 @@ def render_profit_desk_page(db_path=None) -> None:  # pragma: no cover - AppTest
                 "No qualifying independent stock-price observations in the "
                 "latest completed research run. Selection evidence is incomplete."
             )
+        if coverage is not None and coverage.rejected_reasons:
+            with st.expander("Why stock observations failed the evidence gate"):
+                for reason, count in coverage.rejected_reasons[:6]:
+                    st.write(f"{_friendly_reason(reason)}: {count:,} snapshot(s)")
+                st.caption(
+                    "Diagnostics describe recorded provider evidence, not "
+                    "forecast edge or realized option-trading performance."
+                )
 
         session_text = session or "not recorded"
         source = (

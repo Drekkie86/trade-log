@@ -114,6 +114,7 @@ def test_latest_run_independent_source_coverage_is_explicit(tmp_path):
     broken = load_underlying_source_coverage(db_path=path)
     assert broken.independent_fresh_prices == 0
     assert broken.state == "NO_INDEPENDENT_STOCK_PRICES"
+    assert dict(broken.rejected_reasons)["LEGACY_NO_REJECTION_REASON"] == 1
 
 
 def test_stale_independent_underlying_is_not_qualified(tmp_path):
@@ -130,3 +131,27 @@ def test_stale_independent_underlying_is_not_qualified(tmp_path):
     conn.close()
     broken = load_underlying_source_coverage(db_path=path)
     assert broken.independent_fresh_prices == 0
+
+
+def test_runner_reason_is_visible_to_dashboard_without_promoting_missing_source(
+    tmp_path,
+):
+    import sqlite3
+    from tests.test_independent_family_read_model_v1 import seed
+
+    path = tmp_path / "test.sqlite"
+    seed(path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """UPDATE market_snapshots
+           SET underlying_price=NULL,
+               underlying_at=NULL,
+               underlying_source='UNKNOWN',
+               notes='independent stock observation unavailable; '
+                  || 'source_disposition=SOURCE_STALE_AT_THETA_CUT.'"""
+    )
+    conn.commit()
+    conn.close()
+    coverage = load_underlying_source_coverage(db_path=path)
+    assert coverage.independent_fresh_prices == 0
+    assert coverage.rejected_reasons == (("SOURCE_STALE_AT_THETA_CUT", 1),)

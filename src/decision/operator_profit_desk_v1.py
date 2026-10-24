@@ -31,6 +31,7 @@ class UnderlyingSourceCoverage:
     sampled_snapshots: int
     independent_fresh_prices: int
     state: str
+    rejected_reasons: tuple[tuple[str, int], ...] = ()
 
 
 def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage:
@@ -65,16 +66,26 @@ def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage
                 run_id, len(rows), 0, "SOURCE_COUNT_ABOVE_SAFE_BOUND"
             )
         eligible = 0
+        rejected = Counter()
         for row in rows:
+            note = str(row["notes"] or "")
+            origin = note.partition("source_disposition=")[2]
+            stated_reason = (
+                origin.split(".", 1)[0].split(";", 1)[0].strip()
+                if origin else ""
+            )
+            reason = stated_reason or "LEGACY_NO_REJECTION_REASON"
             if (
                 row["underlying_price"] is None
-                or float(row["underlying_price"]) <= 0
                 or row["underlying_source"] != "FETCHED"
-                or f"stock price source={STOCK_PRICE_SOURCE};"
-                not in str(row["notes"] or "")
+                or f"stock price source={STOCK_PRICE_SOURCE};" not in note
             ):
+                rejected[reason] += 1
                 continue
             try:
+                if float(row["underlying_price"]) <= 0:
+                    rejected["INVALID_INDEPENDENT_STOCK_PRICE"] += 1
+                    continue
                 captured = datetime.fromisoformat(
                     str(row["captured_at"]).replace("Z", "+00:00")
                 )
@@ -82,15 +93,19 @@ def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage
                     str(row["underlying_at"]).replace("Z", "+00:00")
                 )
                 if captured.tzinfo is None or source.tzinfo is None:
+                    rejected["MISSING_AWARE_SOURCE_TIMESTAMP"] += 1
                     continue
                 age = (captured - source).total_seconds()
                 if 0 <= age <= MAX_AGE_SECONDS:
                     eligible += 1
-            except (ValueError, TypeError):
-                continue
+                else:
+                    rejected["SOURCE_OUTSIDE_15_SECOND_CUT"] += 1
+            except (ValueError, TypeError, OverflowError):
+                rejected["INVALID_INDEPENDENT_SOURCE_FIELD"] += 1
         return UnderlyingSourceCoverage(
             run_id, len(rows), eligible,
             "SOURCED" if eligible else "NO_INDEPENDENT_STOCK_PRICES",
+            tuple(sorted(rejected.items(), key=lambda v: (-v[1], v[0]))),
         )
     finally:
         conn.close()
@@ -144,13 +159,15 @@ def build_trading_desk_state(
     *,
     latest_session: str | None,
     authoritative: MarketDecision | None = None,
+    authoritative_latest_snapshot_at: str | None = None,
     now: datetime | None = None,
 ) -> TradingDeskState:
     """One actionable stream; historical scanner votes cannot bypass it."""
     now = now or datetime.now(UTC)
-    last_snapshot = max(
+    legacy_snapshot = max(
         (idea.as_of for idea, _ in existing if idea.as_of), default=None,
     )
+    last_snapshot = authoritative_latest_snapshot_at or legacy_snapshot
     source_fresh = _fresh_utc(last_snapshot, now)
     counts = Counter(assessment.verdict for _, assessment in existing)
     diagnostic_reasons = Counter(

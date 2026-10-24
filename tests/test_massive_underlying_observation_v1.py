@@ -8,7 +8,8 @@ import pytest
 from src.database.repository import get_connection
 from src.research.independent_runner import run_independent_research
 from src.research.massive_underlying_observation_v1 import (
-    MAX_AGE_SECONDS, extract_massive_underlying_observation,
+    MAX_AGE_SECONDS, diagnose_stock_source,
+    extract_massive_underlying_observation,
 )
 from tests.test_independent_runner import FakeMassive, FakeTheta
 
@@ -127,5 +128,58 @@ def test_runner_persists_independent_massive_stock_reference_without_extra_reque
         assert "MASSIVE_OPTION_CHAIN_UNDERLYING_ASSET_LAST" in snap["notes"]
         assert "not an exchange close or option settlement" in snap["notes"]
         assert snap["provider"] == "THETADATA"
+    finally:
+        conn.close()
+
+
+def test_stock_source_diagnosis_explains_missing_evidence_without_guessing():
+    conditions = [
+        ([], "NO_CHAIN_ROWS"),
+        ([{}], "NO_UNDERLYING_ASSET"),
+        ([{"underlying_asset": {"price": 101}}], "TICKER_MISSING"),
+        ([row("MSFT", 101, CUT)], "TICKER_MISMATCH"),
+        ([row("AAPL", 101, CUT-timedelta(seconds=30))],
+         "SOURCE_STALE_AT_THETA_CUT"),
+        ([row("AAPL", 101, CUT+timedelta(seconds=2))],
+         "SOURCE_FROM_FUTURE"),
+        ([{"underlying_asset": {"ticker": "AAPL", "price": 100}}],
+         "TIMESTAMP_INVALID"),
+        ([row("AAPL", 100, CUT-timedelta(seconds=2)),
+          row("AAPL", 101, CUT-timedelta(seconds=2))],
+         "CONTRADICTORY_SAME_TIMESTAMP"),
+    ]
+    for rows, reason in conditions:
+        output = diagnose_stock_source(
+            rows, underlying="AAPL", decision_at=CUT
+        )
+        assert output.status == "BLOCKED"
+        assert output.reason == reason
+    fresh = diagnose_stock_source(
+        [row("AAPL", 102, CUT-timedelta(seconds=3))],
+        underlying="AAPL", decision_at=CUT
+    )
+    assert fresh.reason == "QUALIFIED_INDEPENDENT_STOCK_REFERENCE"
+    assert fresh.qualifying_rows == 1
+    assert fresh.closest_age_seconds == pytest.approx(3.0)
+
+
+def test_runner_persists_concrete_missing_stock_source_reason(db_path):
+    result = run_independent_research(
+        symbols=["AAPL"], massive_client=FakeMassive(),
+        theta_client=FakeTheta(), min_dte=7, max_dte=45,
+        observed_at=CUT, observation_clock=lambda: CUT,
+        repo_root=Path("."), code_git_sha="stock-source-reason-fixture",
+        db_path=db_path,
+    )
+    conn = get_connection(db_path)
+    try:
+        snapshot = conn.execute(
+            "SELECT underlying_price,notes FROM market_snapshots "
+            "WHERE research_run_id=? AND provider='THETADATA'",
+            (result.run_id,),
+        ).fetchone()
+        assert snapshot["underlying_price"] is None
+        assert "source_disposition=" in snapshot["notes"]
+        assert "independent stock observation unavailable" in snapshot["notes"]
     finally:
         conn.close()
