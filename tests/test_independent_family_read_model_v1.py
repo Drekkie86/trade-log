@@ -28,6 +28,10 @@ def seed(db):
           id INTEGER PRIMARY KEY,base_currency TEXT,quote_currency TEXT,
           rate REAL,observed_at TEXT,provider TEXT,provenance TEXT
       );
+      CREATE TABLE unified_capture_dispositions_v1 (
+          id INTEGER PRIMARY KEY, research_run_id INTEGER,snapshot_id INTEGER,
+          state TEXT,decisions_frozen INTEGER
+      );
       INSERT INTO research_runs VALUES (11,'COMPLETED');
       INSERT INTO fx_observations VALUES
        (1,'EUR','USD',1.15,'2026-10-19T14:59:50Z','TEST','TEST_ASOF');

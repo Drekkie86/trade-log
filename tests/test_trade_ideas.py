@@ -554,8 +554,8 @@ def test_trade_ideas_is_the_first_page_and_renders(db_path, monkeypatch):
     assert any("NO TRADE" in e.value for e in app.warning)
     assert [m.label for m in app.metric][:3] == [
         "Trades clearing the complete gate",
-        "Legacy proposals screened",
-        "Legacy proposals rejected",
+        "Prospective decisions recorded",
+        "Snapshots assessed for trade selection",
     ]
     # Old modeling interface is available for traceable diagnostics, but
     # does not impersonate the single front-door trading decision.

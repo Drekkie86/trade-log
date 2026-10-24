@@ -22,8 +22,8 @@ def test_default_profit_screen_has_no_legacy_dataframe_wall(db_path, monkeypatch
     assert any("NO TRADE" in item.value for item in app.warning)
     assert [m.label for m in app.metric][:4] == [
         "Trades clearing the complete gate",
-        "Legacy proposals screened",
-        "Legacy proposals rejected",
+        "Prospective decisions recorded",
+        "Snapshots assessed for trade selection",
         "Qualified source prices",
     ]
     assert all(m.label not in {

@@ -32,6 +32,9 @@ class UnderlyingSourceCoverage:
     independent_fresh_prices: int
     state: str
     rejected_reasons: tuple[tuple[str, int], ...] = ()
+    capture_attempts: int = 0
+    prospective_decisions_frozen: int = 0
+    capture_failures: int = 0
 
 
 def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage:
@@ -47,8 +50,7 @@ def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage
     conn = open_readonly_connection(db_path)
     try:
         run = conn.execute(
-            "SELECT id FROM research_runs WHERE status='COMPLETED' "
-            "ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM research_runs ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if run is None:
             return UnderlyingSourceCoverage(None, 0, 0, "NO_COMPLETED_RUN")
@@ -102,10 +104,21 @@ def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage
                     rejected["SOURCE_OUTSIDE_15_SECOND_CUT"] += 1
             except (ValueError, TypeError, OverflowError):
                 rejected["INVALID_INDEPENDENT_SOURCE_FIELD"] += 1
+        capture = conn.execute(
+            """SELECT COUNT(*) AS attempts,
+                      COALESCE(SUM(decisions_frozen),0) AS frozen_count,
+                      COALESCE(SUM(state='CAPTURE_FAILURE'),0) AS failures
+               FROM unified_capture_dispositions_v1
+               WHERE research_run_id=?""",
+            (run_id,),
+        ).fetchone()
         return UnderlyingSourceCoverage(
             run_id, len(rows), eligible,
             "SOURCED" if eligible else "NO_INDEPENDENT_STOCK_PRICES",
             tuple(sorted(rejected.items(), key=lambda v: (-v[1], v[0]))),
+            capture_attempts=int(capture["attempts"]),
+            prospective_decisions_frozen=int(capture["frozen_count"]),
+            capture_failures=int(capture["failures"]),
         )
     finally:
         conn.close()

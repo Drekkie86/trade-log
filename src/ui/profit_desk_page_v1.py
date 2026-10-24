@@ -98,8 +98,15 @@ def render_profit_desk_page(db_path=None) -> None:  # pragma: no cover - AppTest
 
         a, b, c, d = st.columns(4)
         a.metric("Trades clearing the complete gate", desk.promotable_trades)
-        b.metric("Legacy proposals screened", desk.research_proposals_reviewed)
-        c.metric("Legacy proposals rejected", desk.research_legacy_skip)
+        b.metric(
+            "Prospective decisions recorded",
+            "Unverified" if coverage is None
+            else coverage.prospective_decisions_frozen,
+        )
+        c.metric(
+            "Snapshots assessed for trade selection",
+            "Unverified" if coverage is None else coverage.capture_attempts,
+        )
         d.metric(
             "Qualified source prices",
             "Unverified" if coverage is None
@@ -108,7 +115,12 @@ def render_profit_desk_page(db_path=None) -> None:  # pragma: no cover - AppTest
         if coverage is not None and coverage.state == "NO_INDEPENDENT_STOCK_PRICES":
             st.warning(
                 "No qualifying independent stock-price observations in the "
-                "latest completed research run. Selection evidence is incomplete."
+                "latest research run. Selection evidence is incomplete."
+            )
+        if coverage is not None and coverage.capture_failures:
+            st.error(
+                f"{coverage.capture_failures} new unified selection capture "
+                "attempt(s) failed. No trading permission is inferred."
             )
         if coverage is not None and coverage.rejected_reasons:
             with st.expander("Why stock observations failed the evidence gate"):

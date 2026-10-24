@@ -48,13 +48,15 @@ def load_latest_frozen_book(
     now = now.astimezone(UTC)
     conn = open_readonly_connection(db_path)
     try:
+        # An earlier attractive candidate may never outrank a *newer*
+        # research run that has no qualifying data. Always anchor the desk
+        # to the latest actual run, NOT the latest successful candidate.
         record = conn.execute(
-            "SELECT research_run_id FROM unified_candidate_decisions_v1 "
-            "ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM research_runs ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if record is None:
             return FrozenBookReport(None, None, None, 0)
-        run_id = int(record["research_run_id"])
+        run_id = int(record["id"])
         rows = conn.execute(
             """SELECT d.*,ms.captured_at AS actual_cut,ms.provider,
                       ms.underlying AS actual_underlying
@@ -65,6 +67,8 @@ def load_latest_frozen_book(
         ).fetchall()
         if len(rows) > MAX_LEDGER_ROWS:
             raise ValueError("UNIFIED_BOOK_TOO_LARGE_TO_DISPLAY_COMPLETELY")
+        if not rows:
+            return FrozenBookReport(None, None, run_id, 0)
         summaries = []
         freshest = None
         for r in rows:
