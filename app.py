@@ -38,6 +38,7 @@ from src.research.shadow_expiry_model_spot_proxy_v1 import load_expiry_model_pro
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
 from src.ui.home_pages import render_results_page, render_system_page
 from src.ui.trade_ideas_page import render_trade_ideas_page
+from src.ui.profit_desk_page_v1 import render_profit_desk_page, render_performance_page
 from src.ui.casino_page import render_casino_page
 from src.quant.bench import run_vanilla_bench
 from src.quant.registry import catalog as quant_model_catalog
@@ -562,7 +563,9 @@ def _cached_deep_ops_readiness():
 
 
 ADVANCED_PAGES = [
-    "Results",
+    "Trade Ideas",
+    "Shadow Lab",
+    "Storm Cellar / 0DTE Lab",
     "Dashboard",
     "Decision Desk",
     "Research Runs",
@@ -570,6 +573,7 @@ ADVANCED_PAGES = [
     "Observations",
     "Quant Models",
     "Ops",
+    "Results",
 ]
 
 with st.sidebar:
@@ -579,7 +583,7 @@ with st.sidebar:
 
     _primary = st.radio(
         "Navigation",
-        ["💡 Trade Ideas", "🧪 Shadow Lab", "🎲 Casino", "🩺 System", "🧰 Advanced tools"],
+        ["💰 Trade Desk", "📈 Performance", "🩺 System", "🧰 Advanced tools"],
         label_visibility="collapsed",
     )
     _primary = _primary.split(" ", 1)[1]
@@ -587,10 +591,8 @@ with st.sidebar:
         page = st.selectbox(
             "Tool",
             ADVANCED_PAGES,
-            help="Results and detailed research tools.",
+            help="Historical research and diagnostics — not independent trade recommendations.",
         )
-    elif _primary == "Casino":
-        page = "Storm Cellar / 0DTE Lab"
     else:
         page = _primary
 
@@ -637,7 +639,11 @@ calibration_state = calibration_evidence_state(
 )
 lifecycle_health = snapshot.get("lifecycle_health", {})
 
-if page == "Trade Ideas":
+if page == "Trade Desk":
+    render_profit_desk_page()
+elif page == "Performance":
+    render_performance_page(snapshot)
+elif page == "Trade Ideas":
     render_trade_ideas_page()
 elif page == "Results":
     render_results_page(snapshot)
