@@ -506,6 +506,8 @@ def _clear_prospective_summary_cache() -> None:
 
 
 _PAGE_SECTIONS: dict[str, frozenset[str]] = {
+    "Trade Desk": frozenset({"runtime"}),
+    "Performance": frozenset({"counts", "prospective", "lifecycle"}),
     "Dashboard": frozenset({
         "runtime",
         "prospective",
