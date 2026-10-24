@@ -1,4 +1,4 @@
-# Christiania: thesis-first multi-family selection — first implementation slice
+# Christiania: one cross-strategy trade-selection engine — foundation
 
 **Status:** isolated research-only architecture, **not** production authority.
 **Branch:** `feature/p0-independent-multifamily-discovery-20261024`
@@ -36,15 +36,19 @@ and have no approved predictive signals.
    butterfly, iron condor, iron butterfly. Strike selection is
    deterministic adjacent-at-the-money geometry, **not** a claimed optimum.
 4. Apply the **same** quote synchrony, multipliers, cost, capital and evidence
-   gates for every structure. The hypothesis must be compatible with the
-   structure. No unrelated thesis may lend a strategy its authority.
+   gates for every structure. Evaluate **the same frozen market-price
+   distribution against every eligible retail strategy payoff**. Independent
+   forecasters should corroborate or discredit the *same candidate*, and
+   correlated models sharing inputs must not count as separate votes.
 5. Compute an illustrative net expiry expectancy **only** when a frozen
    valid terminal distribution and enough cost evidence are supplied.
    Expiry intrinsic cannot substitute for a predeclared volatility-convergence
    early exit. Real broker execution remains distinct and unapproved.
-6. Fail closed: `NO_TRADE` is not failure. At most the model returns
-   `SHADOW_RESEARCH_ONLY_NOT_TRADING_AUTHORITY` when prospective,
-   independently evaluated inputs qualify. There is **no** order pathway.
+6. **Rank opportunities on conservative estimated net EV per unit of
+   at-risk capital, versus NO TRADE ($0), with the worst independent
+   forecast as a veto.** A disagreement or missing source means NO TRADE.
+   At most the ranker returns `CANDIDATE_FOR_MANUAL_REQUOTE_NOT_EXECUTABLE`.
+   There is **no** order pathway.
 
 ## What this slice really delivers
 
@@ -58,6 +62,13 @@ and have no approved predictive signals.
 - `src/research/independent_family_read_model_v1.py` — bounded read-only
   adapter to the latest completed research run. No full historical scans,
   no schema changes, no writes.
+- `src/decision/unified_trade_ranker_v1.py` — one decision table across
+  strategy families; forecast models aggregated by data-dependence group;
+  conservative projected net EV, model disagreement veto and risk-normalized
+  ranking. No result counts as broker-executable.
+- `src/decision/unified_trade_desk_v1.py` — one-call orchestrator:
+  frozen chain → retail strategy combinations → common models and evidence
+  gates → single ranked trade list or NO TRADE.
 - `tests/test_*thesis*selection*v1.py` and
   `tests/test_independent_family*py` — source failure, identity, leakage,
   payoff and family comparisons.
@@ -81,7 +92,7 @@ shows 169 model-only proxy outcomes (2 positive, 167 negative), which are
 these outcomes, and do not rewrite legacy candidates to manufacture wins.
 
 Until a genuinely sourced, timely stock reference and prospectively frozen
-strategy-specific forecasts exist, the new pipeline correctly emits no
+**market forecast distributions** exist, the new pipeline correctly emits no
 authorized candidates. This is a dependency to repair, not a reason to
 weaken the source clock or silently fall back to Theta's Greek-model spot.
 
@@ -99,7 +110,15 @@ weaken the source clock or silently fall back to Theta's Greek-model spot.
    reversible, auditable switchover. Require a valid backup, exact-main
    green quality gate, production-scale performance, and rollback proof.
 
-## Test of success
+## One overriding product acceptance criterion
+
+The dashboard's primary view is a single **ranked trade list** with strategy,
+underlying, expiry, conservative estimated net EV in EUR after all costs,
+capital at risk, score, independent model support/opposition, evidence age,
+and a clear NO TRADE reason. It answers whether an opportunity beats both
+an alternative structure and doing nothing. All other pages are drill-down
+views of the **same stored decision and outcome lineage**. No separate
+strategy-specific definition of success or promotion is permitted.
 
 The same market evidence yields the same gate and missing-source reasons
 across Main Engine and Casino (even if loss caps differ). A model-only quote

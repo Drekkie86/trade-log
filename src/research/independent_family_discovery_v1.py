@@ -64,6 +64,7 @@ class IndependentDiscovery:
     source_quote_sets: tuple[tuple[int, ...], ...]
     distinct_expiries: int
     authority: str = "NONE"
+    source_structures: tuple[Structure, ...] = ()
 
     @property
     def strategy_ids(self) -> tuple[str, ...]:
@@ -143,6 +144,7 @@ def discover_independent_families(
     chain: FrozenChain,
     policy: QuoteCostPolicy,
     *,
+    market_thesis: FrozenThesis | None = None,
     theses_by_family: Mapping[str, FrozenThesis] | None = None,
 ) -> IndependentDiscovery:
     """Seven-option-family search directly from a snapshot, not butterfly proposals.
@@ -190,8 +192,11 @@ def discover_independent_families(
         if len(q_by_expiry) > MAX_EXPIRIES:
             raise ValueError("EXPIRY_COUNT_EXCEEDS_BOUNDED_DISCOVERY")
         decisions: list[SelectionDecision] = []
+        source_structures: list[Structure] = []
         provenance: list[tuple[int, ...]] = []
         theses = theses_by_family or {}
+        if market_thesis is not None and theses:
+            raise ValueError("MARKET_AND_FAMILY_FORECASTS_AMBIGUOUS")
         for expiration in sorted(q_by_expiry):
             qmap = q_by_expiry[expiration]
             # A single invalid leg blocks this expiry's candidate expressions,
@@ -213,10 +218,12 @@ def discover_independent_families(
                     ),
                 )
                 decision = evaluate_candidate(
-                    structure, policy, theses.get(strategy_id),
+                    structure, policy,
+                    market_thesis if market_thesis is not None else theses.get(strategy_id),
                     underlying=chain.underlying, expiration=expiration,
                 )
                 decisions.append(decision)
+                source_structures.append(structure)
                 provenance.append(source_ids)
     except (ValueError, TypeError, KeyError) as exc:
         return IndependentDiscovery(
@@ -228,5 +235,5 @@ def discover_independent_families(
         "RESEARCH_ONLY_NO_TRADE" if decisions else "NO_SUPPORTED_STRATEGY_GEOMETRY",
         () if decisions else ("NO_MATCHING_SAME_SNAPSHOT_OPTION_GEOMETRY",),
         chain.snapshot_id, tuple(decisions), tuple(provenance),
-        len(q_by_expiry),
+        len(q_by_expiry), source_structures=tuple(source_structures),
     )

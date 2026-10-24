@@ -125,11 +125,11 @@ def test_forecast_for_one_family_not_transferred_to_unrelated_strategies():
                for d in result.decisions[1:])
 
 
-def test_directional_thesis_cannot_approve_a_short_volatility_package():
+def test_same_market_forecast_is_scored_against_all_option_structures():
     chain = source_chain()
     directional = FrozenThesis(
-        thesis_id="DIRECTION_ONLY", family="DIRECTIONAL_UP", frozen_at=QTIME,
-        underlying="XYZ", expiration="2026-10-23",
+        thesis_id="SAME_MARKET_DISTRIBUTION", family="DIRECTIONAL_UP",
+        frozen_at=QTIME, underlying="XYZ", expiration="2026-10-23",
         forecast_model_version="MODEL_V1", forecast_source="TEST_PRECOMMIT",
         training_cutoff="2026-10-16T15:00:00Z", exit_rule=EXPIRY_EXIT,
         scenarios=(TerminalScenario(D("100"), D("1")),),
@@ -137,12 +137,21 @@ def test_directional_thesis_cannot_approve_a_short_volatility_package():
         matched_placebo_ci_lower_usd=D("3"),
     )
     result = discover_independent_families(
-        chain, policy(), theses_by_family={"S09": directional}
+        chain, policy(), market_thesis=directional,
     )
-    condor = next(d for d in result.decisions if d.strategy_id == "S09")
-    assert condor.feasibility.state != "FAILED_STRUCTURE"
-    assert "THESIS_DOES_NOT_SUPPORT_STRUCTURE_FAMILY" in condor.blockers
-    assert condor.state == NO_TRADE
+    assert result.strategy_ids == FAMILIES
+    assert all(d.thesis_id == "SAME_MARKET_DISTRIBUTION"
+               for d in result.decisions)
+    assert all("THESIS_DOES_NOT_SUPPORT_STRUCTURE_FAMILY" not in d.blockers
+               for d in result.decisions)
+    assert all(
+        d.hypothetical_net_ev_usd is not None
+        or "PACKAGE_FEASIBILITY_NOT_FULLY_EVIDENCED" in d.blockers
+        for d in result.decisions
+    )
+    # A forecast may reject a condor while supporting a directional spread.
+    # Payoff and cost economics decide, not a strategy-label whitelist.
+    assert all(not d.eligible_for_live_trading for d in result.decisions)
 
 
 def test_quote_from_future_prevents_all_research_selection():

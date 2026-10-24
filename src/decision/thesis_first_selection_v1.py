@@ -21,15 +21,6 @@ THESIS_FAMILIES = frozenset({
     "DIRECTIONAL_UP", "DIRECTIONAL_DOWN", "LONG_VOLATILITY",
     "SHORT_VOLATILITY", "LOCAL_IV_CONVERGENCE",
 })
-STRATEGY_THESIS_COMPATIBILITY = {
-    "S03": frozenset({"DIRECTIONAL_UP"}),
-    "S04": frozenset({"DIRECTIONAL_DOWN"}),
-    "S06": frozenset({"LONG_VOLATILITY"}),
-    "S07": frozenset({"LONG_VOLATILITY"}),
-    "S08": frozenset({"LOCAL_IV_CONVERGENCE"}),
-    "S09": frozenset({"SHORT_VOLATILITY"}),
-    "S10": frozenset({"SHORT_VOLATILITY"}),
-}
 EXPIRY_EXIT = "HOLD_TO_EXPIRY"
 NO_TRADE = "NO_TRADE"
 SHADOW_ONLY = "SHADOW_RESEARCH_ONLY_NOT_TRADING_AUTHORITY"
@@ -160,10 +151,10 @@ def evaluate_candidate(
                 reasons.append("THESIS_CONTRACT_IDENTITY_MISMATCH")
             if thesis.family not in THESIS_FAMILIES:
                 reasons.append("UNRECOGNIZED_PREDICTIVE_THESIS")
-            elif thesis.family not in STRATEGY_THESIS_COMPATIBILITY.get(
-                structure.strategy_id, frozenset()
-            ):
-                reasons.append("THESIS_DOES_NOT_SUPPORT_STRUCTURE_FAMILY")
+            # A single ex-ante terminal price distribution is evaluated against
+            # EVERY strategy payoff. Never require a separate model merely
+            # because the payoff shape is a spread rather than a straddle.
+            # Early-exit convergence still needs a path-specific payoff model.
             if expiry_at < decision_at.date():
                 reasons.append("CANDIDATE_EXPIRED_BEFORE_ASOF")
         except (ValueError, TypeError):
