@@ -14,7 +14,9 @@ from src.research.independent_family_discovery_v1 import (
     FrozenChain, FrozenQuote, IndependentDiscovery,
     _stock_reference_valid, discover_independent_families,
 )
-from src.research.massive_underlying_observation_v1 import STOCK_PRICE_SOURCE
+from src.research.massive_underlying_observation_v1 import (
+    verified_stock_source_from_notes,
+)
 from src.research.strategy_competition_v1 import _fx_asof, _quote_time_asof
 from src.research.strategy_falsification_v1 import QuoteCostPolicy, dec
 
@@ -43,10 +45,8 @@ def _read_chain(
     # independent underlying provenance note from the actual research runner.
     notes = str(row["notes"] or "")
     stock_source = (
-        STOCK_PRICE_SOURCE
-        if row["underlying_source"] == "FETCHED"
-        and f"stock price source={STOCK_PRICE_SOURCE};" in notes
-        else None
+        verified_stock_source_from_notes(notes)
+        if row["underlying_source"] == "FETCHED" else None
     )
     if stock_source is None:
         return FrozenChain(

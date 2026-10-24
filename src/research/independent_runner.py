@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from collections import Counter
@@ -12,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from src.providers.massive import (
+    MassiveError,
     MassiveNetworkError,
     MassiveRateLimitError,
     MassiveResponseError,
@@ -38,6 +40,7 @@ from src.research.massive_underlying_observation_v1 import (
     diagnose_stock_source,
     extract_massive_underlying_observation,
 )
+from src.research.massive_direct_stock_v1 import parse_stock_ticker_snapshot
 from src.research.thetadata_live_adapter import (
     fetch_live_first_order_greek_rows,
     fetch_live_quote_rows,
@@ -1193,6 +1196,31 @@ def collect_underlying(
         underlying=underlying,
         decision_at=theta_quote_observed_at,
     )
+    source_disposition_reason = source_disposition.reason
+
+    # Opt-in independent STOCKS last-trade receipt, not an alternative
+    # Greek/model spot and never a historical backfill. Do not make extra
+    # paid API requests until real plan entitlement and quota are verified.
+    if (
+        independent_spot is None
+        and os.environ.get("CHRISTIANIA_DIRECT_STOCK_SNAPSHOT_ENABLED") == "1"
+    ):
+        if not hasattr(massive_client, "get_stock_ticker_snapshot"):
+            source_disposition_reason = "STOCK_CLIENT_METHOD_NOT_AVAILABLE"
+        else:
+            try:
+                stock_doc = massive_client.get_stock_ticker_snapshot(underlying)
+                direct = parse_stock_ticker_snapshot(
+                    stock_doc,
+                    underlying=underlying,
+                    decision_at=theta_quote_observed_at,
+                )
+                if direct.observation is not None:
+                    independent_spot = direct.observation
+                else:
+                    source_disposition_reason = direct.reason
+            except (MassiveError, ValueError, OSError):
+                source_disposition_reason = "DIRECT_STOCK_SOURCE_UNAVAILABLE"
 
     market_snapshot_id = (
         _persist_theta_market_evidence(
@@ -1206,7 +1234,7 @@ def collect_underlying(
                     theta_quote_observed_at
                 ),
             independent_underlying=independent_spot,
-            source_disposition_reason=source_disposition.reason,
+            source_disposition_reason=source_disposition_reason,
             db_path=db_path,
         )
     )

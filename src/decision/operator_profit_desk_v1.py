@@ -45,7 +45,7 @@ def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage
     """
     from src.operations.sqlite_runtime import open_readonly_connection
     from src.research.massive_underlying_observation_v1 import (
-        MAX_AGE_SECONDS, STOCK_PRICE_SOURCE,
+        MAX_AGE_SECONDS, verified_stock_source_from_notes,
     )
     conn = open_readonly_connection(db_path)
     try:
@@ -80,7 +80,7 @@ def load_underlying_source_coverage(*, db_path=None) -> UnderlyingSourceCoverage
             if (
                 row["underlying_price"] is None
                 or row["underlying_source"] != "FETCHED"
-                or f"stock price source={STOCK_PRICE_SOURCE};" not in note
+                or verified_stock_source_from_notes(note) is None
             ):
                 rejected[reason] += 1
                 continue

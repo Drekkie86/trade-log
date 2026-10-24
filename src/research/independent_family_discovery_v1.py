@@ -15,7 +15,7 @@ from src.decision.thesis_first_selection_v1 import (
     FrozenThesis, SelectionDecision, evaluate_candidate,
 )
 from src.research.massive_underlying_observation_v1 import (
-    MAX_AGE_SECONDS, STOCK_PRICE_SOURCE,
+    MAX_AGE_SECONDS, STOCK_PRICE_SOURCES,
 )
 from src.research.strategy_falsification_v1 import (
     Leg, QuoteCostPolicy, Structure, dec, utc,
@@ -90,7 +90,7 @@ def _leg(q: FrozenQuote, side: str, quantity: int = 1) -> Leg:
 
 
 def _stock_reference_valid(chain: FrozenChain) -> bool:
-    if chain.spot is None or chain.spot_source != STOCK_PRICE_SOURCE or not chain.spot_at:
+    if chain.spot is None or chain.spot_source not in STOCK_PRICE_SOURCES or not chain.spot_at:
         return False
     try:
         if dec(chain.spot) <= 0:
