@@ -159,13 +159,15 @@ def build_trading_desk_state(
     *,
     latest_session: str | None,
     authoritative: MarketDecision | None = None,
+    authoritative_latest_snapshot_at: str | None = None,
     now: datetime | None = None,
 ) -> TradingDeskState:
     """One actionable stream; historical scanner votes cannot bypass it."""
     now = now or datetime.now(UTC)
-    last_snapshot = max(
+    legacy_snapshot = max(
         (idea.as_of for idea, _ in existing if idea.as_of), default=None,
     )
+    last_snapshot = authoritative_latest_snapshot_at or legacy_snapshot
     source_fresh = _fresh_utc(last_snapshot, now)
     counts = Counter(assessment.verdict for _, assessment in existing)
     diagnostic_reasons = Counter(

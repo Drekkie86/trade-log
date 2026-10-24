@@ -105,3 +105,43 @@ Failing closed is essential to the integrity of all expiry-outcome
 evaluations.
 
 No live deployments, broker orders or schema changes are included.
+
+
+## One immutable cross-strategy decision book — development schema v38
+
+Schema v38 adds only an append-only, indexed
+`unified_candidate_decisions_v1` table. The single economic opportunity
+identity is unique per (research run, source snapshot, trading lane, option
+structure, frozen source reference). A later rerun with altered costs,
+models or prices cannot overwrite, delete or create a duplicate decision.
+
+`freeze_market_decisions()` recomputes the unified ranker itself, reads
+the server UTC clock (callers cannot backdate the event), insists the
+source snapshot and every referenced leg exist in the same research
+run, and demands an independently sourced stock reference with the
+unchanged 15-second window. It refuses a freeze more than 15 minutes
+after the source capture and refuses expired candidates. It writes
+both NO_TRADE and manual-requote states **atomically** with exact leg
+and model distribution inputs, dependence groups, assumed costs,
+risk limit, forecast training cut, proposed exit, reason codes and
+tamper-evident SHA-256 input hash. No stored record is a broker order.
+
+`load_latest_frozen_book()` verifies that frozen input digest,
+identity and timestamps before presenting the one ranked decision
+to Trade Desk. The ranker's current model inputs are NOT yet backed
+by an independently validated forecasting process. Consequently,
+current write paths tag evidence `UNPROVEN_MODEL`, and the reader
+does not promote these rows to actionable manual re-quotes.
+
+**Unfinished:** wire prospective writer into the actual collection
+cycle at the time each snapshot is captured, define and validate
+independent forecast distributions, establish the paper exit/mark
+evaluation and matched controls, and make Performance read that
+same outcome ledger. This work is not proof of positive expectancy.
+
+**Deployment gate:** schema v38 is a migration release, not a
+no-schema UI update. At the current multi-GB DB size, the release
+pipeline requires a verified, schema-aware rollback/recovery copy
+and exact-SHA production-scale probe. The active server remains
+at schema v37, with backup supervisor readiness NOT PASS; never
+apply migration until the release control is satisfied.
