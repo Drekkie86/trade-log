@@ -78,3 +78,29 @@ def test_different_model_or_cost_inputs_cannot_rewrite_same_economic_bet(db_path
         )
     book=load_latest_frozen_book(db_path=db_path)
     assert book.records==2
+
+
+def test_latest_run_without_decisions_cannot_reuse_older_candidate_rank(db_path):
+    from src.database.repository import get_connection
+    run_id,candidates=seed_frozen_chain(db_path)
+    freeze_market_decisions(
+        research_run_id=run_id,candidates=candidates,db_path=db_path,
+    )
+    assert load_latest_frozen_book(db_path=db_path).records==2
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """INSERT INTO research_runs
+              (cohort_id,preregistration_hash,code_git_sha,started_at,
+               us_session_date,us_session_state,status)
+               VALUES ('LATER_EMPTY','LATER_HASH','LATER_SHA',?,
+                       '2026-10-24','INTRADAY','STARTED')""",
+            (datetime.now(UTC).isoformat(),),
+        )
+        last_id=int(conn.execute(
+            "SELECT last_insert_rowid()"
+        ).fetchone()[0])
+    book=load_latest_frozen_book(db_path=db_path)
+    assert book.last_run_id==last_id
+    assert book.records==0
+    assert book.decision is None
+    assert book.latest_snapshot_at is None

@@ -1211,6 +1211,17 @@ def collect_underlying(
         )
     )
 
+    # Freeze the same-snapshot, seven-family NO TRADE evaluation here,
+    # immediately after all Theta quote rows have been committed.
+    # The automatic ledger records a reason even when no usable strategy
+    # geometry or independent source price exists; it never places orders.
+    from src.research.automatic_unified_capture_v1 import capture_frozen_snapshot
+    capture_frozen_snapshot(
+        research_run_id=run_id,
+        snapshot_id=market_snapshot_id,
+        db_path=db_path,
+    )
+
     reconciliation = (
         reference_persistence[
             "reconciliation"

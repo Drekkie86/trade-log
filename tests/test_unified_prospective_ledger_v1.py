@@ -68,6 +68,15 @@ def seed_frozen_chain(db_path, *, age_seconds=2, stock_source='FETCHED'):
             ids[(kind,strike)] = conn.execute(
                 "SELECT last_insert_rowid()"
             ).fetchone()[0]
+            conn.execute(
+                """INSERT INTO listing_reference_contracts
+                 (research_run_id,provider,underlying,provider_contract_id,
+                  expiration,strike,right,shares_per_contract,
+                  observed_at,ingested_at)
+                 VALUES (?,'MASSIVE','XYZ',?,?,?,?,100,?,?)""",
+                (run_id,f"BASE_{kind}_{strike}",EXPIRY,
+                 strike,kind,iso(source),iso(source)),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -201,3 +210,34 @@ def test_atomic_fail_closed_if_one_candidate_borrows_wrong_snapshot(db_path):
         ).fetchone()[0] == 0
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize(
+    "bad_field,bad_value,expected",
+    [
+        ("bid",D("55.55"),"OPTION_LEG_PRICE_SOURCE_MISMATCH"),
+        ("strike",D("101"),"OPTION_LEG_CONTRACT_SOURCE_MISMATCH"),
+        ("multiplier",D("10"),"OPTION_LEG_LISTING_MULTIPLIER_MISMATCH"),
+        ("quote_at","2026-01-01T15:00:00Z","OPTION_LEG_QUOTE_CLOCK_MISMATCH"),
+    ],
+)
+def test_leg_id_cannot_launder_fabricated_price_or_contract(
+    db_path,bad_field,bad_value,expected,
+):
+    run_id,candidates=seed_frozen_chain(db_path)
+    original=candidates[0]
+    corrupted_leg=replace(original.structure.legs[0],**{bad_field:bad_value})
+    corrupted=replace(
+        original,structure=replace(
+            original.structure,
+            legs=(corrupted_leg,*original.structure.legs[1:]),
+        ),
+    )
+    with pytest.raises(ValueError,match=expected):
+        freeze_market_decisions(
+            research_run_id=run_id,candidates=(corrupted,),db_path=db_path,
+        )
+    with get_connection(db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM unified_candidate_decisions_v1"
+        ).fetchone()[0]==0

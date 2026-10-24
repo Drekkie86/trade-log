@@ -79,11 +79,94 @@ def _stock_source_qualified(snapshot) -> bool:
         return False
 
 
+def _verify_frozen_source_legs(
+    conn, candidate: OptionCandidate, *, research_run_id: int,
+) -> None:
+    """No stored source ID can be used to launder a fabricated price/strike.
+
+    The original option quote and matching Massive listing multiplier must
+    agree with every frozen payoff leg. Missing or ambiguous source
+    identity fails closed, even when the model verdict is only NO TRADE.
+    """
+    from src.research.strategy_competition_v1 import _quote_time_asof
+    legs = candidate.structure.legs
+    ids = []
+    for leg in legs:
+        if leg.source_id is None or leg.kind not in {"CALL", "PUT"}:
+            raise ValueError("OPTION_LEG_SOURCE_ID_REQUIRED")
+        try:
+            ids.append(int(leg.source_id))
+        except (TypeError, ValueError):
+            raise ValueError("OPTION_LEG_SOURCE_ID_INVALID")
+    if len(set(ids)) != len(ids):
+        raise ValueError("REUSED_SOURCE_QUOTE_ID")
+    placeholders = ",".join("?" for _ in ids)
+    recorded = {
+        int(row["id"]): row for row in conn.execute(
+            f"""SELECT id,right,strike,expiration,quote_at,
+                       bid,ask,bid_source,ask_source,shares_per_contract
+                FROM option_quotes
+                WHERE snapshot_id=? AND id IN ({placeholders})""",
+            (candidate.snapshot_id,*ids),
+        ).fetchall()
+    }
+    if len(recorded) != len(ids):
+        raise ValueError("SOURCE_LEGS_NOT_IN_SAME_SNAPSHOT")
+    for leg, quote_id in zip(legs,ids):
+        quote = recorded[quote_id]
+        if (
+            quote["right"] != ("C" if leg.kind == "CALL" else "P")
+            or quote["expiration"] != leg.expiration
+            or quote["expiration"] != candidate.expiration
+            or Decimal(str(quote["strike"])) != leg.strike
+        ):
+            raise ValueError("OPTION_LEG_CONTRACT_SOURCE_MISMATCH")
+        for name in ("bid","ask"):
+            original = quote[name]
+            modeled = getattr(leg,name)
+            if (
+                (original is None) != (modeled is None)
+                or (original is not None and Decimal(str(original)) != modeled)
+            ):
+                raise ValueError("OPTION_LEG_PRICE_SOURCE_MISMATCH")
+            if modeled is not None and quote[name+"_source"] != "FETCHED":
+                raise ValueError("OPTION_PRICE_NOT_PROVIDER_FETCHED")
+        stored_quote_at = _quote_time_asof(quote["quote_at"])
+        if stored_quote_at is None:
+            if leg.quote_at is not None:
+                raise ValueError("OPTION_LEG_QUOTE_CLOCK_MISMATCH")
+        elif leg.quote_at is None or _parse_utc(stored_quote_at) != _parse_utc(
+            leg.quote_at
+        ):
+            raise ValueError("OPTION_LEG_QUOTE_CLOCK_MISMATCH")
+        rows = conn.execute(
+            """SELECT shares_per_contract
+               FROM listing_reference_contracts
+               WHERE research_run_id=? AND provider='MASSIVE'
+                 AND underlying=? AND expiration=?
+                 AND right=? AND strike=? LIMIT 2""",
+            (research_run_id,candidate.underlying,leg.expiration,
+             quote["right"],quote["strike"]),
+        ).fetchall()
+        if len(rows) != 1 or rows[0]["shares_per_contract"] is None:
+            raise ValueError("MASSIVE_LISTING_MULTIPLIER_NOT_UNAMBIGUOUS")
+        verified_multiplier = Decimal(str(rows[0]["shares_per_contract"]))
+        if leg.multiplier != verified_multiplier or verified_multiplier <= 0:
+            raise ValueError("OPTION_LEG_LISTING_MULTIPLIER_MISMATCH")
+        quote_multiplier = quote["shares_per_contract"]
+        if (
+            quote_multiplier is not None
+            and Decimal(str(quote_multiplier)) != verified_multiplier
+        ):
+            raise ValueError("QUOTE_AND_LISTING_MULTIPLIER_DISAGREE")
+
+
 def freeze_market_decisions(
     *,
     research_run_id: int,
     candidates: Sequence[OptionCandidate],
     db_path=None,
+    record_capture_disposition: bool = False,
 ) -> FrozenDecisionReceipt:
     """Freeze score, model disagreements, strategy, exact legs and all costs.
 
@@ -146,23 +229,9 @@ def freeze_market_decisions(
             if not _stock_source_qualified(snapshot):
                 raise ValueError("INDEPENDENT_STOCK_REFERENCE_NOT_EVIDENCED")
 
-            source_ids = [
-                int(leg.source_id) for leg in candidate.structure.legs
-                if leg.source_id is not None
-            ]
-            if len(source_ids) != len(candidate.structure.legs):
-                raise ValueError("SOURCE_OPTION_QUOTE_IDS_REQUIRED")
-            if len(set(source_ids)) != len(source_ids):
-                # A two-leg 1x2 structure must represent one leg with
-                # quantity=2, not multiple duplicate source identities.
-                raise ValueError("REUSED_SOURCE_QUOTE_ID")
-            found = conn.execute(
-                "SELECT COUNT(*) FROM option_quotes WHERE snapshot_id=? "
-                f"AND id IN ({','.join('?' for _ in source_ids)})",
-                (candidate.snapshot_id, *source_ids),
-            ).fetchone()[0]
-            if int(found) != len(source_ids):
-                raise ValueError("SOURCE_LEGS_NOT_IN_SAME_SNAPSHOT")
+            _verify_frozen_source_legs(
+                conn,candidate,research_run_id=research_run_id,
+            )
             forecast_inputs = [
                 {
                     "model_id": m.model_id,
@@ -254,6 +323,29 @@ def freeze_market_decisions(
             if record is None or record["input_json"] != data[10]:
                 raise ValueError("IMMUTABLE_DECISION_DIGEST_COLLISION")
             ids.append(int(record["id"]))
+        if record_capture_disposition:
+            # Commit the per-snapshot capture proof in the SAME transaction
+            # as the decisions: a crash cannot leave seven "frozen" rows
+            # without a matching operator-visible disposition.
+            if len({item.snapshot_id for item in candidates}) != 1:
+                raise ValueError("ATOMIC_CAPTURE_REQUIRES_ONE_SOURCE_SNAPSHOT")
+            if any(row.state != "NO_TRADE" for row in assessed.values()):
+                raise ValueError("AUTOMATIC_CAPTURE_NOT_YET_LIVE_SIGNAL_AUTHORITY")
+            snapshot_id = candidates[0].snapshot_id
+            conn.execute(
+                """INSERT INTO unified_capture_dispositions_v1
+                 (research_run_id,snapshot_id,captured_at,evaluated_at,
+                  state,reason_code,structures_compared,decisions_frozen)
+                 SELECT ?,?,captured_at,?,
+                        'FROZEN_NO_TRADE','UNPROVEN_FORECAST_NO_TRADE',?,?
+                 FROM market_snapshots WHERE id=?
+                 ON CONFLICT(snapshot_id) DO NOTHING""",
+                (
+                    research_run_id,snapshot_id,
+                    freeze_time.isoformat().replace("+00:00","Z"),
+                    len(candidates),len(ids),snapshot_id,
+                ),
+            )
         conn.commit()
         return FrozenDecisionReceipt(
             research_run_id=research_run_id,

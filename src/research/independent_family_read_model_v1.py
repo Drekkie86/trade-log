@@ -35,7 +35,10 @@ class IndependentRunReport:
     authority: str = "NONE"
 
 
-def _read_chain(conn, row, *, research_run_id: int) -> FrozenChain:
+def _read_chain(
+    conn, row, *, research_run_id: int,
+    bounded_live_selection: bool = False,
+) -> FrozenChain:
     # A 'FETCHED' enum alone is not a source receipt. Require the persisted
     # independent underlying provenance note from the actual research runner.
     notes = str(row["notes"] or "")
@@ -50,20 +53,33 @@ def _read_chain(conn, row, *, research_run_id: int) -> FrozenChain:
             int(row["id"]), str(row["underlying"]), str(row["captured_at"]),
             None, None, None, (),
         )
-    source_rows = conn.execute(
-        """SELECT oq.id,oq.snapshot_id,oq.right,oq.strike,oq.expiration,
-                  oq.quote_at,oq.bid,oq.ask,
-                  oq.shares_per_contract AS quote_multiplier,
-                  lrc.shares_per_contract AS reference_multiplier
-           FROM option_quotes oq
-           LEFT JOIN listing_reference_contracts lrc
-             ON lrc.research_run_id=? AND lrc.provider='MASSIVE'
-            AND lrc.underlying=? AND lrc.expiration=oq.expiration
-            AND lrc.right=oq.right AND lrc.strike=oq.strike
-           WHERE oq.snapshot_id=? ORDER BY oq.id LIMIT ?""",
-        (research_run_id, row["underlying"], row["id"],
-         MAX_QUOTES_PER_SNAPSHOT + 1),
-    ).fetchall()
+    selection_blocker = None
+    if bounded_live_selection:
+        from src.research.bounded_chain_selection_v1 import (
+            read_bounded_strategy_source_rows,
+        )
+        source_rows, selection_blocker = read_bounded_strategy_source_rows(
+            conn, snapshot_id=int(row["id"]),
+            research_run_id=research_run_id,
+            underlying=str(row["underlying"]),
+            captured_at=str(row["captured_at"]),
+            spot=dec(row["underlying_price"]),
+        )
+    else:
+        source_rows = conn.execute(
+            """SELECT oq.id,oq.snapshot_id,oq.right,oq.strike,oq.expiration,
+                      oq.quote_at,oq.bid,oq.ask,
+                      oq.shares_per_contract AS quote_multiplier,
+                      lrc.shares_per_contract AS reference_multiplier
+               FROM option_quotes oq
+               LEFT JOIN listing_reference_contracts lrc
+                 ON lrc.research_run_id=? AND lrc.provider='MASSIVE'
+                AND lrc.underlying=? AND lrc.expiration=oq.expiration
+                AND lrc.right=oq.right AND lrc.strike=oq.strike
+               WHERE oq.snapshot_id=? ORDER BY oq.id LIMIT ?""",
+            (research_run_id, row["underlying"], row["id"],
+             MAX_QUOTES_PER_SNAPSHOT + 1),
+        ).fetchall()
     if len(source_rows) > MAX_QUOTES_PER_SNAPSHOT:
         return FrozenChain(
             int(row["id"]), str(row["underlying"]), str(row["captured_at"]),
@@ -102,6 +118,7 @@ def _read_chain(conn, row, *, research_run_id: int) -> FrozenChain:
              else dec(row["underlying_price"]),
         spot_source=stock_source, spot_at=row["underlying_at"],
         quotes=tuple(quotes),
+        source_blocker=selection_blocker,
     )
 
 
