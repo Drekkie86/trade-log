@@ -76,3 +76,32 @@ had active core services, but `christiania-backup.service` failed and
 Recent compressed backup files existed, yet their recovery-point validity
 remained unverified by operational readiness. Resolve the backup recovery
 control and require exact-main green CI, performance probe and rollback.
+
+
+## Source qualification diagnostics — 24 October follow-up
+
+Previously the independent stock reference extractor returned NULL silently
+when Massive's option-chain asset payload failed the strict Theta decision
+cut. The collector now writes a bounded `source_disposition=REASON` note
+to each **new** Theta market snapshot when no qualified stock price is
+available. Diagnostic reasons distinguish no option-chain data, no
+underlying asset, wrong/missing ticker, nonpositive price, invalid
+nanosecond timestamp, future value, stale value at Theta cut, and
+contradictory same-timestamp prices. The extraction gate is unchanged.
+
+The Trade Desk's bounded latest-run read-model aggregates those recorded
+reasons rather than presenting a meaningless zero. Historical snapshots
+without recorded reasons stay explicitly labelled
+`LEGACY_NO_REJECTION_REASON`; they are not retrospectively reclassified.
+
+**Important:** This instrumented patch does NOT establish that Massive's
+current license includes a sufficiently fresh stock price, nor does it
+solve the provider ordering mismatch. Current collector flow retrieves
+Massive's option-chain asset early, before Theta quotes and Greeks; its
+stock timestamp can age out of the 15-second source gate. The exact real
+source reason should be measured on the next market-session collection
+before changing provider calls, freshness rules, quota or schedule.
+Failing closed is essential to the integrity of all expiry-outcome
+evaluations.
+
+No live deployments, broker orders or schema changes are included.

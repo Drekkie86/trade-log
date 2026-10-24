@@ -79,3 +79,122 @@ def extract_massive_underlying_observation(
             timespec="microseconds"
         ).replace("+00:00", "Z"),
     )
+
+
+@dataclass(frozen=True)
+class StockSourceDisposition:
+    """Machine-readable source failure, not an alternative spot estimate."""
+    status: str
+    reason: str
+    chain_rows: int
+    matched_ticker_rows: int
+    structurally_valid_rows: int
+    qualifying_rows: int
+    closest_age_seconds: float | None = None
+
+
+def diagnose_stock_source(
+    snapshot_rows: Sequence[dict[str, Any]],
+    *,
+    underlying: str,
+    decision_at: datetime,
+) -> StockSourceDisposition:
+    """Explain why independent spot evidence did or did not qualify.
+
+    No guessing a ticker, coercing a unitless timestamp, or replaying the
+    Greek-model underlying. The actual extraction function is authoritative.
+    Diagnostics are bounded to the already-retrieved provider rows.
+    """
+    if decision_at.tzinfo is None or decision_at.utcoffset() is None:
+        raise ValueError("THETA_DECISION_TIME_MUST_BE_TIMEZONE_AWARE")
+    symbol = str(underlying).strip().upper()
+    if not symbol:
+        raise ValueError("UNDERLYING_SYMBOL_REQUIRED")
+    cut = decision_at.astimezone(timezone.utc)
+    stats = {
+        "NO_UNDERLYING_ASSET": 0,
+        "TICKER_MISSING": 0,
+        "TICKER_MISMATCH": 0,
+        "PRICE_INVALID": 0,
+        "TIMESTAMP_INVALID": 0,
+        "SOURCE_FROM_FUTURE": 0,
+        "SOURCE_STALE_AT_THETA_CUT": 0,
+        "CANDIDATE_FRESH": 0,
+    }
+    matched = valid = fresh = 0
+    ages: list[float] = []
+    timestamps: dict[int, set[float]] = {}
+    for row in snapshot_rows:
+        asset = row.get("underlying_asset") if isinstance(row, dict) else None
+        if not isinstance(asset, dict):
+            stats["NO_UNDERLYING_ASSET"] += 1
+            continue
+        raw_ticker = str(asset.get("ticker") or "").strip().upper()
+        if not raw_ticker:
+            stats["TICKER_MISSING"] += 1
+            continue
+        if raw_ticker != symbol:
+            stats["TICKER_MISMATCH"] += 1
+            continue
+        matched += 1
+        px = asset.get("price")
+        if isinstance(px, bool) or not isinstance(px, (int, float)):
+            stats["PRICE_INVALID"] += 1
+            continue
+        price = float(px)
+        if not math.isfinite(price) or price <= 0:
+            stats["PRICE_INVALID"] += 1
+            continue
+        nanoseconds = asset.get("last_updated")
+        if (
+            isinstance(nanoseconds, bool)
+            or not isinstance(nanoseconds, int) or nanoseconds <= 0
+        ):
+            stats["TIMESTAMP_INVALID"] += 1
+            continue
+        try:
+            t = datetime.fromtimestamp(nanoseconds / 1e9, tz=timezone.utc)
+        except (ValueError, OSError, OverflowError):
+            stats["TIMESTAMP_INVALID"] += 1
+            continue
+        valid += 1
+        age = (cut - t).total_seconds()
+        ages.append(age)
+        if age < 0:
+            stats["SOURCE_FROM_FUTURE"] += 1
+        elif age > MAX_AGE_SECONDS:
+            stats["SOURCE_STALE_AT_THETA_CUT"] += 1
+        else:
+            fresh += 1
+            stats["CANDIDATE_FRESH"] += 1
+            timestamps.setdefault(nanoseconds, set()).add(price)
+
+    ambiguous = bool(timestamps) and len(
+        timestamps[max(timestamps)]
+    ) > 1
+    if fresh and not ambiguous:
+        status, reason = "QUALIFIED", "QUALIFIED_INDEPENDENT_STOCK_REFERENCE"
+    elif ambiguous:
+        status, reason = "BLOCKED", "CONTRADICTORY_SAME_TIMESTAMP"
+    else:
+        reason = next(
+            (
+                key for key in (
+                    "SOURCE_STALE_AT_THETA_CUT", "SOURCE_FROM_FUTURE",
+                    "TIMESTAMP_INVALID", "PRICE_INVALID", "TICKER_MISSING",
+                    "TICKER_MISMATCH", "NO_UNDERLYING_ASSET",
+                ) if stats[key]
+            ),
+            "NO_CHAIN_ROWS",
+        )
+        status = "BLOCKED"
+    return StockSourceDisposition(
+        status=status, reason=reason,
+        chain_rows=len(snapshot_rows),
+        matched_ticker_rows=matched,
+        structurally_valid_rows=valid,
+        qualifying_rows=fresh,
+        closest_age_seconds=(
+            round(min(ages, key=abs), 3) if ages else None
+        ),
+    )

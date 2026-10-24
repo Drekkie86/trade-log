@@ -91,6 +91,14 @@ def render_profit_desk_page(db_path=None) -> None:  # pragma: no cover - AppTest
                 "No qualifying independent stock-price observations in the "
                 "latest completed research run. Selection evidence is incomplete."
             )
+        if coverage is not None and coverage.rejected_reasons:
+            with st.expander("Why stock observations failed the evidence gate"):
+                for reason, count in coverage.rejected_reasons[:6]:
+                    st.write(f"{_friendly_reason(reason)}: {count:,} snapshot(s)")
+                st.caption(
+                    "Diagnostics describe recorded provider evidence, not "
+                    "forecast edge or realized option-trading performance."
+                )
 
         session_text = session or "not recorded"
         source = (

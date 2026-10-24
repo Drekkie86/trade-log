@@ -35,6 +35,7 @@ from src.research.reference_persistence import (
 )
 from src.research.massive_underlying_observation_v1 import (
     IndependentUnderlyingObservation,
+    diagnose_stock_source,
     extract_massive_underlying_observation,
 )
 from src.research.thetadata_live_adapter import (
@@ -724,6 +725,7 @@ def _persist_theta_market_evidence(
     captured_at: datetime,
     us_session_state: str,
     independent_underlying: IndependentUnderlyingObservation | None = None,
+    source_disposition_reason: str | None = None,
     db_path=None,
 ) -> int:
     captured_utc = captured_at.astimezone(
@@ -770,7 +772,8 @@ def _persist_theta_market_evidence(
                     f"method={independent_underlying.version}; "
                     "not an exchange close or option settlement."
                     if independent_underlying else
-                    "independent stock observation unavailable.")),
+                    "independent stock observation unavailable; "
+                    f"source_disposition={source_disposition_reason or 'UNKNOWN'}.")),
         },
         _theta_option_quote_records(
             quote_rows
@@ -1180,6 +1183,17 @@ def collect_underlying(
         db_path=db_path,
     )
 
+    independent_spot = extract_massive_underlying_observation(
+        snapshot_rows,
+        underlying=underlying,
+        decision_at=theta_quote_observed_at,
+    )
+    source_disposition = diagnose_stock_source(
+        snapshot_rows,
+        underlying=underlying,
+        decision_at=theta_quote_observed_at,
+    )
+
     market_snapshot_id = (
         _persist_theta_market_evidence(
             run_id=run_id,
@@ -1191,11 +1205,8 @@ def collect_underlying(
                 classify_us_session(
                     theta_quote_observed_at
                 ),
-            independent_underlying=extract_massive_underlying_observation(
-                snapshot_rows,
-                underlying=underlying,
-                decision_at=theta_quote_observed_at,
-            ),
+            independent_underlying=independent_spot,
+            source_disposition_reason=source_disposition.reason,
             db_path=db_path,
         )
     )
