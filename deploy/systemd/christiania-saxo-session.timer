@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep Christiania Saxo LIVE OAuth Refresh Token Alive
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=true
+Unit=christiania-saxo-session.service
+
+[Install]
+WantedBy=timers.target

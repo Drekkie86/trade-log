@@ -33,6 +33,7 @@ from src.operations.burn_in import read_burn_in_samples, summarize_burn_in
 from src.operations.release_manifest import build_release_manifest, read_deployed_commit
 from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
+from src.operations.saxo_health_status_v1 import probe_saxo_live
 from src.research.cash_settled_universe import cash_settled_research_universe
 from src.research.shadow_expiry_model_spot_proxy_v1 import load_expiry_model_proxy_report
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
@@ -461,6 +462,12 @@ def _cached_theta_health() -> dict:
     return probe_theta_terminal().as_dict()
 
 
+@st.cache_data(show_spinner=False, ttl=120, max_entries=1)
+def _cached_saxo_health() -> dict:
+    # Read-only OAuth/user-status probe; never a broker order endpoint.
+    return probe_saxo_live().as_dict()
+
+
 st.set_page_config(
     page_title="Christiania",
     page_icon="⚓",
@@ -597,6 +604,7 @@ with st.sidebar:
     st.divider()
     if st.button("↻ Refresh deck", width="stretch"):
         _cached_theta_health.clear()
+        _cached_saxo_health.clear()
         _load_runtime_state(page, force=True)
         st.rerun()
 
@@ -642,7 +650,10 @@ if page == "Trade Ideas":
 elif page == "Results":
     render_results_page(snapshot)
 elif page == "System":
-    render_system_page(snapshot, theta_health, backup_inventory)
+    render_system_page(
+        snapshot, theta_health, backup_inventory,
+        saxo=_cached_saxo_health(),
+    )
 elif page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")
     if lifecycle_health.get("state") == "WARN":
