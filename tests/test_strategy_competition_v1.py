@@ -199,6 +199,11 @@ def test_trade_ideas_exposes_bounded_comparison_without_promoting_signals(
     app = AppTest.from_file(str(root / "app.py"), default_timeout=90)
     app.run(timeout=90)
     assert not app.exception, app.exception
+    # Historical strategy-comparison workbench remains available as a
+    # diagnostic, but it is not the main profit-ranking dashboard.
+    app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=90)
+    app.sidebar.selectbox[0].set_value("Trade Ideas").run(timeout=90)
+    assert not app.exception, app.exception
     before = [m.value for m in app.metric if m.label == "Worth a look"]
     toggles = [x for x in app.get("toggle")
                if x.label == "Compare strategies using the same recorded market quotes"]

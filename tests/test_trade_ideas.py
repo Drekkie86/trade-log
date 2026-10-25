@@ -549,12 +549,22 @@ def test_trade_ideas_is_the_first_page_and_renders(db_path, monkeypatch):
     app = AppTest.from_file(str(root / "app.py"), default_timeout=90)
     app.run(timeout=90)
     assert not app.exception, app.exception
-    assert app.sidebar.radio[0].options[0].endswith("Trade Ideas")
-    assert app.sidebar.radio[0].value.endswith("Trade Ideas")
-    page_text = " ".join(m.value for m in app.markdown) + " ".join(c.value for c in app.caption)
-    assert "Trade Ideas" in page_text
-    assert any("Not proven yet" in w.value for w in app.warning)
-    assert [m.label for m in app.metric][:3] == ["Worth a look", "Marginal", "Skip"]
+    assert app.sidebar.radio[0].options[0].endswith("Trade Desk")
+    assert app.sidebar.radio[0].value.endswith("Trade Desk")
+    assert any("NO TRADE" in e.value for e in app.warning)
+    assert [m.label for m in app.metric][:3] == [
+        "Trades clearing the complete gate",
+        "Prospective decisions recorded",
+        "Snapshots assessed for trade selection",
+    ]
+    # Old modeling interface is available for traceable diagnostics, but
+    # does not impersonate the single front-door trading decision.
+    app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=90)
+    app.sidebar.selectbox[0].set_value("Trade Ideas").run(timeout=90)
+    assert not app.exception, app.exception
+    assert [m.label for m in app.metric][:3] == [
+        "Worth a look", "Marginal", "Skip",
+    ]
 
 
 def test_track_record_uses_only_the_current_outcome_revision(db_path):

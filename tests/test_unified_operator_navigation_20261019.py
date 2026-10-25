@@ -18,31 +18,35 @@ def test_operator_nav_shows_core_workflows_once(db_path, monkeypatch):
     app.run(timeout=90)
     assert not app.exception, app.exception
     assert app.sidebar.radio[0].options == [
-        "💡 Trade Ideas", "🧪 Shadow Lab", "🎲 Casino", "🩺 System",
+        "💰 Trade Desk", "📈 Performance", "🩺 System",
         "🧰 Advanced tools",
     ]
+    assert app.sidebar.radio[0].value == "💰 Trade Desk"
+    assert any("NO TRADE" in x.value for x in app.warning)
+    assert not any(m.label == "Resolved expiry outcomes" for m in app.metric)
 
-    # The actual main Casino entry is no longer an inert charter screen.
-    app.sidebar.radio[0].set_value("🎲 Casino").run(timeout=90)
+    # The performance surface is an outcome accountability page, not a
+    # parallel candidate recommender or a wall of legacy research tables.
+    app.sidebar.radio[0].set_value("📈 Performance").run(timeout=90)
     assert not app.exception, app.exception
-    assert any("NO CASINO TRADE" in i.value for i in app.info)
-    assert any(t.label == "Explore 0DTE research and scenarios" for t in app.get("toggle"))
-    assert not any(m.label == "0DTE quotes" for m in app.metric)
-    app.get("toggle")[0].set_value(True).run(timeout=90)
-    assert not app.exception, app.exception
-    assert any(m.label == "0DTE quotes" for m in app.metric)
+    assert any(m.label == "Verified realized net profit" for m in app.metric)
 
-    # Shadow follows the same navigation; it is no longer a second hidden route.
-    app.sidebar.radio[0].set_value("🧪 Shadow Lab").run(timeout=90)
-    assert not app.exception, app.exception
-    assert any(m.label == "Resolved expiry outcomes" for m in app.metric)
-
+    # All historic tooling remains traceable behind diagnostics only.
     app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=90)
     assert not app.exception, app.exception
     tools = app.sidebar.selectbox[0].options
-    assert "Results" in tools
-    assert "Shadow Lab" not in tools
-    assert "Storm Cellar / 0DTE Lab" not in tools
+    assert "Trade Ideas" in tools
+    assert "Shadow Lab" in tools
+    assert "Storm Cellar / 0DTE Lab" in tools
+
+    app.sidebar.selectbox[0].set_value("Storm Cellar / 0DTE Lab").run(timeout=90)
+    assert not app.exception, app.exception
+    assert any("NO CASINO TRADE" in i.value for i in app.info)
+    assert any(t.label == "Explore 0DTE research and scenarios" for t in app.get("toggle"))
+
+    app.sidebar.selectbox[0].set_value("Shadow Lab").run(timeout=90)
+    assert not app.exception, app.exception
+    assert any(m.label == "Resolved expiry outcomes" for m in app.metric)
 
 
 def test_casino_legacy_page_uses_same_renderer():

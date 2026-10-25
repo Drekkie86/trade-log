@@ -95,7 +95,7 @@ class QuoteCostPolicy:
     fx_provenance: str | None
     max_quote_age_seconds: int | None
     verified_share_inventory: bool = False
-    bankroll_eur: Decimal | None = None  # Explicit trader allocation; never a fixed €500
+    bankroll_eur: Decimal | None = None  # Only an explicit allocation; never an implicit ceiling.
     max_leg_quote_skew_seconds: int | None = None
     additional_round_trip_cost_usd: Decimal | None = None  # slippage, fees and FX cost budget
     tax_cost_usd: Decimal | None = None

@@ -97,6 +97,7 @@ class SaxoOptionQuote:
     price_type_bid: str | None
     price_type_ask: str | None
     last_updated: str | None
+    error_code: str | None = None
 
     @property
     def spread(self) -> float | None:
@@ -260,6 +261,7 @@ class SaxoUnderlyingQuote:
     price_type_ask: str | None
 
     last_updated: str | None
+    error_code: str | None = None
 
     @property
     def computed_mid(
@@ -1221,6 +1223,7 @@ class SaxoClient:
                     "LastUpdated"
                 )
             ),
+            error_code=quote.get("ErrorCode"),
         )
 
     def get_underlying_quote(
@@ -1349,6 +1352,7 @@ class SaxoClient:
                     "LastUpdated"
                 )
             ),
+            error_code=quote.get("ErrorCode"),
         )
 
     def search_underlying_stocks(

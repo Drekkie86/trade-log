@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from src.research.massive_underlying_observation_v1 import (
     MAX_AGE_SECONDS as STOCK_REFERENCE_MAX_AGE_SECONDS,
-    STOCK_PRICE_SOURCE,
+    verified_stock_source_from_notes,
 )
 
 from src.database.repository import get_connection
@@ -115,7 +115,7 @@ def _independent_near_close_price(row: dict[str, Any]) -> bool:
     """
     if str(row.get("underlying_source")) != "FETCHED":
         return False
-    if f"stock price source={STOCK_PRICE_SOURCE};" not in str(row.get("notes") or ""):
+    if verified_stock_source_from_notes(row.get("notes")) is None:
         return False
     try:
         captured = _utc_instant(str(row["captured_at"]))
