@@ -14,6 +14,12 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+# The release receiver launches this file by absolute path from another CWD.
+# Include ONLY its own immutable release root before late imports of src.*.
+if not __package__:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 
 NEW_TIMERS = (
     "christiania-volume-recovery-backup.timer",
