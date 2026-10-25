@@ -471,6 +471,18 @@ class MassiveClient:
             "frame_semantics": "LISTING_REFERENCE",
         }
 
+    def get_stock_ticker_snapshot(self, underlying: str) -> dict[str, Any]:
+        """One stock snapshot request; the caller must validate entitlements,
+        ticker identity and lastTrade nanosecond time before using any price.
+        This endpoint cannot be a backfill for old option quote cuts.
+        """
+        symbol = str(underlying).strip().upper()
+        if not symbol or len(symbol) > 16 or not symbol.replace(".", "").isalnum():
+            raise ValueError("INVALID_STOCK_TICKER")
+        return self._get_json(
+            f"/v2/snapshot/locale/us/markets/stocks/tickers/{symbol}"
+        )
+
     def get_option_chain_page(
         self,
         underlying: str,

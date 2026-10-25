@@ -187,6 +187,7 @@ def system_checks(
     snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any],
     saxo: dict[str, Any] | None = None,
     recovery: dict[str, Any] | None = None,
+    feed: dict[str, Any] | None = None,
 ) -> list[tuple[str, bool | None, str]]:
     """Plain rows: (label, ok, sentence). ok=None means unknown."""
     rows: list[tuple[str, bool | None, str]] = []
@@ -264,6 +265,28 @@ def system_checks(
     else:
         rows.append(("Last collection", None, "No collection recorded yet."))
 
+    if feed is not None:
+        status = str(feed.get("state") or "UNVERIFIED")
+        text = str(feed.get("detail") or "No Saxo market-data evidence.")[:240]
+        if status == "LIVE_TWO_SIDED_REFERENCE":
+            rows.append((
+                "Saxo stock/OPRA sample", True,
+                "One underlying and OPRA option returned fresh two-sided broker "
+                "reference prices. Multi-leg execution and profit are NOT verified.",
+            ))
+        elif status in {"LOGIN_OR_PERMISSION_REQUIRED","RATE_LIMITED","UNREACHABLE"}:
+            rows.append(("Saxo stock/OPRA sample", False, text))
+        elif status == "PARTIAL_OR_UNVERIFIED" and (
+            feed.get("stock_state") in {"NO_ACCESS","DELAYED","OLD_INDICATIVE"}
+            or feed.get("option_state") in {"NO_ACCESS","DELAYED","OLD_INDICATIVE"}
+        ):
+            rows.append((
+                "Saxo stock/OPRA sample", False,
+                "Stock or option price not usable: delayed, unavailable or not entitled.",
+            ))
+        else:
+            rows.append(("Saxo stock/OPRA sample", None, text))
+
     if saxo is not None:
         state = str(saxo.get("state") or "PROBE_FAILED")
         if saxo.get("auth_ok") is True:
@@ -330,9 +353,12 @@ def render_system_page(
     snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any],
     saxo: dict[str, Any] | None = None,
     recovery: dict[str, Any] | None = None,
+    feed: dict[str, Any] | None = None,
 ) -> None:
     section_heading("System", "Is the machine collecting data?")
-    rows = system_checks(snapshot, theta, backups, saxo=saxo, recovery=recovery)
+    rows = system_checks(
+        snapshot, theta, backups, saxo=saxo, recovery=recovery, feed=feed,
+    )
     banner(*system_verdict(rows))
     for label, ok, text in rows:
         status_row(label, ok, text)

@@ -103,8 +103,8 @@ def render_casino_page() -> None:
     )
 
     r1, r2, r3 = st.columns(3)
-    bankroll = r1.number_input("Laboratory bankroll", min_value=1.0, value=500.0, step=25.0)
-    casino_cap = r2.number_input("Casino capital cap", min_value=1.0, value=500.0, step=25.0)
+    bankroll = r1.number_input("Available experiment capital", min_value=1.0, value=None, step=25.0)
+    casino_cap = r2.number_input("Experiment loss budget", min_value=1.0, value=None, step=25.0)
     max_fraction = r3.number_input("Max loss fraction per experiment", min_value=0.001, max_value=1.0, value=0.05, step=0.01)
 
     p1, p2, p3 = st.columns(3)
@@ -128,6 +128,9 @@ def render_casino_page() -> None:
     )
 
     if st.button("Evaluate Casino experiment", type="primary"):
+        if bankroll is None or casino_cap is None:
+            st.error("Enter the capital allocation and loss budget explicitly to evaluate this scenario.")
+            return
         outcomes = [
             ScenarioOutcome(float(row["probability"]), float(row["pnl_before_costs"]))
             for _, row in edited.iterrows()

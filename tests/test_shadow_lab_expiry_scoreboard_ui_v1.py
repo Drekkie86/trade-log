@@ -39,9 +39,6 @@ def app_db(db_path, tmp_path, monkeypatch):
 
 def _open_advanced(app, tool):
     """Core Shadow Lab lives on the primary navigation; research details are advanced."""
-    if tool == "Shadow Lab":
-        app.sidebar.radio[0].set_value("🧪 Shadow Lab").run(timeout=60)
-        return
     app.sidebar.radio[0].set_value("🧰 Advanced tools").run(timeout=60)
     app.sidebar.selectbox[0].set_value(tool).run(timeout=60)
 

@@ -35,11 +35,13 @@ from src.operations.release_manifest import build_release_manifest, read_deploye
 from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
 from src.operations.saxo_health_status_v1 import probe_saxo_live
+from src.operations.saxo_quote_monitor_v1 import read_quote_status
 from src.research.cash_settled_universe import cash_settled_research_universe
 from src.research.shadow_expiry_model_spot_proxy_v1 import load_expiry_model_proxy_report
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
 from src.ui.home_pages import render_results_page, render_system_page
 from src.ui.trade_ideas_page import render_trade_ideas_page
+from src.ui.profit_desk_page_v1 import render_profit_desk_page, render_performance_page
 from src.ui.casino_page import render_casino_page
 from src.quant.bench import run_vanilla_bench
 from src.quant.registry import catalog as quant_model_catalog
@@ -470,6 +472,12 @@ def _cached_saxo_health() -> dict:
 
 
 @st.cache_data(show_spinner=False, ttl=90, max_entries=1)
+def _cached_saxo_feed_status() -> dict:
+    # Read a tiny sanitized local file; NEVER request broker quotes in UI.
+    return read_quote_status()
+
+
+@st.cache_data(show_spinner=False, ttl=90, max_entries=1)
 def _cached_recovery_status() -> dict:
     # Supervisor + latest completed v3 receipt: metadata only, O(files),
     # no multi-GB decompress, SQLite deep-check or restore in UI.
@@ -577,7 +585,9 @@ def _cached_deep_ops_readiness():
 
 
 ADVANCED_PAGES = [
-    "Results",
+    "Trade Ideas",
+    "Shadow Lab",
+    "Storm Cellar / 0DTE Lab",
     "Dashboard",
     "Decision Desk",
     "Research Runs",
@@ -585,6 +595,7 @@ ADVANCED_PAGES = [
     "Observations",
     "Quant Models",
     "Ops",
+    "Results",
 ]
 
 with st.sidebar:
@@ -594,7 +605,7 @@ with st.sidebar:
 
     _primary = st.radio(
         "Navigation",
-        ["💡 Trade Ideas", "🧪 Shadow Lab", "🎲 Casino", "🩺 System", "🧰 Advanced tools"],
+        ["💰 Trade Desk", "📈 Performance", "🩺 System", "🧰 Advanced tools"],
         label_visibility="collapsed",
     )
     _primary = _primary.split(" ", 1)[1]
@@ -602,10 +613,8 @@ with st.sidebar:
         page = st.selectbox(
             "Tool",
             ADVANCED_PAGES,
-            help="Results and detailed research tools.",
+            help="Historical research and diagnostics — not independent trade recommendations.",
         )
-    elif _primary == "Casino":
-        page = "Storm Cellar / 0DTE Lab"
     else:
         page = _primary
 
@@ -613,6 +622,7 @@ with st.sidebar:
     if st.button("↻ Refresh deck", width="stretch"):
         _cached_theta_health.clear()
         _cached_saxo_health.clear()
+        _cached_saxo_feed_status.clear()
         _cached_recovery_status.clear()
         _load_runtime_state(page, force=True)
         st.rerun()
@@ -664,7 +674,11 @@ calibration_state = calibration_evidence_state(
 )
 lifecycle_health = snapshot.get("lifecycle_health", {})
 
-if page == "Trade Ideas":
+if page == "Trade Desk":
+    render_profit_desk_page()
+elif page == "Performance":
+    render_performance_page(snapshot)
+elif page == "Trade Ideas":
     render_trade_ideas_page()
 elif page == "Results":
     render_results_page(snapshot)
@@ -673,6 +687,7 @@ elif page == "System":
         snapshot, theta_health, backup_inventory,
         saxo=_cached_saxo_health(),
         recovery=_cached_recovery_status(),
+        feed=_cached_saxo_feed_status(),
     )
 elif page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")

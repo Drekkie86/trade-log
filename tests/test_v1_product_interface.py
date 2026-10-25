@@ -45,7 +45,8 @@ def test_casino_is_visually_and_textually_separate():
     casino = (ROOT / "src/ui/casino_page.py").read_text(encoding="utf-8")
     theme = (ROOT / "src/ui/theme.py").read_text(encoding="utf-8")
 
-    assert '"🎲 Casino"' in app
+    assert '"Storm Cellar / 0DTE Lab"' in app
+    assert '"💰 Trade Desk"' in app
     assert "render_casino_page()" in app
     assert "NO CASINO TRADE" in casino
     assert "casino_research_open" in casino
@@ -267,7 +268,7 @@ def test_ops_navigation_is_consolidated():
 
     # Ops now lives under the "Advanced tools" picker, not the primary nav.
     assert '"🧰 Advanced tools"' in app
-    assert '    "Ops",\n]' in app
+    assert '    "Ops",\n    "Results",\n]' in app
     assert '["Readiness", "Release", "System"]' in app
     assert '"✓ Readiness"' not in app
     assert '"◆ Release Status"' not in app
