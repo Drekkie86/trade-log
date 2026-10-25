@@ -38,8 +38,10 @@ are made** and the outcome is `MARKET_CLOSED_UNVERIFIED`.
 Within session, both stock and option must independently show:
 
 - Delay precisely 0 minutes (null and negative are UNKNOWN);
-- a valid provider `LastUpdated` less than 15 seconds before decision
-  time, no future material timestamps;
+- a valid provider `LastUpdated` less than 15 seconds before the
+  **common final observation cut**, captured *after* both underlying and
+  option requests finish (not the earlier probe start); no materially
+  future timestamps or quote accepted after the continuous session closes;
 - `MarketState=Open` and continuous US session active;
 - positive non-crossed bid/ask and bid/ask sizes;
 - no `NoAccess`, `NoMarket`, `Pending` or other quote-level

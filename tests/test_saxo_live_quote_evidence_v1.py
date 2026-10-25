@@ -131,6 +131,31 @@ def test_one_bounded_expiry_source_scan_frozen_no_execution_authority():
     assert "token" not in str(result.as_dict()).lower()
 
 
+def test_slow_provider_requests_do_not_accept_stale_cross_source_snapshot():
+    # The clock advances while root, stock and option requests execute.
+    # Both quotes must be rechecked at the SAME final observation instant,
+    # never at the earlier time when the probe began.
+    final_cut = CUT + timedelta(seconds=25)
+    result = probe_saxo_spot_opra(
+        now=CUT, client_factory=Fake, clock=lambda: final_cut,
+    )
+    assert result.state == "PARTIAL_OR_UNVERIFIED"
+    assert result.stock.state == "STALE"
+    assert result.option.state == "STALE"
+    assert result.checked_at == final_cut.isoformat(timespec="seconds")
+    assert result.order_authority is False
+
+
+def test_market_closes_during_probe_so_no_live_quote_claim_survives():
+    at_close = datetime(2026, 10, 26, 20, 0, tzinfo=UTC)
+    result = probe_saxo_spot_opra(
+        now=CUT, client_factory=Fake, clock=lambda: at_close,
+    )
+    assert result.state == "PARTIAL_OR_UNVERIFIED"
+    assert result.stock.state == "SESSION_CLOSED_OR_UNKNOWN"
+    assert result.option.state == "SESSION_CLOSED_OR_UNKNOWN"
+
+
 @pytest.mark.parametrize("stock_quality,option_quality",[
     ({"delayed_by_minutes":15},{}),
     ({},{"price_type_ask":"NoAccess"}),

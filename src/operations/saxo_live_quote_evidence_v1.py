@@ -212,17 +212,20 @@ def probe_saxo_spot_opra(
     symbol: str = PREFERRED_SYMBOL,
     client_factory: Callable[..., SaxoClient] = SaxoClient,
     token_provider: Callable[..., str] = get_saxo_live_access_token,
+    clock: Callable[[], datetime] | None = None,
 ) -> SaxoFeedProof:
-    """Bounded LIVE diagnostics. No underlying spot or model authority granted."""
-    now = now or datetime.now(UTC)
+    """Bounded LIVE diagnostics. Qualify both quotes at one final observation cut."""
+    clock = clock or (lambda: now if now is not None else datetime.now(UTC))
+    now = now or clock()
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("AS_OF_TIME_MUST_HAVE_TIMEZONE")
     if symbol not in {"AAPL", "SPY", "IWM"}:
         raise ValueError("SYMBOL_NOT_PREDECLARED")
-    def result(state, detail, stock=None, option=None, expiry=None, multiplier=None):
+    def result(state, detail, stock=None, option=None, expiry=None, multiplier=None,
+               assessed_at=None):
         return SaxoFeedProof(
             state, detail, symbol,
-            now.isoformat(timespec="seconds"),
+            (assessed_at or now).isoformat(timespec="seconds"),
             stock, option, expiry, multiplier,
         )
     # Do not make extra provider calls while the US market is closed; a
@@ -249,7 +252,6 @@ def probe_saxo_spot_opra(
                 continue
             series, opt = chosen
             stock = client.get_underlying_quote(opt["UnderlyingUic"])
-            stock_proof = qualify_quote(stock, now=now)
             if (
                 stock.reference_price is not None
                 and math.isfinite(stock.reference_price)
@@ -259,7 +261,11 @@ def probe_saxo_spot_opra(
                 if preferred is not None:
                     series, opt = preferred
             option_quote = client.get_option_quote(opt["Uic"])
-            option_proof = qualify_quote(option_quote, now=now)
+            # Validate both sources against one actual decision cut, AFTER
+            # all requests; a slow lookup must not make old quotes live.
+            assessment_cut = clock()
+            stock_proof = qualify_quote(stock, now=assessment_cut)
+            option_proof = qualify_quote(option_quote, now=assessment_cut)
             raw_mult = space.get("ContractSize")
             multiplier = (
                 float(raw_mult)
@@ -277,11 +283,13 @@ def probe_saxo_spot_opra(
                     "Stock and one OPRA option returned live firm InfoPrices. "
                     "Multi-leg price, commissions, and execution still unverified.",
                     stock_proof, option_proof, expiry, multiplier,
+                    assessed_at=assessment_cut,
                 )
             return result(
                 "PARTIAL_OR_UNVERIFIED",
                 "At least one required stock/OPRA quote failed the strict live-source gate.",
                 stock_proof, option_proof, expiry, multiplier,
+                assessed_at=assessment_cut,
             )
         return result(
             "NO_LISTED_SAMPLE",
