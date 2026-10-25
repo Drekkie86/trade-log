@@ -159,9 +159,10 @@ def get_runtime_setting(
 
 
 @contextmanager
-def _settings_file_lock():
-    """Serialize local Saxo token read-modify-write across app and daemon."""
-    lock_path = ENV_FILE.with_name(ENV_FILE.name + ".lock")
+def _settings_file_lock(path: str | Path | None = None):
+    """Serialize token read, refresh and write using one interprocess lock."""
+    target = Path(path) if path is not None else ENV_FILE
+    lock_path = target.with_name(target.name + ".lock")
     lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(lock_fd, "r+b") as lock:
         if os.name == "nt":
@@ -203,6 +204,7 @@ def set_local_settings(values: dict[str, str]) -> None:
 
 def _set_local_settings_unlocked(
     values: dict[str, str],
+    path: str | Path | None = None,
 ) -> None:
     """
     Persist local Christiania settings to .env.
@@ -211,11 +213,12 @@ def _set_local_settings_unlocked(
     are preserved.
     """
 
+    target = Path(path) if path is not None else ENV_FILE
     existing_lines: list[str] = []
 
-    if ENV_FILE.exists():
+    if target.exists():
         existing_lines = (
-            ENV_FILE.read_text(
+            target.read_text(
                 encoding="utf-8"
             ).splitlines()
         )
@@ -263,7 +266,7 @@ def _set_local_settings_unlocked(
     # Same-directory temp + fsync + atomic replace. Restrict new files to
     # owner-only even when the containing directory has wider permissions.
     fd, temp_name = tempfile.mkstemp(
-        prefix=".christiania_env_", dir=str(ENV_FILE.parent)
+        prefix=".christiania_env_", dir=str(target.parent)
     )
     try:
         if hasattr(os, "fchmod"):
@@ -272,12 +275,15 @@ def _set_local_settings_unlocked(
             out.write("\n".join(output_lines) + "\n")
             out.flush()
             os.fsync(out.fileno())
-        os.replace(temp_name, ENV_FILE)
+        os.replace(temp_name, target)
         if os.name != "nt":
-            os.chmod(ENV_FILE, 0o600)
+            os.chmod(target, 0o600)
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
 
-    for key, value in values.items():
-        os.environ[key] = value
+    # Dedicated broker stores are read directly when needed; avoid copying
+    # their secrets into the process-wide environment during rotation.
+    if target == ENV_FILE:
+        for key, value in values.items():
+            os.environ[key] = value

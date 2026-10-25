@@ -9,6 +9,7 @@ trade_log.db
 *.db-journal
 
 .env
+.env.lock
 creds.txt
 .streamlit/secrets.toml
 
