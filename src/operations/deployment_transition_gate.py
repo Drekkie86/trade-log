@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -102,29 +103,33 @@ def _verified_volume_backup(
     backup_status: Path, volume: Path, live_db: Path, *,
     now: datetime,
 ) -> bool:
+    """Prove current on-volume v3 manifest and matching full-restore audit.
+
+    The former scheduler-status COMPLETE/verified_restore_bytes contract was
+    retired. A transient AUDIT_RESTORE progress state cannot confer proof.
+    """
+    from src.operations.verified_volume_recovery_v1 import verify_recent_restored_archive
+
     try:
         if not volume.is_mount() or volume.is_symlink():
             return False
-        if os.stat(volume).st_dev == os.stat(live_db).st_dev:
+        if backup_status.parent.resolve() != (volume / "backups").resolve():
             return False
-        proof = json.loads(backup_status.read_text(encoding="utf-8"))
-        recorded_at = datetime.fromisoformat(
-            str(proof["at_utc"]).replace("Z", "+00:00")
-        ).astimezone(UTC)
-        age = now.astimezone(UTC) - recorded_at
-        if age < timedelta(0) or age > timedelta(hours=36):
+        uri = live_db.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=10) as conn:
+            schema = conn.execute(
+                "SELECT MAX(version) FROM schema_version"
+            ).fetchone()[0]
+        if type(schema) is not int or schema < 1:
             return False
-        if proof.get("phase") != "COMPLETE" or int(proof.get("verified_restore_bytes") or 0) < 1:
-            return False
-        archive = Path(str(proof["archive"]))
-        if archive.is_symlink() or not archive.is_file() or archive.stat().st_size < 1:
-            return False
-        if not archive.resolve().is_relative_to((volume / "backups").resolve()):
-            return False
-        manifest = Path(str(archive) + ".manifest.json")
-        return manifest.is_file() and manifest.stat().st_size > 0
-    except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError):
+        verify_recent_restored_archive(
+            source=live_db, backup_dir=volume / "backups",
+            expected_schema_version=schema, now=now,
+        )
+        return True
+    except (OSError, sqlite3.Error, RuntimeError, KeyError, TypeError, ValueError):
         return False
+
 
 
 def main() -> int:

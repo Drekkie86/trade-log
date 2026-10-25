@@ -33,48 +33,19 @@ def require_recent_independent_restored_archive(
     *, source: Path, backup_dir: Path, expected_schema_version: int,
     now: datetime | None = None,
 ) -> dict[str, object]:
-    """Fail on any missing or stale external restore evidence."""
-    actual_now = (now or datetime.now(UTC)).astimezone(UTC)
-    if not source.is_file() or not backup_dir.is_dir():
-        raise RuntimeError("LARGE_RELEASE_SOURCE_OR_BACKUP_DIR_MISSING")
-    if source.is_symlink() or backup_dir.is_symlink():
-        raise RuntimeError("LARGE_RELEASE_UNTRUSTED_BACKUP_PATH")
-    if os.stat(source).st_dev == os.stat(backup_dir).st_dev:
-        raise RuntimeError("LARGE_RELEASE_BACKUP_NOT_ON_INDEPENDENT_VOLUME")
-    proof_path = backup_dir / "volume_backup_scheduler_status.json"
-    try:
-        proof = json.loads(proof_path.read_text(encoding="utf-8"))
-        completed = datetime.fromisoformat(
-            str(proof["at_utc"]).replace("Z", "+00:00")
-        ).astimezone(UTC)
-        age = actual_now-completed
-        if age < timedelta(0) or age > MAX_AUDIT_AGE:
-            raise ValueError("aged")
-        if str(proof["phase"]) != "COMPLETE":
-            raise ValueError("not complete")
-        if int(proof["schema_version"]) != expected_schema_version:
-            raise ValueError("wrong schema")
-        if int(proof["verified_restore_bytes"]) < int(source.stat().st_size) * 0.90:
-            raise ValueError("restore bytes too small")
-        digest = str(proof["source_sha256"])
-        if re.fullmatch(r"[0-9a-fA-F]{64}",digest) is None:
-            raise ValueError("invalid original digest")
-        archive = Path(str(proof["archive"]))
-        if archive.is_symlink() or not archive.is_file() or archive.stat().st_size < 1024:
-            raise ValueError("archive missing")
-        if not archive.resolve().is_relative_to(backup_dir.resolve()):
-            raise ValueError("archive outside backup directory")
-        manifest=Path(str(archive)+".manifest.json")
-        if not manifest.is_file() or manifest.is_symlink() or manifest.stat().st_size < 10:
-            raise ValueError("archive manifest missing")
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError("LARGE_RELEASE_RESTORE_AUDIT_NOT_VERIFIED") from exc
-    return {
-        "restore_completed_at":completed.isoformat(),
-        "schema_version":expected_schema_version,
-        "restored_bytes":int(proof["verified_restore_bytes"]),
-        "archive_path":str(archive),
-    }
+    """Require the v3 manifest AND matching independent full-restore audit.
+
+    The nightly scheduler's progress status is not a completed restore
+    receipt. Reuse one fail-closed verifier for the deployment transition
+    and the actual large-schema migration.
+    """
+    from src.operations.verified_volume_recovery_v1 import verify_recent_restored_archive
+
+    return verify_recent_restored_archive(
+        source=source, backup_dir=backup_dir,
+        expected_schema_version=expected_schema_version, now=now,
+    )
+
 
 
 def _open_readonly(path: Path) -> sqlite3.Connection:
