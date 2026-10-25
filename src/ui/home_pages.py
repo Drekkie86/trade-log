@@ -184,7 +184,8 @@ def render_results_page(snapshot: dict[str, Any]) -> None:
 
 # ----------------------------------------------------------------- system ---
 def system_checks(
-    snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any]
+    snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any],
+    saxo: dict[str, Any] | None = None,
 ) -> list[tuple[str, bool | None, str]]:
     """Plain rows: (label, ok, sentence). ok=None means unknown."""
     rows: list[tuple[str, bool | None, str]] = []
@@ -239,6 +240,56 @@ def system_checks(
         )
     else:
         rows.append(("Last collection", None, "No collection recorded yet."))
+
+    if saxo is not None:
+        state = str(saxo.get("state") or "PROBE_FAILED")
+        if saxo.get("auth_ok") is True:
+            rows.append((
+                "Saxo LIVE", True,
+                "Read-only OAuth connection works. No orders can be placed.",
+            ))
+        elif state == "NOT_CONFIGURED":
+            rows.append((
+                "Saxo LIVE", None,
+                "Not connected. Set up Saxo LIVE OAuth on an authorized device.",
+            ))
+        elif state == "LOGIN_REQUIRED":
+            rows.append((
+                "Saxo LIVE", False,
+                "Interactive login is required; refresh credentials are missing or expired.",
+            ))
+        else:
+            rows.append((
+                "Saxo LIVE", False,
+                str(saxo.get("detail") or "Saxo connection check failed."),
+            ))
+        option_access = saxo.get("stock_option_eligible")
+        if option_access is False:
+            rows.append((
+                "Saxo options eligibility", False,
+                "StockOption is not listed among permitted asset types.",
+            ))
+        elif option_access is True:
+            rows.append((
+                "Saxo options eligibility", True,
+                "StockOption is permitted, but trade and quote access remain unverified.",
+            ))
+        else:
+            rows.append((
+                "Saxo options eligibility", None,
+                "Options eligibility has not been confirmed by Saxo.",
+            ))
+        quote_state = str(saxo.get("quote_state") or "UNVERIFIED_STOCK_AND_OPRA_QUOTES")
+        if quote_state == "TERMS_NOT_ACCEPTED":
+            rows.append((
+                "Saxo market data", False,
+                "OpenAPI market-data terms have not been accepted.",
+            ))
+        else:
+            rows.append((
+                "Saxo market data", None,
+                "Real-time US stock and OPRA option quotes are not yet verified.",
+            ))
     return rows
 
 
@@ -252,9 +303,12 @@ def system_verdict(rows: list[tuple[str, bool | None, str]]) -> tuple[str, str, 
     return ("good", "Everything is running.", "")
 
 
-def render_system_page(snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any]) -> None:
+def render_system_page(
+    snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any],
+    saxo: dict[str, Any] | None = None,
+) -> None:
     section_heading("System", "Is the machine collecting data?")
-    rows = system_checks(snapshot, theta, backups)
+    rows = system_checks(snapshot, theta, backups, saxo=saxo)
     banner(*system_verdict(rows))
     for label, ok, text in rows:
         status_row(label, ok, text)

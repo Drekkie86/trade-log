@@ -12,6 +12,7 @@ Group=christiania
 WorkingDirectory=/opt/christiania
 Environment=HOME=/tmp
 EnvironmentFile=/etc/christiania/christiania.env
+Environment=CHRISTIANIA_SAXO_TOKEN_STORE=/var/lib/christiania/secure/saxo-live.env
 ExecStart=/opt/christiania/.venv/bin/python /opt/christiania/run_christiania_app.py --host 127.0.0.1 --port 8501
 Restart=on-failure
 RestartSec=15
@@ -21,6 +22,7 @@ PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/christiania/data
+ReadWritePaths=-/var/lib/christiania/secure
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
