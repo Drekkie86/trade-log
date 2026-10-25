@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import asdict, dataclass
@@ -14,6 +15,7 @@ from src.database.repository import (
 from src.operations.backup_compression import (
     backup_data_files,
     load_compressed_manifest,
+    manifest_path_for,
 )
 from src.operations.sqlite_runtime import resolve_backup_dir
 
@@ -109,6 +111,61 @@ def _backup_capture_time(path: Path) -> datetime:
     )
 
 
+def _volume_v3_manifest_schema(path: Path) -> int:
+    """Recognise only completed v3 independent-volume recovery archives.
+
+    This is a bounded, metadata-only readiness check. The volume backup
+    writer already performed a separate real SQLite restore, CRC and SHA-256
+    verification. Weekly recovered-file audits provide deeper confirmation.
+    Missing, partial or inconsistent metadata never makes a backup healthy.
+    """
+    data = json.loads(
+        manifest_path_for(path).read_text(encoding="utf-8")
+    )
+    if not isinstance(data, dict) or type(data.get("format_version")) is not int:
+        raise ValueError("Invalid independent-volume manifest.")
+    if data["format_version"] != 3:
+        raise ValueError("Not an independent-volume format-v3 manifest.")
+    if data.get("backup_filename") != path.name:
+        raise ValueError("Independent-volume archive identity mismatch.")
+    if data.get("compression") != "gzip":
+        raise ValueError("Unexpected recovery archive compression.")
+    if data.get("snapshot_method") != "VACUUM_INTO":
+        raise ValueError("Unrecognised volume snapshot method.")
+    if (
+        data.get("verification_level")
+        != "archive_stream_sha256_crc_plus_real_restore_structural"
+        or data.get("restore_trial_completed") is not True
+    ):
+        raise ValueError("Completed independent restore proof is absent.")
+
+    actual_size = path.stat().st_size
+    compressed_size = data.get("compressed_size_bytes")
+    source_size = data.get("source_size_bytes")
+    if (
+        type(compressed_size) is not int
+        or compressed_size <= 0
+        or compressed_size != actual_size
+        or type(source_size) is not int
+        or source_size <= 0
+    ):
+        raise ValueError("Volume archive size evidence does not match.")
+    for digest_key in ("source_sha256", "compressed_sha256"):
+        digest = data.get(digest_key)
+        if (
+            not isinstance(digest, str)
+            or re.fullmatch(r"[a-f0-9]{64}", digest) is None
+        ):
+            raise ValueError("Invalid recovery archive hash metadata.")
+    created_at = _parse_utc(data.get("created_at"))
+    if created_at is None or created_at < _backup_capture_time(path):
+        raise ValueError("Recovery archive completion time is invalid.")
+    version = data.get("schema_version")
+    if type(version) is not int or version < 1:
+        raise ValueError("Volume recovery schema proof is invalid.")
+    return version
+
+
 def _latest_backup(
     directory: Path,
 ) -> tuple[
@@ -130,12 +187,17 @@ def _latest_backup(
 
     if latest.name.endswith(".db.gz"):
         try:
-            version = int(
-                load_compressed_manifest(
-                    latest
-                ).schema_version
+            # The currently active independent-volume writer emits v3
+            # manifests. The older compressed writer uses v1/v2; those
+            # paths must remain unchanged.
+            manifest = json.loads(
+                manifest_path_for(latest).read_text(encoding="utf-8")
             )
-        except Exception:
+            if isinstance(manifest, dict) and manifest.get("format_version") == 3:
+                version = _volume_v3_manifest_schema(latest)
+            else:
+                version = int(load_compressed_manifest(latest).schema_version)
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             version = None
         return latest, version, captured_at
 
@@ -295,6 +357,9 @@ def evaluate_backup_due(
     if latest is None:
         due = True
         reason = "NO_RECOVERY_POINT"
+    elif backup_schema is None:
+        due = True
+        reason = "LATEST_BACKUP_UNVERIFIED"
     elif backup_schema != EXPECTED_SCHEMA_VERSION:
         due = True
         reason = "LATEST_BACKUP_SCHEMA_MISMATCH"
