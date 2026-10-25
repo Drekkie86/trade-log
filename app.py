@@ -35,6 +35,7 @@ from src.operations.release_manifest import build_release_manifest, read_deploye
 from src.operations.v1_readiness import assess_v1_readiness
 from src.providers.thetadata_control import probe_theta_terminal
 from src.operations.saxo_health_status_v1 import probe_saxo_live
+from src.operations.saxo_quote_monitor_v1 import read_quote_status
 from src.research.cash_settled_universe import cash_settled_research_universe
 from src.research.shadow_expiry_model_spot_proxy_v1 import load_expiry_model_proxy_report
 from src.research.settlement_policy import cash_settled_allowlist, classify_settlement
@@ -470,6 +471,12 @@ def _cached_saxo_health() -> dict:
 
 
 @st.cache_data(show_spinner=False, ttl=90, max_entries=1)
+def _cached_saxo_feed_status() -> dict:
+    # Read a tiny sanitized local file; NEVER request broker quotes in UI.
+    return read_quote_status()
+
+
+@st.cache_data(show_spinner=False, ttl=90, max_entries=1)
 def _cached_recovery_status() -> dict:
     # Supervisor + latest completed v3 receipt: metadata only, O(files),
     # no multi-GB decompress, SQLite deep-check or restore in UI.
@@ -613,6 +620,7 @@ with st.sidebar:
     if st.button("↻ Refresh deck", width="stretch"):
         _cached_theta_health.clear()
         _cached_saxo_health.clear()
+        _cached_saxo_feed_status.clear()
         _cached_recovery_status.clear()
         _load_runtime_state(page, force=True)
         st.rerun()
@@ -673,6 +681,7 @@ elif page == "System":
         snapshot, theta_health, backup_inventory,
         saxo=_cached_saxo_health(),
         recovery=_cached_recovery_status(),
+        feed=_cached_saxo_feed_status(),
     )
 elif page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")

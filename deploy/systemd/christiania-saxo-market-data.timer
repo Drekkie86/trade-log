@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly read-only Saxo LIVE quote entitlement observations
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1h
+AccuracySec=5min
+Persistent=true
+Unit=christiania-saxo-market-data.service
+
+[Install]
+WantedBy=timers.target
