@@ -25,6 +25,7 @@ from src.ui.datetime_display import (
     is_operator_date_column,
     is_operator_datetime_column,
 )
+from src.operations.backup_system_status_v1 import read_backup_system_status
 from src.operations.backup_recovery import (
     inventory_backups,
     inventory_backups_fast,
@@ -468,6 +469,13 @@ def _cached_saxo_health() -> dict:
     return probe_saxo_live().as_dict()
 
 
+@st.cache_data(show_spinner=False, ttl=90, max_entries=1)
+def _cached_recovery_status() -> dict:
+    # Supervisor + latest completed v3 receipt: metadata only, O(files),
+    # no multi-GB decompress, SQLite deep-check or restore in UI.
+    return read_backup_system_status().as_dict()
+
+
 st.set_page_config(
     page_title="Christiania",
     page_icon="⚓",
@@ -605,12 +613,23 @@ with st.sidebar:
     if st.button("↻ Refresh deck", width="stretch"):
         _cached_theta_health.clear()
         _cached_saxo_health.clear()
+        _cached_recovery_status.clear()
         _load_runtime_state(page, force=True)
         st.rerun()
 
-    st.caption(f"Christiania {CHRISTIANIA_VERSION}")
-
 snapshot, backup_inventory = _load_runtime_state(page)
+
+# Show immutable deployed identity, not the static product tag "1.0.0-rc1".
+_release_sha = read_deployed_commit()
+_schema_v = (snapshot.get("database") or {}).get("schema_version")
+if _release_sha:
+    st.sidebar.caption(
+        f"Deployed [{_release_sha[:8]}](https://github.com/Drekkie86/trade-log/"
+        f"commit/{_release_sha})"
+        + (f" · schema v{_schema_v}" if _schema_v is not None else "")
+    )
+else:
+    st.sidebar.caption("Deployed build: identity unavailable")
 
 if not snapshot["ready"]:
     st.error(
@@ -653,6 +672,7 @@ elif page == "System":
     render_system_page(
         snapshot, theta_health, backup_inventory,
         saxo=_cached_saxo_health(),
+        recovery=_cached_recovery_status(),
     )
 elif page == "Dashboard":
     section_heading("Command overview", "The current operational and research state at a glance.")
