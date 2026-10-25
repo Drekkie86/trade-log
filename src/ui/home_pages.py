@@ -186,6 +186,7 @@ def render_results_page(snapshot: dict[str, Any]) -> None:
 def system_checks(
     snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any],
     saxo: dict[str, Any] | None = None,
+    recovery: dict[str, Any] | None = None,
 ) -> list[tuple[str, bool | None, str]]:
     """Plain rows: (label, ok, sentence). ok=None means unknown."""
     rows: list[tuple[str, bool | None, str]] = []
@@ -222,10 +223,32 @@ def system_checks(
         rows.append(("Database", False, "SQLite quick check reported an error."))
 
     age = backups.get("latest_valid_age_hours")
-    if backups.get("total_files", 0) == 0 and age is None:
+    if recovery is not None:
+        recovery_state = str(recovery.get("state") or "UNVERIFIED")
+        if recovery_state == "VERIFIED":
+            rows.append((
+                "Backups", True,
+                str(recovery.get("detail") or "Verified recovery point."),
+            ))
+        elif recovery_state == "FAILED":
+            rows.append((
+                "Backups", False,
+                str(recovery.get("detail") or "Recovery point failed."),
+            ))
+        else:
+            rows.append((
+                "Backups", None,
+                str(recovery.get("detail") or "Recovery point not verified."),
+            ))
+    elif backups.get("total_files", 0) == 0 and age is None:
         rows.append(("Backups", None, "Not checked on this screen."))
     elif age is None:
-        rows.append(("Backups", False, "No valid backup found."))
+        # Fast inventory deliberately never deeply verifies files; an
+        # unverified index is not proof of a missing or invalid recovery point.
+        rows.append((
+            "Backups", None,
+            "Metadata-only inventory. Backup recovery has not been checked here.",
+        ))
     elif float(age) > 36:
         rows.append(("Backups", False, f"Last indexed backup is {num(age, 0)} hours old; verify a fresh recovery."))
     else:
@@ -306,9 +329,10 @@ def system_verdict(rows: list[tuple[str, bool | None, str]]) -> tuple[str, str, 
 def render_system_page(
     snapshot: dict[str, Any], theta: dict[str, Any], backups: dict[str, Any],
     saxo: dict[str, Any] | None = None,
+    recovery: dict[str, Any] | None = None,
 ) -> None:
     section_heading("System", "Is the machine collecting data?")
-    rows = system_checks(snapshot, theta, backups, saxo=saxo)
+    rows = system_checks(snapshot, theta, backups, saxo=saxo, recovery=recovery)
     banner(*system_verdict(rows))
     for label, ok, text in rows:
         status_row(label, ok, text)
