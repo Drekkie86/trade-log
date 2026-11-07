@@ -113,3 +113,46 @@ def test_backtest_rejects_an_empty_range(tmp_path):
     with pytest.raises(ValueError):
         run_backtest(FakeEodTheta(), BacktestSettings(stock_pace_seconds=0.0, symbols=("SPY",), start=date(2026, 8, 1),
                                                       end=date(2026, 8, 2), cache_dir=tmp_path))
+
+
+def test_backtest_stops_on_a_dead_terminal_and_reports_coverage(tmp_path, monkeypatch):
+    """A logged-out terminal must abort the run, not race through thousands of empty sessions."""
+    from src.engine import backtest as bt
+    from src.providers.thetadata import ThetaDataResponseError
+
+    monkeypatch.setattr(bt.clock, "sleep", lambda s: None)
+    base = FakeEodTheta()
+    state = {"chains": 0}
+
+    class Dying(FakeEodTheta):
+        def _get_payload(self, path, params):
+            if path == "/option/history/eod":
+                state["chains"] += 1
+                if state["chains"] > 6:
+                    raise ThetaDataResponseError("ThetaData HTTP 478: invalid session")
+            return base._get_payload(path, params)
+
+    settings = BacktestSettings(stock_pace_seconds=0.0, symbols=("SPY",), start=date(2026, 8, 3),
+                                end=date(2026, 9, 18), cache_dir=tmp_path / "cache", config=main_config())
+    messages = []
+    report = run_backtest(Dying(), settings, progress=messages.append)
+    cov = report.summary["coverage"]
+    assert cov["aborted_reason"] and "478" in cov["aborted_reason"]
+    assert cov["sessions_with_chains"] == 6 and cov["sessions_requested"] > 6
+    assert any(m.startswith("ABORTED") for m in messages)
+    assert state["chains"] == 6 + 4           # three waits + the final attempt, then stop
+    # The six cached sessions survive for the rerun.
+    assert len(list((tmp_path / "cache" / "option_eod" / "SPY").glob("*.json"))) == 6
+
+
+def test_backtest_summary_carries_per_family_prediction_and_coverage(tmp_path):
+    settings = BacktestSettings(stock_pace_seconds=0.0, symbols=("SPY",), start=date(2026, 8, 3),
+                                end=date(2026, 9, 18), cache_dir=tmp_path / "cache", config=main_config())
+    report = run_backtest(FakeEodTheta(), settings)
+    s = report.summary
+    assert set(s["coverage"]) >= {"sessions_requested", "sessions_with_chains", "chain_failures",
+                                  "first_pick", "last_pick", "aborted_reason"}
+    assert s["coverage"]["aborted_reason"] is None
+    for fam in s["by_family"].values():
+        assert "predicted_ev_usd" in fam and "return_on_risk" in fam
+    assert "return_on_risk" in s

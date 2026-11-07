@@ -85,6 +85,7 @@ class EngineConfig:
     stress_jump_prob: float = 0.03        # ...with this probability before expiry
     max_relative_spread: float = 0.50
     min_bid: float = 0.05
+    max_loss_per_lot_usd: float = 500.0   # CHRISTIANIA_MAX_LOSS_PER_LOT_USD; set from your capital
     min_open_interest: int = 0            # the quote feed carries no open interest
     min_ev_usd: float = 5.0
     min_score: float = 0.03               # mixture EV / tail risk
@@ -107,9 +108,14 @@ def _cost() -> CostPolicy:
     )
 
 
+def _max_loss_per_lot() -> float:
+    return _env_float("CHRISTIANIA_MAX_LOSS_PER_LOT_USD", 500.0)
+
+
 def main_config() -> EngineConfig:
     return EngineConfig(
         lane=LANE_MAIN, min_dte=7, max_dte=45, grid=GenerationGrid(), cost=_cost(),
+        max_loss_per_lot_usd=_max_loss_per_lot(),
         max_quote_age=timedelta(minutes=90),
         forecast_weight=_env_float("CHRISTIANIA_FORECAST_WEIGHT", 0.5),
     )
@@ -121,6 +127,7 @@ def zero_dte_config() -> EngineConfig:
         grid=GenerationGrid(short_deltas=(0.05, 0.10, 0.16, 0.20, 0.25),
                             width_steps=(1, 2, 3, 5), fly_wing_steps=(2, 4, 6)),
         cost=_cost(), max_quote_age=timedelta(minutes=5),
+        max_loss_per_lot_usd=_max_loss_per_lot(),
         forecast_weight=_env_float("CHRISTIANIA_FORECAST_WEIGHT", 0.5),
         stress_jump=-0.03, stress_jump_prob=0.02,
         min_ev_usd=2.0, top_n=3,
@@ -331,6 +338,8 @@ def score_structure(structure: Structure, *, expiry: Expiry, dists: Mapping[str,
     reason = None
     if max_loss <= 0:
         reason = "NO_RISK_ARBITRAGE_SUSPECT"
+    elif max_loss > config.max_loss_per_lot_usd:
+        reason = "MAX_LOSS_TOO_LARGE"
     elif age is None:
         reason = "QUOTE_AGE_UNKNOWN"
     elif age > config.max_quote_age.total_seconds():

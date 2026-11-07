@@ -82,6 +82,51 @@ ThetaData options Standard, stock FREE.
 * The pass rate is still a function of IV − forecast (P2 after): that is the strategy, now
   priced honestly, not a bug the code can remove.
 
+## First backtest: partial window, negative (2026-11-07 evening)
+
+Six symbols (SPY, QQQ, IWM, AAPL, MSFT, NVDA), commit `7a9b7d6`, one lot per pick.
+The run only covered **September 2023 to February 2024**: the Theta Terminal's session
+expired part-way (HTTP 478) and the harness treated every later request as "chain
+unavailable" and raced through 4,264 empty sessions; the stock history also stopped at
+2026‑05‑15 because the last chunk asked for dates in the future. Within the window that ran:
+
+| | |
+|---|---|
+| Settled picks | 406 (debit spreads 319, iron flies 55, condors 28, credit spreads 4) |
+| Realised P&L | **−$7,376** on $79,127 at risk (−9.3 % return on risk) |
+| Model predicted | **+$7,898** |
+| Hit rate | 26.6 % observed vs 36.3 % predicted |
+| Max drawdown | −$18,997; worst day −$5,199; worst month Dec 2023 −$10,913 |
+| Bootstrap 95 % (by expiry day) | −$60 to +$33 per trade |
+
+Reading it honestly:
+
+* The predictions were biased upward by about $15,000 over 406 trades, in the
+  direction the review warned about. The forecast models at that point had 3–8 months of
+  closes (the FREE tier starts 2023‑06‑01) and the minimum was 60 returns: GARCH on 60
+  points is noise. The minimum is now 250 returns (a year) and 200 empirical windows,
+  which moves the first possible pick to about June 2024.
+* Debit spreads dominated because the short-history models called realised volatility
+  high relative to the market; those trades netted −$939, i.e. costs, with a few very large
+  NVDA winners and losers. Iron flies lost −$4,289 on 55 trades. Nothing in the window
+  showed an edge in either direction.
+* Ten picks had a max loss above $500 (largest $772): strike steps on high-priced names
+  produce wide spreads in dollars. A per-lot gate (`CHRISTIANIA_MAX_LOSS_PER_LOT_USD`,
+  default 500, rejection `MAX_LOSS_TOO_LARGE`) now applies in the engine and the backtest.
+  Against a €500 bankroll that gate belongs at $100–150, which excludes most single names.
+* The window is five months of a strong rally with falling volatility and the statistics
+  are not distinguishable from zero. It is one failed sample, not a verdict on the full
+  period — but it is the only sample, and it points the wrong way.
+
+Harness fixes in the same commit: a dead terminal (478, connection errors) now pauses
+and retries three times, then aborts with a clear message and keeps the cache; 25
+consecutive chain failures abort too; the stock-history window is clamped at today and
+skipped chunks are printed; `summary.json` carries a `coverage` block (sessions with chains,
+failures, first/last pick, abort reason) and predicted EV and return on risk per family.
+
+Next: rerun the six-symbol backtest from cache (the 788 chains are kept), then the full
+universe; decide with the curve from June 2024 through April 2025 in hand.
+
 ## Findings
 
 | ID | Severity | Finding |

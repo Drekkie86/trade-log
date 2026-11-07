@@ -40,6 +40,7 @@ REJECTION_LABELS = {
     "NO_USABLE_EXPIRY": "no usable expiry",
     "EVENT_UNDETECTABLE": "too few expiries to detect earnings",
     "EVENT_BLACKOUT": "earnings before expiry (blackout list)",
+    "MAX_LOSS_TOO_LARGE": "max loss above the per-lot limit",
     "NO_RISK_ARBITRAGE_SUSPECT": "suspect quotes",
     "EXPIRED": "expired",
 }

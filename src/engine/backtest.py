@@ -137,17 +137,36 @@ class CachedSource:
         path.write_text(json.dumps(rows), encoding="utf-8")
         return rows
 
-    def closes(self, symbol: str, start: date, end: date) -> dict[str, DailyClose]:
+    def closes(self, symbol: str, start: date, end: date,
+               problems: list[str] | None = None) -> dict[str, DailyClose]:
         path = self.cache_dir / "stock_eod" / f"{symbol.upper()}_{start.isoformat()}_{end.isoformat()}.json"
         if path.exists():
             raw = json.loads(path.read_text(encoding="utf-8"))
             return {d: DailyClose(d, float(c), lt, bool(ah)) for d, c, lt, ah in raw}
-        closes = fetch_eod_closes(self.theta, symbol, start, end, pace_seconds=self.pace_seconds)
+        closes = fetch_eod_closes(self.theta, symbol, start, end, pace_seconds=self.pace_seconds,
+                                  problems=problems)
         self.requests += 1
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps([[c.session_date, c.close, c.last_trade_at, c.after_hours] for c in closes]),
                         encoding="utf-8")
         return {c.session_date: c for c in closes}
+
+
+TERMINAL_MARKERS = ("478", "invalid session", "could not reach", "login", "not logged")
+CONSECUTIVE_FAILURE_LIMIT = 25
+TERMINAL_WAITS = (30.0, 60.0, 120.0)
+
+
+def is_terminal_failure(exc: BaseException) -> bool:
+    """A dead or logged-out Theta Terminal, as opposed to a session without data."""
+    from src.providers.thetadata import ThetaDataUnavailable
+
+    text = str(exc).lower()
+    return isinstance(exc, ThetaDataUnavailable) or any(m in text for m in TERMINAL_MARKERS)
+
+
+class BacktestAborted(RuntimeError):
+    pass
 
 
 # -------------------------------------------------------------------- engine
@@ -177,11 +196,13 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
     if not sessions:
         raise ValueError("no sessions in range")
     history_start = settings.start - timedelta(days=760)
-    close_end = settings.end + timedelta(days=settings.max_dte + 7)
+    today = datetime.now(UTC).astimezone(NY).date()
+    close_end = min(settings.end + timedelta(days=settings.max_dte + 7), today)
     closes: dict[str, dict[str, DailyClose]] = {}
+    history_problems: list[str] = []
     for s in settings.symbols:
         try:
-            series = source.closes(s, history_start, close_end)
+            series = source.closes(s, history_start, close_end, problems=history_problems)
         except Exception as exc:  # a symbol without stock history is skipped, not fatal
             say(f"{s}: no stock history ({type(exc).__name__}: {str(exc)[:200]}); skipped")
             continue
@@ -189,7 +210,15 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
             say(f"{s}: no stock history returned; skipped")
             continue
         closes[s] = series
+        first, last = min(series), max(series)
+        say(f"{s}: {len(series)} closes {first}..{last}")
+    for problem in history_problems:
+        say(f"history chunk skipped: {problem}")
     symbols = [s for s in settings.symbols if s in closes]
+    chain_failures: list[str] = []
+    sessions_with_chains = 0
+    consecutive_failures = 0
+    aborted_reason: str | None = None
     picks: list[dict] = []
     stats: list[dict] = []
     t0 = clock.time()
@@ -198,11 +227,34 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
         chains = []
         closes_by_symbol = {}
         for s in symbols:
-            try:
-                rows = source.chain_rows(s, session)
-            except Exception as exc:
-                say(f"{s} {session}: chain unavailable ({type(exc).__name__})")
+            rows = None
+            for wait in (*TERMINAL_WAITS, None):
+                try:
+                    rows = source.chain_rows(s, session)
+                    break
+                except Exception as exc:
+                    if is_terminal_failure(exc) and wait is not None:
+                        say(f"terminal failure ({str(exc)[:120]}); waiting {wait:.0f}s")
+                        clock.sleep(wait)
+                        continue
+                    if is_terminal_failure(exc):
+                        aborted_reason = (f"Theta Terminal unavailable at {s} {session}: "
+                                          f"{str(exc)[:200]}. Restart it and rerun; cached sessions are kept.")
+                    else:
+                        chain_failures.append(f"{s} {session}: {str(exc)[:160]}")
+                        say(f"{s} {session}: chain unavailable ({str(exc)[:120]})")
+                        consecutive_failures += 1
+                    break
+            if aborted_reason:
+                break
+            if rows is None:
+                if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                    aborted_reason = (f"{consecutive_failures} chain requests failed in a row "
+                                      f"(last: {chain_failures[-1]}). Check the terminal and rerun.")
+                    break
                 continue
+            consecutive_failures = 0
+            sessions_with_chains += 1
             quotes = quotes_from_eod_rows(rows, session)
             if not quotes:
                 continue
@@ -211,6 +263,9 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
                                       spot=spot.close if spot else None, source="THETADATA_EOD",
                                       min_dte=settings.config.min_dte, max_dte=settings.max_dte))
             closes_by_symbol[s] = [closes[s][d].close for d in sorted(closes[s]) if d < session.isoformat()]
+        if aborted_reason:
+            say(f"ABORTED: {aborted_reason}")
+            break
         if not chains:
             continue
         result = run_scan(chains, closes_by_symbol, settings.config, asof=asof, calendar=calendar)
@@ -237,6 +292,16 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
             say(f"{i}/{len(sessions)} sessions, {len(picks)} picks, {source.requests} requests, "
                 f"{clock.time() - t0:.0f}s")
     summary = summarize(picks, stats, settings, sessions)
+    summary["coverage"] = {
+        "sessions_requested": len(sessions),
+        "sessions_with_chains": sessions_with_chains,
+        "chain_failures": len(chain_failures),
+        "chain_failure_examples": chain_failures[:5],
+        "history_chunks_skipped": history_problems,
+        "first_pick": min((p["session"] for p in picks), default=None),
+        "last_pick": max((p["session"] for p in picks), default=None),
+        "aborted_reason": aborted_reason,
+    }
     return BacktestReport(settings=_settings_dict(settings), sessions=len(sessions), picks=picks,
                           daily_scan_stats=stats, summary=summary)
 
@@ -264,11 +329,22 @@ def summarize(picks: list[dict], stats: list[dict], settings: BacktestSettings,
     ci = cluster_bootstrap_ci(by_day)
     pops = [p["pop"] for p in settled if p["pop"] is not None]
 
-    def block(values: list[float]) -> dict:
+    predicted_by_family: dict[str, float] = defaultdict(float)
+    risk_by_family: dict[str, float] = defaultdict(float)
+    for p in settled:
+        predicted_by_family[p["family"]] += float(p["mixture_ev_usd"])
+        risk_by_family[p["family"]] += float(p["max_loss_usd"])
+
+    def block(values: list[float], family: str | None = None) -> dict:
         arr = np.array(values, dtype=float)
-        return {"settled": int(len(arr)), "pnl_usd": round(float(arr.sum()), 2),
-                "avg_usd": round(float(arr.mean()), 2) if len(arr) else None,
-                "hit_rate": round(float((arr > 0).mean()), 4) if len(arr) else None}
+        out = {"settled": int(len(arr)), "pnl_usd": round(float(arr.sum()), 2),
+               "avg_usd": round(float(arr.mean()), 2) if len(arr) else None,
+               "hit_rate": round(float((arr > 0).mean()), 4) if len(arr) else None}
+        if family is not None:
+            out["predicted_ev_usd"] = round(predicted_by_family[family], 2)
+            out["return_on_risk"] = (round(float(arr.sum()) / risk_by_family[family], 4)
+                                     if risk_by_family[family] else None)
+        return out
 
     return {
         "engine_version": ENGINE_VERSION,
@@ -295,7 +371,9 @@ def summarize(picks: list[dict], stats: list[dict], settings: BacktestSettings,
         "best_day_usd": round(float(max(day_totals)), 2) if day_totals else None,
         "worst_month": min(by_month.items(), key=lambda kv: kv[1]) if by_month else None,
         "by_month": {k: round(v, 2) for k, v in sorted(by_month.items())},
-        "by_family": {k: block(v) for k, v in sorted(by_family.items())},
+        "by_family": {k: block(v, k) for k, v in sorted(by_family.items())},
+        "return_on_risk": (round(float(pnls.sum()) / float(sum(p["max_loss_usd"] for p in settled)), 4)
+                           if settled else None),
         "by_year": {k: block(v) for k, v in sorted(by_year.items())},
         "pass_rate": round(float(np.mean([s["passed"] / max(1, s["scored"]) for s in stats])), 4) if stats else None,
     }

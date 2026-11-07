@@ -742,3 +742,30 @@ def test_eod_history_respects_the_terminal_limits(monkeypatch):
     monkeypatch.setenv("CHRISTIANIA_STOCK_HISTORY_FIRST_DATE", "2023-06-01")
     with pytest.raises(ThetaDataResponseError):
         fetch_eod_closes(term3, "SPY", date(2024, 1, 1), date(2024, 6, 1))
+
+
+def test_max_loss_per_lot_gate_rejects_oversized_structures(monkeypatch):
+    monkeypatch.setenv("CHRISTIANIA_MAX_LOSS_PER_LOT_USD", "150")
+    cfg = main_config()
+    assert cfg.max_loss_per_lot_usd == 150.0
+    res = run_scan([chain(iv=0.25)], {"SPY": history(0.15)}, cfg, asof=ASOF)
+    assert all(c.max_loss_usd <= 150 for c in res.passed)
+    assert res.rejections["MAX_LOSS_TOO_LARGE"] > 0
+
+
+def test_eod_history_never_asks_for_the_future(monkeypatch):
+    from src.engine.history import fetch_eod_closes
+
+    seen = []
+
+    class Term:
+        base_url = "fake"
+
+        def _get_payload(self, path, params):
+            seen.append((params["start_date"], params["end_date"]))
+            return {"response": []}
+
+    problems: list[str] = []
+    fetch_eod_closes(Term(), "SPY", date(2026, 1, 1), date(2026, 12, 28), today=date(2026, 11, 7),
+                     problems=problems)
+    assert seen and max(e for _, e in seen) == "20261107"

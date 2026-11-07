@@ -107,16 +107,21 @@ def _eod_request(theta_client, symbol: str, chunk_start: date, chunk_end: date) 
 
 
 def fetch_eod_closes(theta_client, symbol: str, start: date, end: date, *,
-                     pace_seconds: float = 0.0) -> list[DailyClose]:
-    """Bounded requests (<= MAX_REQUEST_DAYS each) from max(start, first served date).
+                     pace_seconds: float = 0.0, today: date | None = None,
+                     problems: list[str] | None = None) -> list[DailyClose]:
+    """Bounded requests (<= MAX_REQUEST_DAYS each) from max(start, first served date)
+    to min(end, today).
 
-    A chunk that the terminal rejects is skipped and the others are kept; the
-    error is raised only when every chunk failed. ``pace_seconds`` sleeps between
-    requests to stay under the stock tier's per-minute limit.
+    A chunk that the terminal rejects is skipped and the others are kept (the
+    message goes to ``problems``); the error is raised only when every chunk
+    failed. ``pace_seconds`` sleeps between requests to stay under the stock
+    tier's per-minute limit.
     """
     from src.providers.thetadata import ThetaDataError
 
     out: list[DailyClose] = []
+    today = today or datetime.now(UTC).astimezone(NY).date()
+    end = min(end, today)
     chunk_start = max(start, stock_history_first_date())
     if chunk_start > end:
         return out
@@ -129,6 +134,8 @@ def fetch_eod_closes(theta_client, symbol: str, start: date, end: date, *,
             out.extend(parse_eod_rows(_eod_request(theta_client, symbol, chunk_start, chunk_end)))
         except ThetaDataError as exc:
             failures.append(exc)
+            if problems is not None:
+                problems.append(f"{symbol} {chunk_start}..{chunk_end}: {str(exc)[:160]}")
         chunk_start = chunk_end + timedelta(days=1)
         if pace_seconds and chunk_start <= end:
             _time.sleep(pace_seconds)
