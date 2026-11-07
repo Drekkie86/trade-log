@@ -1,8 +1,9 @@
 """Persistence for scans, picks, outcomes and real trades, plus the read models.
 
 Picks: once per session per lane, the first completed scan at or after the
-decision time freezes its best structure per underlying (at most top_n). Later
-scans update the screen, not the ledger. Picks settle at expiry at intrinsic
+decision time freezes its best structure per underlying (at most top_n), and a
+name with an unexpired pick is not scanned again until it settles. Later scans
+update the screen, not the ledger. Picks settle at expiry at intrinsic
 value from the ThetaData EOD close. The track record is computed only from
 these frozen records, clustered by expiry date, so it cannot be flattered after
 the fact.
@@ -76,12 +77,13 @@ def record_scan(conn: sqlite3.Connection, result: ScanResult, *, completed_at: d
             """INSERT INTO engine_scans
                (lane, session_date, asof_at, completed_at, status, decision, engine_version,
                 config_json, chains_scanned, structures_scored, passed_count, rejections_json,
-                chains_without_history_json, chains_blocked_json)
-               VALUES (?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                chains_without_history_json, chains_blocked_json, premiums_json)
+               VALUES (?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (result.lane, session_date, _iso(result.asof), _iso(completed_at), int(decision),
              result.engine_version, _json(result.config.as_dict()), result.chains_scanned,
              result.structures_scored, len(result.passed), _json(dict(result.rejections)),
-             _json(sorted(set(result.chains_without_history))), _json(result.chains_blocked)),
+             _json(sorted(set(result.chains_without_history))), _json(result.chains_blocked),
+             _json(result.premiums)),
         )
         scan_id = int(cur.lastrowid)
         for kind, items in (("PASSED", result.passed[:STORED_PASSED]),
@@ -100,11 +102,11 @@ def record_scan(conn: sqlite3.Connection, result: ScanResult, *, completed_at: d
                     """INSERT OR IGNORE INTO engine_picks
                        (lane, session_date, underlying, expiration, family, shape, structure_key,
                         first_scan_id, first_seen_at, entry_cash_usd, max_loss_usd,
-                        conservative_ev_usd, record_json)
+                        ev_usd, record_json)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (c.lane, session_date, c.underlying, c.expiration, c.family, c.shape,
                      c.structure_key, scan_id, _iso(result.asof), c.entry_cash_usd,
-                     c.max_loss_usd, c.conservative_ev_usd, _json(c.to_record())),
+                     c.max_loss_usd, c.ev_usd, _json(c.to_record())),
                 )
     return scan_id
 
@@ -121,6 +123,15 @@ def record_failed_scan(conn: sqlite3.Connection, *, lane: str, asof: datetime,
              engine_version, _json(config), f"{type(error).__name__}: {error}"[:2000]),
         )
     return int(cur.lastrowid)
+
+
+def open_pick_underlyings(conn: sqlite3.Connection, lane: str, *, today: date) -> set[str]:
+    """Names with a frozen pick that has not expired yet: one open pick per name at a time."""
+    rows = conn.execute(
+        "SELECT DISTINCT underlying FROM engine_picks WHERE lane=? AND expiration>=?",
+        (lane, today.isoformat()),
+    ).fetchall()
+    return {str(r[0]).upper() for r in rows}
 
 
 def payoff_per_share(record: dict, price: float) -> float:
@@ -272,6 +283,7 @@ def _scan_dict(row: sqlite3.Row) -> dict:
     scan["rejections"] = json.loads(scan.pop("rejections_json") or "{}")
     scan["chains_without_history"] = json.loads(scan.pop("chains_without_history_json") or "[]")
     scan["chains_blocked"] = json.loads(scan.pop("chains_blocked_json") or "{}")
+    scan["premiums"] = json.loads(scan.pop("premiums_json", None) or "{}")
     scan["config"] = json.loads(scan.pop("config_json") or "{}")
     return scan
 
@@ -337,10 +349,15 @@ def trades_with_closes(conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
-def conservative_pop(record: dict) -> float | None:
-    """Mixture probability of profit stored with the candidate."""
+def pick_pop(record: dict) -> float | None:
+    """Real-world probability of profit stored with the candidate."""
     pop = record.get("pop")
     return float(pop) if pop is not None else None
+
+
+def pick_p_max_loss(record: dict) -> float | None:
+    p = record.get("p_max_loss")
+    return float(p) if p is not None else None
 
 
 # ---------------------------------------------------------------- scorecard
@@ -358,6 +375,8 @@ class Scorecard:
     pnl_ci95_usd: tuple[float, float] | None      # cluster bootstrap by expiry date
     hit_rate: float | None
     predicted_hit_rate: float | None
+    max_loss_rate: float | None                   # share of settled picks at (nearly) the full loss
+    predicted_max_loss_rate: float | None
     max_drawdown_usd: float
     worst_day_usd: float | None
     near_strike_settlements: int
@@ -398,17 +417,22 @@ def scorecard(picks: list[dict]) -> Scorecard:
         by_day[str(p["settlement_date"])].append(float(p["pnl_usd"]))
     day_totals = [sum(by_day[d]) for d in sorted(by_day)]
     cumulative = list(np.cumsum(day_totals)) if day_totals else []
-    pops = [x for x in (conservative_pop(p["record"]) for p in settled) if x is not None]
+    pops = [x for x in (pick_pop(p["record"]) for p in settled) if x is not None]
+    pmls = [x for x in (pick_p_max_loss(p["record"]) for p in settled) if x is not None]
+    full_losses = sum(1 for p in settled
+                      if float(p["pnl_usd"]) <= -0.95 * float(p["max_loss_usd"]))
     return Scorecard(
         picks=len(picks), settled=len(settled), open=len(picks) - len(settled), wins=wins,
         expiry_days=len(by_day),
         total_pnl_usd=float(pnls.sum()) if len(pnls) else 0.0,
         total_risk_usd=float(sum(float(p["max_loss_usd"]) for p in settled)),
-        predicted_ev_usd=float(sum(float(p["conservative_ev_usd"]) for p in settled)),
+        predicted_ev_usd=float(sum(float(p["ev_usd"]) for p in settled)),
         avg_pnl_usd=float(pnls.mean()) if len(pnls) else None,
         pnl_ci95_usd=cluster_bootstrap_ci(by_day),
         hit_rate=wins / len(pnls) if len(pnls) else None,
         predicted_hit_rate=float(np.mean(pops)) if pops else None,
+        max_loss_rate=full_losses / len(pnls) if len(pnls) else None,
+        predicted_max_loss_rate=float(np.mean(pmls)) if pmls else None,
         max_drawdown_usd=drawdown(cumulative),
         worst_day_usd=min(day_totals) if day_totals else None,
         near_strike_settlements=sum(1 for p in settled if p.get("near_strike")),
@@ -430,7 +454,7 @@ def verdict(card: Scorecard) -> tuple[str, str]:
     if lo > 0:
         return ("good", "Positive so far. " + base + " Live results only; a tail day is not in this sample until it happens.")
     if hi < 0:
-        return ("bad", "Losing. " + base + " The models' edge is not showing up in outcomes.")
+        return ("bad", "Losing. " + base + " The risk premium is not showing up in outcomes.")
     return ("wait", "Not distinguishable from zero. " + base)
 
 

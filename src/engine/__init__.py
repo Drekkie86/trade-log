@@ -1,10 +1,10 @@
-"""Christiania trade engine: one pipeline from option chain to ranked trades.
+"""Christiania trade engine.
 
-chain -> defined-risk structures -> model distributions -> net EV after costs
--> filter -> rank -> picks -> settlement -> track record.
-
-The engine never places orders. Every surfaced trade is logged and settled so
-the track record, not the model, decides whether the engine makes money.
+V2 (2026-11-08): sells defined-risk premium where the market's own smile,
+shrunk by the underlying's measured variance risk premium, still pays after
+costs and a stress shock. V1's forecast models (EWMA/GARCH and resampled
+history) were retired after the first backtest: they bought tails against the
+smile and lost 21 % of risk over 640 picks.
 """
 
-ENGINE_VERSION = "CHRISTIANIA_ENGINE_V1"
+ENGINE_VERSION = "CHRISTIANIA_ENGINE_V2"

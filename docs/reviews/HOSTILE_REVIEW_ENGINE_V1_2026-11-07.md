@@ -1,5 +1,10 @@
 # Hostile review: Christiania trade engine v1 (PR #184)
 
+> **Status 2026-11-08.** V1 was falsified by its first full backtest (see "The breakdown that
+> retired V1") and replaced by V2 in the same PR (see "V2 (2026-11-08)"). The findings,
+> fixes and probe scripts below describe V1 at commits `e835c11`–`c8ee9a1`; the probes do not
+> run against V2's code.
+
 Date: 2026-11-07. Scope: everything between a scan and a real trade — the engine
 (`src/engine`), the data that feeds it, the daemon and VM it runs in, the four
 screens, and the economics of the bet itself. Reviewer: Claude, which also wrote
@@ -143,6 +148,118 @@ max drawdown −$32,482. Two things to settle before reading that number:
 
 Next: rerun from cache, then the full universe; decide with the curve from June 2024
 through April 2025 in hand.
+
+## The breakdown that retired V1 (2026-11-07, late evening)
+
+`picks.csv` of the `2814e23` run (640 settled picks, −$26,579), sliced before any code was
+changed. The loss is one bucket:
+
+| Picks | n | P&L | Return on risk | Hit rate | Predicted hit |
+|---|---|---|---|---|---|
+| Index debit spreads (SPY/QQQ/IWM) | 206 | **−$28,700** | −70 % | 9.7 % | 31.8 % |
+| Stock debit spreads (AAPL/MSFT/NVDA) | 321 | −$2,326 | −4 % | 30.8 % | 32.8 % |
+| Index short premium (condors, flies, credit spreads) | 68 | −$3,414 | −25 % | 30.9 % | 48.2 % |
+| Stock short premium | 45 | +$7,862 | +77 % | 64.4 % | 46.1 % |
+
+Everything except index debit spreads nets to +$2,121. SPY put debit spreads: 86 picks,
+9.3 % hit, 89.5 % at max loss against 69 % predicted. Picks where the smile-implied EV was
+≤ 0 lost 40 % of their risk; where it was > 0, 7 %: the market model was the informative
+one, the forecast models subtracted value wherever they disagreed with it.
+
+Why the engine bought those trades:
+
+1. The forecast distribution is symmetric; the index smile is not. Against a skewed market
+   a symmetric model always says the far OTM put is overpriced and the near put fair-to-cheap,
+   so a put debit spread (buy near, sell far) looks like edge twice. The engine was fading
+   index put skew with bearish spreads (310 bearish vs 232 bullish picks in a +14 % market),
+   buying the same strikes day after day (41 picks identical to the previous day's).
+2. EWMA/GARCH stayed elevated for months after 5 August 2024 while implied vol mean-reverted
+   in days (SPY 22 Nov: forecast 12.2 % vs ATM IV 8.5 %), so "vol is cheap" → buy spreads →
+   decay. Implied vol beats GARCH as a forecast of realised; the literature said so first.
+3. EV/CVaR ranking rewards structures with a small max loss, i.e. cheap OTM spreads.
+
+NVDA: the unadjusted 10:1 split sat in the 250-day return window for the rest of the run,
+so NVDA's forecast vol was 3–21× implied from June onward (median 12.9× in June, 3.6× in
+December). All 121 NVDA picks were scored on garbage; they netted +$1,198 because the stock
+doubled. The settlement artefact itself was one pick (+$500 swing).
+
+Verdict on V1: falsified on this window (bootstrap 95 % −$70 to −$14 per pick), and the
+reason is the thesis, not a parameter. The review's own framing was half wrong: I wrote
+that the engine measured the variance risk premium and called it mispricing, expecting
+it to end up selling premium. The fixed 50/50 mixture and the symmetric forecast made it a
+net *buyer* of tails — the losing side of that premium.
+
+## V2 (2026-11-08): sell the premium, measure it, pre-register the test
+
+Decision taken with the operator: rebuild around the only part of the result with evidence
+behind it (short premium) and the only model that was right (the market's smile), and test
+it out of sample before any money moves. Changes, all in `src/engine`:
+
+* **Distributions.** IMPLIED is unchanged (smile-implied, Breeden–Litzenberger). The
+  forecast models are deleted. REAL_WORLD = IMPLIED with its log-return spread scaled by
+  √λ and re-centred on the forward, where λ = Σ realised variance / Σ implied variance over
+  the trailing 504 sessions of matched windows: the 30-calendar-day constant-maturity ATM
+  implied vol at a session's close (interpolated in total variance between the bracketing
+  expiries; the single expiry within 10 days when not bracketed) against the realised variance
+  of the following 21 sessions (sum of squared log returns of split-adjusted closes, × 252/21).
+  A name needs 250 matched sessions (one year) before it can pass; below that,
+  `MODEL_UNAVAILABLE`. The smile's skew and tails are kept; the engine's only claim is the
+  width.
+* **Structures.** Credit spreads, iron condors, iron flies. No debit spreads; `NOT_A_CREDIT`
+  rejects anything that is not a net credit.
+* **Gates**, in order: suspect quotes → not a credit → max loss > per-lot cap → quote age
+  unknown → stale → model unavailable → real-world EV < $5 → **stress EV < 0** (new as a gate:
+  the trade must still pay if a −10 % jump has a 3 % chance before expiry) → EV/CVaR95 < 3 %.
+  `MODELS_DISAGREE` and `EVENT_UNDETECTABLE` are gone (one model; the smile already contains
+  the event). Event variance is still computed for the card.
+* **Slots.** One open pick per underlying at a time, in the daemon (`open_pick_underlyings`)
+  and the backtest (`OPEN_POSITION`). The same view is never stacked.
+* **Data.** `engine_iv_history` (30-day IV per symbol per session from the ThetaData EOD
+  chain; NULL when the chain cannot yield a point) replaces `engine_intraday_sessions`;
+  backfilled `CHRISTIANIA_IV_BACKFILL_PER_STEP` (120) chains per engine step, newest first,
+  round-robin across names. The 0DTE lane uses the same λ (untested at that horizon; the lane
+  stays parked). Migration 039 edited in place: it has not been applied anywhere but test
+  databases (PR unmerged; if you ran the app locally on this branch, delete that dev DB).
+* **Backtest.** Warm-up phase fetches the 400 calendar days before `--start` as IV history
+  (tolerant of sessions the subscription does not serve; a dead terminal still aborts);
+  scoring phase as before with slots. `summary.json` reports the whole run, the calibration
+  window (before `--oos-start`, default 2025-01-01), the out-of-sample window, a single-slot
+  account path, the λ path (`risk_premium.csv`), and the mechanical verdict below.
+
+### Pre-registered pass criteria (written 2026-11-08, before any out-of-sample result)
+
+Evaluated by `evaluate_criteria` on the out-of-sample block (sessions ≥ 2025-01-01), all
+three must hold over at least 60 expiry days:
+
+1. the cluster-bootstrap (by expiry day) 95 % range of the average pick has its lower bound
+   above zero;
+2. |realised hit rate − predicted hit rate| ≤ 5 points;
+3. realised full-loss rate ≤ predicted full-loss rate + 5 points.
+
+Anything else is FAIL (or INSUFFICIENT below 60 expiry days). The 2024 window is now
+in-sample for V2 and proves nothing on its own. If V2 fails out of sample, the next version
+needs new out-of-sample data, which means waiting, not re-cutting 2025–26.
+
+### Parameters introduced or kept, none grounded in data
+
+| Parameter | Value | Why this value |
+|---|---|---|
+| IV target maturity | 30 calendar days | VIX convention |
+| Nearest-expiry fallback | ±10 days | data availability on monthly-only names |
+| Realised horizon | 21 sessions | matches 30 calendar days |
+| Minimum matched sessions | 250 | one year; ~12 independent months |
+| Estimation window | 504 sessions | two years; all the FREE stock tier serves |
+| Stress shock | −10 % with probability 3 % | V1 value; ≈ the frequency of −10 % months in SPX since 2000 |
+| Min EV, min score, max loss per lot | $5, 3 %, $500 | V1 values |
+| Backfill budget | 120 chains per step | ~2 minutes of requests per 15-minute cycle |
+| Pass criteria | lower CI > 0, 5-point gaps, 60 expiry days | the live verdict's rules, fixed before the test |
+
+### What the operator still owns
+
+Unchanged from "Still open": Saxo Advanced profile and short-writing permission (not
+verified), the appropriateness test (not taken), and the capital. At €500 the first full loss
+on a $500-max-loss pick ends the account; the per-lot cap has to be set so that a full loss
+is a fraction of the capital, which on these names means more capital, not a smaller cap.
 
 ## Findings
 

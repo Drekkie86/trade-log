@@ -31,6 +31,7 @@ def test_currency_and_tone_follow_what_is_displayed():
 
 @pytest.fixture
 def engine_db(db_path, monkeypatch):
+    monkeypatch.setenv("CHRISTIANIA_IV_BACKFILL_PER_STEP", "2000")
     seed_snapshot(db_path)
     run_engine_step(theta_client=FakeTheta(history(0.15, n=600)), db_path=db_path,
                     now=ASOF + timedelta(minutes=5))
@@ -56,6 +57,7 @@ def test_trade_card_offers_reprice_exit_rule_and_trade_form(engine_db):
     assert not at.exception, [e.value for e in at.exception]
     text = " ".join(m.value for m in at.markdown)
     assert "Expiry day:" in text and "Priced under" in text and "Stress" in text
+    assert "of the priced variance was delivered" in text
     labels = {b.label for b in at.button}
     assert "Re-price on live quotes" in labels and "Record trade" in labels
     assert any("Open risk now" in m.value for m in at.markdown)
@@ -67,4 +69,4 @@ def test_system_page_reports_history_and_backtest(engine_db):
     at.sidebar.radio[0].set_value("System").run()
     assert not at.exception, [e.value for e in at.exception]
     text = " ".join(m.value for m in at.markdown)
-    assert "Price history" in text and "Intraday history" in text and "Backtest" in text
+    assert "Price history" in text and "Risk-premium history" in text and "Backtest" in text

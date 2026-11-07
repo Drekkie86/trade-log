@@ -173,6 +173,54 @@ def enrich_expiry(expiration: str, quotes: Sequence[Quote], asof: datetime) -> E
     return Expiry(expiration, years, forward, atm_iv, tuple(enriched))
 
 
+def atm_implied_vol(quotes: Sequence[Quote], years: float,
+                    rate: float = RISK_FREE_RATE) -> float | None:
+    """ATM implied vol of one expiry without enriching every contract.
+
+    Same definition as ``enrich_expiry``: the forward from put-call parity, then
+    the average of the call and put IVs at the strike nearest the forward (within
+    5 % of it). Two to four solves instead of one per contract.
+    """
+    if years <= 0:
+        return None
+    forward = parity_forward(quotes, years, rate)
+    if forward is None:
+        return None
+    by_strike: dict[float, list[Quote]] = {}
+    for q in quotes:
+        if q.two_sided:
+            by_strike.setdefault(q.strike, []).append(q)
+    for k in sorted(by_strike, key=lambda s: abs(s - forward)):
+        if abs(k - forward) / forward >= 0.05:
+            return None
+        ivs = [iv for iv in (implied_vol(q.right, q.mid, forward, k, years, rate)
+                             for q in by_strike[k]) if iv is not None]
+        if ivs:
+            return sum(ivs) / len(ivs)
+    return None
+
+
+def constant_maturity_point(quotes: Iterable[Quote], asof: datetime, *,
+                            min_dte: int, max_dte: int) -> float | None:
+    """30-day constant-maturity implied vol of a chain at ``asof`` (None when the
+    chain cannot support it). Used to build the implied-variance history."""
+    from src.engine.models import constant_maturity_iv
+
+    session_day = asof.astimezone(NY).date()
+    grouped: dict[str, list[Quote]] = {}
+    for q in quotes:
+        dte = (date.fromisoformat(q.expiration) - session_day).days
+        if min_dte <= dte <= max_dte:
+            grouped.setdefault(q.expiration, []).append(q)
+    points = []
+    for exp, qs in grouped.items():
+        years = calendar_years_to_expiry(asof, exp)
+        iv = atm_implied_vol(qs, years)
+        if iv is not None:
+            points.append((years, iv))
+    return constant_maturity_iv(points)
+
+
 def build_chain(underlying: str, captured_at: datetime, quotes: Iterable[Quote], *,
                 snapshot_id: int | None, spot: float | None, source: str,
                 min_dte: int, max_dte: int) -> Chain:

@@ -1,13 +1,16 @@
 """The single trade-finding pipeline.
 
-For every chain: build the distributions per expiry, generate every defined-risk
-structure, price each one after costs under every model, and keep a structure
-only when it still pays under a mixture of the forecast view and the market's
-own (implied) view. Survivors are ranked by expected profit per dollar of
-tail risk (expected loss in the worst 5 %).
+For every chain: build the market's smile-implied distribution per expiry,
+shrink it by the underlying's measured variance risk premium (the REAL_WORLD
+distribution), generate every defined-risk short-premium structure, price each
+one after costs under both distributions, and keep a structure only when it
+pays under the real-world view, still pays with a stress shock, and pays enough
+per dollar of tail risk (expected loss in the worst 5 %). Survivors are ranked
+by that ratio.
 
-Gates fail closed: an unknown quote age, a missing model or an undetectable
-earnings date rejects the structure instead of letting it through.
+Gates fail closed: an unknown quote age, a missing smile, an underlying without
+enough implied/realised history, or an open pick on the same name rejects the
+structure instead of letting it through.
 """
 from __future__ import annotations
 
@@ -16,33 +19,31 @@ import os
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Mapping, Sequence
+from typing import Collection, Mapping, Sequence
 
 import numpy as np
 
 from src.engine import ENGINE_VERSION
 from src.engine.chains import NY, Chain, Expiry, parse_utc
 from src.engine.models import (
-    EMPIRICAL, IMPLIED, VOL_FORECAST, Distribution, ModelUnavailable, VolForecast,
-    daily_log_returns, empirical_distribution, forecast_volatility,
-    implied_distribution, implied_event_variance, smile_implied_distribution,
-    vol_forecast_distribution,
+    IMPLIED, REAL_WORLD, Distribution, ModelUnavailable, RiskPremium, implied_event_variance,
+    real_world_distribution, smile_implied_distribution,
 )
 from src.engine.structures import (
-    FAMILY_LABELS, MULTIPLIER, CostPolicy, GenerationGrid, Structure,
-    iter_structures, liquid, pnl,
+    FAMILY_LABELS, MULTIPLIER, CostPolicy, GenerationGrid, Structure, iter_structures, liquid, pnl,
 )
 
 LANE_MAIN = "MAIN"
 LANE_ZERO_DTE = "ZERO_DTE"
 
-# Index and sector ETFs: no earnings, so no event detection needed.
+# Index and sector ETFs: no earnings. Used to group exposure.
 NO_EARNINGS_SYMBOLS = {
     "SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLP", "XLY", "SMH",
     "TLT", "GLD", "SLV", "HYG", "XSP", "SPX", "NDX", "RUT", "VIX",
 }
 MIN_EXPIRIES_FOR_EVENT_DETECTION = 3
 TAIL_RISK_FLOOR = 0.10      # risk is never taken below 10 % of max loss
+TAIL_SHARE = 0.05
 
 
 def _env_float(name: str, default: float) -> float:
@@ -80,7 +81,6 @@ class EngineConfig:
     grid: GenerationGrid
     cost: CostPolicy
     max_quote_age: timedelta
-    forecast_weight: float = 0.5          # weight of the forecast view in the score
     stress_jump: float = -0.10            # stress scenario: one shock of this size...
     stress_jump_prob: float = 0.03        # ...with this probability before expiry
     max_relative_spread: float = 0.50
@@ -88,7 +88,7 @@ class EngineConfig:
     max_loss_per_lot_usd: float = 500.0   # CHRISTIANIA_MAX_LOSS_PER_LOT_USD; set from your capital
     min_open_interest: int = 0            # the quote feed carries no open interest
     min_ev_usd: float = 5.0
-    min_score: float = 0.03               # mixture EV / tail risk
+    min_score: float = 0.03               # real-world EV / tail risk
     top_n: int = 5
     near_misses: int = 5
     decision_time: time = time(10, 0)     # New York; first scan at/after this freezes the picks
@@ -103,7 +103,7 @@ class EngineConfig:
 def _cost() -> CostPolicy:
     return CostPolicy(
         slippage_fraction=_env_float("CHRISTIANIA_SLIPPAGE_FRACTION", 0.5),
-        # Saxo Classic tier for US stock options; set your own tier in the environment.
+        # Saxo Bronze tier for US stock options; set your own tier in the environment.
         commission_per_contract=_env_float("CHRISTIANIA_COMMISSION_PER_CONTRACT", 2.00),
     )
 
@@ -117,7 +117,6 @@ def main_config() -> EngineConfig:
         lane=LANE_MAIN, min_dte=7, max_dte=45, grid=GenerationGrid(), cost=_cost(),
         max_loss_per_lot_usd=_max_loss_per_lot(),
         max_quote_age=timedelta(minutes=90),
-        forecast_weight=_env_float("CHRISTIANIA_FORECAST_WEIGHT", 0.5),
     )
 
 
@@ -128,7 +127,6 @@ def zero_dte_config() -> EngineConfig:
                             width_steps=(1, 2, 3, 5), fly_wing_steps=(2, 4, 6)),
         cost=_cost(), max_quote_age=timedelta(minutes=5),
         max_loss_per_lot_usd=_max_loss_per_lot(),
-        forecast_weight=_env_float("CHRISTIANIA_FORECAST_WEIGHT", 0.5),
         stress_jump=-0.03, stress_jump_prob=0.02,
         min_ev_usd=2.0, top_n=3,
     )
@@ -184,24 +182,23 @@ class Candidate:
     max_gain_usd: float
     breakevens: tuple[float, ...]
     scores: Mapping[str, ModelScore]
-    forecast_model: str | None          # the forecast model with the lower EV
-    forecast_ev_usd: float              # EV under that model
-    implied_ev_usd: float               # EV under the market's own distribution
-    conservative_ev_usd: float          # mixture EV: the score basis
-    stress_ev_usd: float                # forecast EV with the stress shock
-    cvar95_usd: float                   # expected loss in the worst 5 % of the mixture
-    p_max_loss: float                   # mixture probability of (nearly) the full loss
-    pop: float                          # mixture probability of any profit
-    score: float                        # mixture EV / tail risk
-    ev_per_risk: float                  # mixture EV / max loss
-    forecast_weight: float
-    models_agree: bool
+    ev_usd: float                       # EV under the real-world distribution: the score basis
+    implied_ev_usd: float               # EV under the market's own smile (about minus costs)
+    stress_ev_usd: float                # real-world EV with the stress shock
+    cvar95_usd: float                   # expected loss in the worst 5 % (real-world)
+    p_max_loss: float                   # real-world probability of (nearly) the full loss
+    pop: float                          # real-world probability of any profit
+    score: float                        # ev_usd / cvar95_usd
+    ev_per_risk: float                  # ev_usd / max loss
+    premium_ratio: float | None         # lambda used
+    premium_observations: int | None
+    premium_implied_vol: float | None   # window mean implied vol
+    premium_realised_vol: float | None  # window mean realised vol
     passed: bool
     reject_reason: str | None
     spot: float | None
     forward: float
     atm_iv: float | None
-    forecast_vol: float | None
     event_move_pct: float | None
     trading_days: float
     quote_age_seconds: float | None
@@ -236,6 +233,7 @@ class ScanResult:
     rejections: Counter = field(default_factory=Counter)
     passed: list[Candidate] = field(default_factory=list)
     near_misses: list[Candidate] = field(default_factory=list)
+    premiums: dict[str, dict] = field(default_factory=dict)
     engine_version: str = ENGINE_VERSION
 
     @property
@@ -276,68 +274,54 @@ def _quote_age(structure: Structure, asof: datetime) -> float | None:
     return max(ages) if ages else None
 
 
-def _weighted_tail(values: np.ndarray, weights: np.ndarray, tail: float = 0.05) -> float:
-    """Expected loss (positive number) in the worst ``tail`` share of a weighted sample."""
-    order = np.argsort(values)
-    v, w = values[order], weights[order]
-    cum = np.cumsum(w)
-    inside = cum <= tail
-    if not inside.any():
-        inside[0] = True
-    w_in = w[inside].copy()
-    # Fill the tail exactly: part of the first excluded point.
-    remaining = tail - cum[inside][-1]
-    if remaining > 0 and inside.sum() < len(v):
-        idx = inside.sum()
-        extra_v, extra_w = v[idx], min(remaining, w[idx])
-        loss = -(np.dot(v[inside], w_in) + extra_v * extra_w) / (w_in.sum() + extra_w)
-    else:
-        loss = -np.dot(v[inside], w_in) / w_in.sum()
-    return float(loss)
+def _tail_loss(values: np.ndarray, share: float = TAIL_SHARE) -> float:
+    """Expected loss (positive number) in the worst ``share`` of an equally weighted sample."""
+    n = max(1, int(round(len(values) * share)))
+    worst = np.sort(values)[:n]
+    return float(-worst.mean())
 
 
-def score_structure(structure: Structure, *, expiry: Expiry, dists: Mapping[str, Distribution],
-                    config: EngineConfig, chain: Chain, trading_days: float,
-                    event_variance: float, asof: datetime,
-                    forecast_vol: float | None = None) -> Candidate:
+def score_structure(structure: Structure, *, expiry: Expiry, market: Distribution | None,
+                    premium: RiskPremium | None, config: EngineConfig, chain: Chain,
+                    trading_days: float, event_variance: float, asof: datetime) -> Candidate:
     cost = config.cost
     xs = structure.breakpoints()
     ys = pnl(structure, xs, cost)
     max_loss = float(max(0.0, -ys.min()))
     max_gain = float(ys.max())
-    values: dict[str, np.ndarray] = {}
+    entry = structure.entry_cash_per_share(cost.slippage_fraction) * MULTIPLIER
     scores: dict[str, ModelScore] = {}
-    for model_id, dist in dists.items():
-        v = pnl(structure, dist.terminal_prices(expiry.forward), cost)
-        values[model_id] = v
-        scores[model_id] = ModelScore(model_id, float(v.mean()), float((v > 0).mean()), dist.note)
-
-    forecast_models = [m for m in (VOL_FORECAST, EMPIRICAL) if m in values]
-    complete = len(forecast_models) == 2 and IMPLIED in values
     nan = float("nan")
-    worse = forecast_ev = implied_ev = mix_ev = stress_ev = cvar = p_max = pop = score = None
-    agree = False
-    if complete:
-        worse = min(forecast_models, key=lambda m: scores[m].ev_usd)
-        forecast_ev = scores[worse].ev_usd
-        implied_ev = scores[IMPLIED].ev_usd
-        agree = all(scores[m].ev_usd > 0 for m in forecast_models)
-        w = config.forecast_weight
-        fv, iv = values[worse], values[IMPLIED]
-        sample = np.concatenate([fv, iv])
-        weights = np.concatenate([np.full(len(fv), w / len(fv)), np.full(len(iv), (1 - w) / len(iv))])
-        mix_ev = w * forecast_ev + (1 - w) * implied_ev
-        pop = float(np.dot(weights, sample > 0))
-        p_max = float(np.dot(weights, sample <= -0.95 * max_loss)) if max_loss > 0 else 0.0
-        cvar = max(_weighted_tail(sample, weights), TAIL_RISK_FLOOR * max_loss)
-        shocked = pnl(structure, dists[worse].terminal_prices(expiry.forward) * (1 + config.stress_jump), cost)
-        stress_ev = (1 - config.stress_jump_prob) * forecast_ev + config.stress_jump_prob * float(shocked.mean())
-        score = mix_ev / cvar if cvar > 0 else float("-inf")
+    ev = implied_ev = stress_ev = cvar = p_max = pop = score = None
+    complete = False
+    if market is not None:
+        mv = pnl(structure, market.terminal_prices(expiry.forward), cost)
+        scores[IMPLIED] = ModelScore(IMPLIED, float(mv.mean()), float((mv > 0).mean()), market.note)
+        implied_ev = float(mv.mean())
+        if premium is not None:
+            try:
+                real = real_world_distribution(market, premium)
+            except ModelUnavailable:
+                real = None
+            if real is not None:
+                prices = real.terminal_prices(expiry.forward)
+                rv = pnl(structure, prices, cost)
+                scores[REAL_WORLD] = ModelScore(REAL_WORLD, float(rv.mean()), float((rv > 0).mean()), real.note)
+                ev = float(rv.mean())
+                pop = float((rv > 0).mean())
+                p_max = float((rv <= -0.95 * max_loss).mean()) if max_loss > 0 else 0.0
+                cvar = max(_tail_loss(rv), TAIL_RISK_FLOOR * max_loss)
+                shocked = pnl(structure, prices * (1 + config.stress_jump), cost)
+                stress_ev = (1 - config.stress_jump_prob) * ev + config.stress_jump_prob * float(shocked.mean())
+                score = ev / cvar if cvar > 0 else float("-inf")
+                complete = True
     age = _quote_age(structure, asof)
 
     reason = None
     if max_loss <= 0:
         reason = "NO_RISK_ARBITRAGE_SUSPECT"
+    elif entry <= 0:
+        reason = "NOT_A_CREDIT"
     elif max_loss > config.max_loss_per_lot_usd:
         reason = "MAX_LOSS_TOO_LARGE"
     elif age is None:
@@ -346,17 +330,16 @@ def score_structure(structure: Structure, *, expiry: Expiry, dists: Mapping[str,
         reason = "STALE_QUOTE"
     elif not complete:
         reason = "MODEL_UNAVAILABLE"
-    elif not agree:
-        reason = "MODELS_DISAGREE"
-    elif mix_ev < config.min_ev_usd:
+    elif ev < config.min_ev_usd:
         reason = "EV_TOO_SMALL"
+    elif stress_ev < 0:
+        reason = "STRESS_EV_NEGATIVE"
     elif score < config.min_score:
         reason = "RETURN_ON_RISK_TOO_LOW"
 
     def r(x, n=2):
         return nan if x is None or not math.isfinite(x) else round(x, n)
 
-    entry = structure.entry_cash_per_share(cost.slippage_fraction) * MULTIPLIER
     event_move = math.sqrt(event_variance) * 100 if event_variance > 0 else None
     return Candidate(
         lane=config.lane, underlying=structure.underlying, expiration=structure.expiration,
@@ -371,14 +354,15 @@ def score_structure(structure: Structure, *, expiry: Expiry, dists: Mapping[str,
         entry_cash_usd=round(entry, 2), commission_usd=round(cost.commission(structure), 2),
         max_loss_usd=round(max_loss, 2), max_gain_usd=round(max_gain, 2),
         breakevens=_breakevens(structure, cost), scores=scores,
-        forecast_model=worse, forecast_ev_usd=r(forecast_ev), implied_ev_usd=r(implied_ev),
-        conservative_ev_usd=r(mix_ev), stress_ev_usd=r(stress_ev), cvar95_usd=r(cvar),
+        ev_usd=r(ev), implied_ev_usd=r(implied_ev), stress_ev_usd=r(stress_ev), cvar95_usd=r(cvar),
         p_max_loss=r(p_max, 4), pop=r(pop, 4), score=r(score, 4),
-        ev_per_risk=r(mix_ev / max_loss if mix_ev is not None and max_loss > 0 else None, 4),
-        forecast_weight=config.forecast_weight,
-        models_agree=agree, passed=reason is None, reject_reason=reason,
+        ev_per_risk=r(ev / max_loss if ev is not None and max_loss > 0 else None, 4),
+        premium_ratio=None if premium is None else round(premium.ratio, 4),
+        premium_observations=None if premium is None else premium.observations,
+        premium_implied_vol=None if premium is None else round(premium.implied_vol, 4),
+        premium_realised_vol=None if premium is None else round(premium.realised_vol, 4),
+        passed=reason is None, reject_reason=reason,
         spot=chain.spot, forward=round(expiry.forward, 4), atm_iv=expiry.atm_iv,
-        forecast_vol=None if forecast_vol is None else round(forecast_vol, 4),
         event_move_pct=round(event_move, 2) if event_move else None,
         trading_days=round(trading_days, 3), quote_age_seconds=age,
         captured_at=chain.captured_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
@@ -402,86 +386,54 @@ def market_distribution(expiry: Expiry) -> Distribution:
     return smile_implied_distribution(_smile_points(expiry), expiry.atm_iv, expiry.calendar_years)
 
 
-def _expiry_distributions(expiry: Expiry, closes: Sequence[float] | None,
-                          forecast: VolForecast | None, trading_days: float,
-                          event_variance: float) -> dict[str, Distribution]:
-    dists: dict[str, Distribution] = {}
-    if expiry.atm_iv is not None:
-        try:
-            dists[IMPLIED] = market_distribution(expiry)
-        except ModelUnavailable:
-            pass
-    if forecast is not None:
-        try:
-            dists[VOL_FORECAST] = vol_forecast_distribution(forecast, trading_days, event_variance)
-        except ModelUnavailable:
-            pass
-    if closes:
-        try:
-            dists[EMPIRICAL] = empirical_distribution(closes, trading_days, event_variance)
-        except ModelUnavailable:
-            pass
-    return dists
+def _market_or_none(expiry: Expiry) -> Distribution | None:
+    if expiry.atm_iv is None:
+        return None
+    try:
+        return market_distribution(expiry)
+    except ModelUnavailable:
+        return None
 
 
-def _zero_dte_expiry_distributions(expiry: Expiry, intraday, asof: datetime,
-                                   today: date) -> dict[str, Distribution]:
-    from src.engine.intraday import zero_dte_distributions
-
-    dists: dict[str, Distribution] = {}
-    if expiry.atm_iv is not None:
-        try:
-            dists[IMPLIED] = market_distribution(expiry)
-        except ModelUnavailable:
-            pass
-    if intraday is not None:
-        try:
-            dists.update(zero_dte_distributions(intraday, asof=asof, expiration=expiry.expiration,
-                                                today=today))
-        except ModelUnavailable:
-            pass
-    return dists
+def event_variances(chain: Chain) -> dict[str, float]:
+    """Expiration -> cumulative priced event variance, from the ATM term structure."""
+    with_iv = [e for e in chain.expiries if e.forward is not None and e.calendar_years > 0 and e.atm_iv]
+    if len(with_iv) < MIN_EXPIRIES_FOR_EVENT_DETECTION:
+        return {}
+    return dict(zip([e.expiration for e in with_iv],
+                    implied_event_variance([(e.calendar_years, e.atm_iv) for e in with_iv])))
 
 
-def scan_chain(chain: Chain, closes: Sequence[float] | None, config: EngineConfig,
-               asof: datetime, result: ScanResult, calendar=None, *, intraday=None,
-               blackout: Mapping[str, date] | None = None) -> list[Candidate]:
+def scan_chain(chain: Chain, premium: RiskPremium | None, config: EngineConfig,
+               asof: datetime, result: ScanResult, calendar=None, *,
+               blackout: Mapping[str, date] | None = None,
+               open_position: bool = False) -> list[Candidate]:
+    if open_position:
+        result.chains_blocked[chain.underlying] = "OPEN_POSITION"
+        result.rejections["OPEN_POSITION"] += 1
+        return []
     usable = [e for e in chain.expiries if e.forward is not None and e.calendar_years > 0]
     if not usable:
         result.rejections["NO_USABLE_EXPIRY"] += 1
         return []
     today = asof.astimezone(NY).date()
-    events: dict[str, float] = {}
-    if config.lane == LANE_MAIN:
-        with_iv = [e for e in usable if e.atm_iv]
-        if chain.underlying not in no_earnings_symbols() and len(with_iv) < MIN_EXPIRIES_FOR_EVENT_DETECTION:
-            result.chains_blocked[chain.underlying] = "EVENT_UNDETECTABLE"
-            result.rejections["EVENT_UNDETECTABLE"] += 1
-            return []
-        events = dict(zip([e.expiration for e in with_iv],
-                          implied_event_variance([(e.calendar_years, e.atm_iv) for e in with_iv])))
+    events = event_variances(chain)
     event_day = (blackout or {}).get(chain.underlying)
+    if premium is None:
+        result.chains_without_history.append(chain.underlying)
+    else:
+        result.premiums[chain.underlying] = {
+            "ratio": round(premium.ratio, 4), "observations": premium.observations,
+            "implied_vol": round(premium.implied_vol, 4), "realised_vol": round(premium.realised_vol, 4),
+        }
     out: list[Candidate] = []
-    history_missing = False
-    forecast = None
-    if config.lane == LANE_MAIN and closes:
-        try:
-            forecast = forecast_volatility(daily_log_returns(closes))
-        except ModelUnavailable:
-            forecast = None
-    cache: dict[str, tuple[dict, float, float]] = {}
+    cache: dict[str, tuple[Distribution | None, float, float]] = {}
     for expiry, structure in iter_structures(chain.underlying, usable, config.grid):
         if expiry.expiration not in cache:
-            td = trading_days_to_expiry(asof, expiry.expiration, calendar)
-            ev = events.get(expiry.expiration, 0.0)
-            if config.lane == LANE_ZERO_DTE:
-                dists = _zero_dte_expiry_distributions(expiry, intraday, asof, today)
-            else:
-                dists = _expiry_distributions(expiry, closes, forecast, td, ev)
-            if VOL_FORECAST not in dists or EMPIRICAL not in dists:
-                history_missing = True
-            cache[expiry.expiration] = (dists, td, ev)
-        dists, td, ev = cache[expiry.expiration]
+            cache[expiry.expiration] = (_market_or_none(expiry),
+                                        trading_days_to_expiry(asof, expiry.expiration, calendar),
+                                        events.get(expiry.expiration, 0.0))
+        market, td, ev = cache[expiry.expiration]
         if td <= 0:
             result.rejections["EXPIRED"] += 1
             continue
@@ -494,37 +446,36 @@ def scan_chain(chain: Chain, closes: Sequence[float] | None, config: EngineConfi
             result.rejections[reason] += 1
             continue
         result.structures_scored += 1
-        cand = score_structure(structure, expiry=expiry, dists=dists, config=config,
-                               chain=chain, trading_days=td, event_variance=ev, asof=asof,
-                               forecast_vol=None if forecast is None else forecast.annualized_vol)
+        cand = score_structure(structure, expiry=expiry, market=market, premium=premium, config=config,
+                               chain=chain, trading_days=td, event_variance=ev, asof=asof)
         if not cand.passed:
             result.rejections[cand.reject_reason] += 1
         out.append(cand)
-    if history_missing:
-        result.chains_without_history.append(chain.underlying)
     return out
 
 
 def _rank_key(c: Candidate) -> tuple:
-    return (-c.score, -c.conservative_ev_usd, c.structure_key)
+    return (-c.score, -c.ev_usd, c.structure_key)
 
 
-NEAR_MISS_REASONS = {"MODELS_DISAGREE", "EV_TOO_SMALL", "RETURN_ON_RISK_TOO_LOW"}
+NEAR_MISS_REASONS = {"EV_TOO_SMALL", "STRESS_EV_NEGATIVE", "RETURN_ON_RISK_TOO_LOW"}
 
 
-def run_scan(chains: Sequence[Chain], closes_by_symbol: Mapping[str, Sequence[float]],
+def run_scan(chains: Sequence[Chain], premiums: Mapping[str, RiskPremium | None],
              config: EngineConfig, *, asof: datetime, calendar=None,
-             intraday_by_symbol: Mapping[str, object] | None = None,
-             blackout: Mapping[str, date] | None = None) -> ScanResult:
+             blackout: Mapping[str, date] | None = None,
+             open_underlyings: Collection[str] = ()) -> ScanResult:
+    """Score every chain. ``open_underlyings`` are skipped: one open pick per name
+    at a time, so the same view is never stacked day after day."""
     result = ScanResult(lane=config.lane, asof=asof, config=config)
     blackout = event_blackout_from_env() if blackout is None else blackout
+    open_names = {s.upper() for s in open_underlyings}
     passed: list[Candidate] = []
     near: list[Candidate] = []
     for chain in chains:
         result.chains_scanned += 1
-        cands = scan_chain(chain, closes_by_symbol.get(chain.underlying), config, asof, result,
-                           calendar, intraday=(intraday_by_symbol or {}).get(chain.underlying),
-                           blackout=blackout)
+        cands = scan_chain(chain, premiums.get(chain.underlying), config, asof, result, calendar,
+                           blackout=blackout, open_position=chain.underlying.upper() in open_names)
         best_by_underlying: dict[str, Candidate] = {}
         for c in cands:
             if c.passed:

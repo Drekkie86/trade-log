@@ -1,10 +1,13 @@
-"""Defined-risk option structures, fills, payoffs and candidate generation.
+"""Defined-risk short-premium structures, fills, payoffs and candidate generation.
 
-Families (all with bounded loss):
+Families (all with bounded loss, all net credits):
   CREDIT_SPREAD  - short put spread / short call spread
-  DEBIT_SPREAD   - long call spread / long put spread
   IRON_CONDOR    - short put spread + short call spread
   IRON_FLY       - short ATM straddle + long wings
+
+Debit spreads were a V1 family. The first backtest showed the engine buying
+them against the smile and losing 70 % of the risk on index names, so V2 does
+not generate long premium at all (docs/reviews, "First backtest").
 
 Fills are modelled per leg: buy at mid + s * half-spread, sell at
 mid - s * half-spread (s = slippage fraction). Commission is charged per
@@ -24,14 +27,12 @@ from src.engine.chains import Expiry, Quote
 MULTIPLIER = 100
 
 CREDIT_SPREAD = "CREDIT_SPREAD"
-DEBIT_SPREAD = "DEBIT_SPREAD"
 IRON_CONDOR = "IRON_CONDOR"
 IRON_FLY = "IRON_FLY"
-FAMILIES = (CREDIT_SPREAD, DEBIT_SPREAD, IRON_CONDOR, IRON_FLY)
+FAMILIES = (CREDIT_SPREAD, IRON_CONDOR, IRON_FLY)
 
 FAMILY_LABELS = {
     CREDIT_SPREAD: "Credit spread",
-    DEBIT_SPREAD: "Debit spread",
     IRON_CONDOR: "Iron condor",
     IRON_FLY: "Iron fly",
 }
@@ -124,7 +125,6 @@ def pnl(structure: Structure, prices: np.ndarray, cost: CostPolicy) -> np.ndarra
 @dataclass(frozen=True)
 class GenerationGrid:
     short_deltas: tuple[float, ...] = (0.10, 0.16, 0.20, 0.25, 0.30)
-    long_deltas: tuple[float, ...] = (0.35, 0.45, 0.55)
     width_steps: tuple[int, ...] = (1, 2, 3, 5)
     fly_wing_steps: tuple[int, ...] = (2, 4, 6)
     families: tuple[str, ...] = FAMILIES
@@ -178,20 +178,6 @@ def generate(underlying: str, expiry: Expiry, grid: GenerationGrid) -> list[Stru
                 add(cc)
             if IRON_CONDOR in grid.families and pc and cc:
                 add(Structure(IRON_CONDOR, "IRON_CONDOR", underlying, exp, pc.legs + cc.legs))
-
-    if DEBIT_SPREAD in grid.families:
-        for d in grid.long_deltas:
-            for w in grid.width_steps:
-                lc = _by_delta(calls, d)
-                sc = lc and _offset(calls, lc, +w)
-                if sc:
-                    add(Structure(DEBIT_SPREAD, "CALL_DEBIT_SPREAD", underlying, exp,
-                                  (Leg(lc, +1), Leg(sc, -1))))
-                lp = _by_delta(puts, d)
-                sp = lp and _offset(puts, lp, -w)
-                if sp:
-                    add(Structure(DEBIT_SPREAD, "PUT_DEBIT_SPREAD", underlying, exp,
-                                  (Leg(lp, +1), Leg(sp, -1))))
 
     if IRON_FLY in grid.families and calls and puts:
         common = sorted({q.strike for q in calls} & {q.strike for q in puts})

@@ -1,7 +1,6 @@
-"""Christiania trade engine: models, chains, structures, gates, pipeline, ledger, worker."""
+"""Christiania trade engine V2: models, chains, structures, gates, pipeline, ledger, worker."""
 from __future__ import annotations
 
-import json
 import math
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
@@ -11,45 +10,44 @@ import pytest
 
 from src.database.repository import get_connection
 from src.engine.chains import (
-    NY, Quote, black76_price, build_chain, calendar_years_to_expiry, implied_vol,
-    parity_forward,
+    NY, Quote, black76_price, build_chain, calendar_years_to_expiry, constant_maturity_point,
+    implied_vol, parity_forward,
 )
 from src.engine.history import (
     fetch_eod_closes, history_status, last_completed_session, parse_eod_rows, settlement_price,
 )
-from src.engine.intraday import (
-    IntradayHistory, IntradaySession, parse_ohlc_sessions, refresh_intraday,
-    zero_dte_distributions,
-)
 from src.engine.ledger import (
-    close_trade, cluster_bootstrap_ci, drawdown, exposure, latest_scan, pick_pnl_at,
-    picks_with_outcomes, prune_candidates, record_scan, record_trade, scorecard,
+    close_trade, cluster_bootstrap_ci, drawdown, exposure, latest_scan, open_pick_underlyings,
+    pick_pnl_at, picks_with_outcomes, prune_candidates, record_scan, record_trade, scorecard,
     session_picks, settle_due_picks, settle_due_trades, trades_with_closes, verdict,
 )
 from src.engine.models import (
-    EMPIRICAL, IMPLIED, VOL_FORECAST, ModelUnavailable, empirical_distribution,
-    implied_event_variance, lognormal,
+    IMPLIED, MIN_PREMIUM_OBSERVATIONS, REAL_WORLD, ModelUnavailable, RiskPremium,
+    constant_maturity_iv, estimate_risk_premium, implied_event_variance, lognormal,
+    real_world_distribution, realised_variances,
 )
 from src.engine.pipeline import (
     LANE_MAIN, EngineConfig, event_blackout_from_env, main_config, run_scan,
     trading_days_to_expiry, zero_dte_config,
 )
-from src.engine.structures import CostPolicy, Leg, Structure, liquid, pnl
+from src.engine.structures import CostPolicy, Leg, Structure, generate, liquid, pnl
 
 ASOF = datetime(2026, 11, 4, 16, 0, tzinfo=UTC)  # Wednesday 11:00 New York
 EXPIRIES = ("2026-11-13", "2026-11-20", "2026-12-04", "2026-12-18")
 
 
 def synthetic_quotes(asof=ASOF, spot=100.0, iv=0.25, expiries=EXPIRIES, quote_at=None,
-                     strikes=None, oi=None, wing_quote=None):
+                     strikes=None, oi=None, wing_quote=None, put_skew=0.0):
     quotes = []
     stamp = (quote_at or asof).isoformat() if quote_at is not False else None
     for exp in expiries:
         t = calendar_years_to_expiry(asof, exp)
         f = spot * math.exp(0.04 * t)
         for k in (strikes if strikes is not None else np.arange(70, 131, 1.0)):
+            m = math.log(k / f)
+            vol = iv + (put_skew * -m if m < 0 else 0.0)
             for right in "CP":
-                p = black76_price(right, f, float(k), t, iv)
+                p = black76_price(right, f, float(k), t, vol)
                 if p < 0.03:
                     continue
                 spread = max(0.02, 0.04 * p)
@@ -70,24 +68,84 @@ def chain(iv=0.25, underlying="SPY", **kw):
                        spot=100.0, source="TEST", min_dte=7, max_dte=45)
 
 
+def premium(ratio: float = 0.5, observations: int = 300, implied: float = 0.25) -> RiskPremium:
+    return RiskPremium(ratio=ratio, observations=observations, first_session="2025-06-02",
+                       last_session="2026-10-02", implied_vol=implied,
+                       realised_vol=implied * math.sqrt(ratio))
+
+
 def cfg(**overrides) -> EngineConfig:
     base = main_config()
     return EngineConfig(**{**base.__dict__, **overrides})
 
 
+def business_days(start: date, n: int) -> list[str]:
+    out, day = [], start
+    while len(out) < n:
+        if day.weekday() < 5:
+            out.append(day.isoformat())
+        day += timedelta(days=1)
+    return out
+
+
 # --------------------------------------------------------------------- models
 def test_lognormal_is_a_martingale_around_the_forward():
-    d = lognormal(VOL_FORECAST, "X", 0.04)
+    d = lognormal(IMPLIED, "X", 0.04)
     assert np.mean(np.exp(d.log_returns)) == pytest.approx(1.0, abs=1e-12)
     assert np.var(d.log_returns) == pytest.approx(0.04, rel=0.01)
 
 
-def test_empirical_distribution_is_demeaned_and_needs_history():
-    trending = list(100 * np.exp(np.linspace(0, 1, 300)))
-    d = empirical_distribution(trending, 10)
-    assert np.mean(np.exp(d.log_returns)) == pytest.approx(1.0, abs=1e-12)
+def test_constant_maturity_iv_interpolates_total_variance_and_fails_closed():
+    pts = [(20 / 365, 0.20), (40 / 365, 0.30)]
+    w0, w1 = 0.04 * 20 / 365, 0.09 * 40 / 365
+    expected = math.sqrt((w0 + (w1 - w0) * 0.5) / (30 / 365))
+    assert constant_maturity_iv(pts) == pytest.approx(expected)
+    assert constant_maturity_iv([(30 / 365, 0.22)]) == pytest.approx(0.22)
+    assert constant_maturity_iv([(36 / 365, 0.22)]) == pytest.approx(0.22)     # within 10 days
+    assert constant_maturity_iv([(45 / 365, 0.22)]) is None                     # too far, not bracketed
+    assert constant_maturity_iv([]) is None
+
+
+def test_risk_premium_is_realised_over_implied_variance_on_completed_windows():
+    days = business_days(date(2025, 1, 6), 330)
+    r = 0.15 / math.sqrt(252)
+    closes = [(d, 100.0 * math.exp(r * (1 if i % 2 else -1) * (i // 2 % 3 + 1) / 2.0))
+              for i, d in enumerate(days)]
+    # alternating returns of fixed size: realised variance is exactly known per window
+    logc = np.log([c for _, c in closes])
+    rv = realised_variances(closes, 21)
+    assert len(rv) == 330 - 21 and days[-21] not in rv
+    first = float(np.sum(np.diff(logc[:22]) ** 2) * 252 / 21)
+    assert rv[days[0]] == pytest.approx(first)
+    iv_points = [(d, 0.20) for d in days]
+    prem = estimate_risk_premium(iv_points, closes, before=days[-1])
+    # A point counts only when its 21-session window ends before `before`: the last
+    # usable session is 22 back, so 308 of the 330 points count.
+    assert prem.last_session == days[-23] and prem.observations == 308
+    expected = sum(rv[d] for d in days[:308]) / (308 * 0.04)
+    assert prem.ratio == pytest.approx(expected)
+    assert prem.implied_vol == pytest.approx(0.20) and prem.realised_vol == pytest.approx(
+        0.20 * math.sqrt(prem.ratio))
     with pytest.raises(ModelUnavailable):
-        empirical_distribution(trending[:40], 10)
+        estimate_risk_premium(iv_points[:200], closes, before=days[-1])
+    with pytest.raises(ModelUnavailable):
+        estimate_risk_premium(iv_points, closes, before=days[-1], min_observations=400)
+    assert MIN_PREMIUM_OBSERVATIONS == 250
+
+
+def test_real_world_distribution_scales_width_keeps_shape_and_stays_a_martingale():
+    rng = np.random.default_rng(2)
+    skewed = np.sort(rng.gamma(2.0, 0.05, 4001) * -1 + 0.1)   # left-skewed sample
+    from src.engine.models import Distribution, _martingale
+    market = Distribution(IMPLIED, "M", _martingale(skewed), float(np.var(skewed)))
+    real = real_world_distribution(market, premium(ratio=0.49))
+    assert real.model_id == REAL_WORLD
+    assert np.mean(np.exp(real.log_returns)) == pytest.approx(1.0, abs=1e-12)
+    assert np.std(real.log_returns) == pytest.approx(0.7 * np.std(market.log_returns), rel=1e-6)
+    from scipy.stats import skew
+    assert skew(real.log_returns) == pytest.approx(skew(market.log_returns), rel=1e-6)
+    with pytest.raises(ModelUnavailable):
+        real_world_distribution(market, premium(ratio=0.0))
 
 
 def test_event_variance_detected_only_in_the_jump_interval_and_carried_forward():
@@ -113,6 +171,13 @@ def test_parity_forward_and_implied_vol_recover_inputs():
 
 def test_parity_forward_none_without_two_sided_pairs():
     assert parity_forward([Quote("C", 100, EXPIRIES[0], None, 1.0)], 0.05) is None
+
+
+def test_constant_maturity_point_matches_the_enriched_chain():
+    c = chain(iv=0.28)
+    cheap = constant_maturity_point(synthetic_quotes(iv=0.28), ASOF, min_dte=7, max_dte=45)
+    full = constant_maturity_iv([(e.calendar_years, e.atm_iv) for e in c.expiries if e.atm_iv])
+    assert cheap == pytest.approx(full, rel=1e-9) and cheap == pytest.approx(0.28, abs=0.01)
 
 
 # ----------------------------------------------------------------- structures
@@ -143,6 +208,15 @@ def test_frozen_pick_pnl_matches_structure_pnl():
         assert pick_pnl_at(record, px) == pytest.approx(float(pnl(s, np.array([px]), cost)[0]))
 
 
+def test_generation_yields_only_short_premium_credits():
+    c = chain(iv=0.25)
+    structures = generate("SPY", c.expiries[-1], main_config().grid)
+    assert structures
+    assert {s.family for s in structures} <= {"CREDIT_SPREAD", "IRON_CONDOR", "IRON_FLY"}
+    assert all(s.entry_cash_per_share(0.5) > 0 for s in structures)
+    assert not any("DEBIT" in s.shape for s in structures)
+
+
 def test_liquidity_gate_fails_closed_on_no_bid_wide_spread_and_ignores_missing_oi():
     def spread(short, long):
         return Structure("CREDIT_SPREAD", "PUT_CREDIT_SPREAD", "T", "2026-12-18",
@@ -159,35 +233,37 @@ def test_liquidity_gate_fails_closed_on_no_bid_wide_spread_and_ignores_missing_o
 
 
 # ------------------------------------------------------------------- pipeline
-def test_rich_implied_vol_versus_calm_history_passes_with_mixture_scoring():
-    res = run_scan([chain(iv=0.25)], {"SPY": history(0.15)}, main_config(), asof=ASOF)
+def test_premium_below_one_sells_premium_and_the_market_view_is_minus_costs():
+    res = run_scan([chain(iv=0.25)], {"SPY": premium(0.5)}, main_config(), asof=ASOF)
     assert res.passed, dict(res.rejections)
     top = res.passed[0]
-    assert top.is_credit and top.models_agree
-    w = top.forecast_weight
-    assert top.conservative_ev_usd == pytest.approx(
-        w * top.forecast_ev_usd + (1 - w) * top.implied_ev_usd, abs=0.02)
-    assert top.forecast_ev_usd == pytest.approx(
-        min(top.scores[VOL_FORECAST].ev_usd, top.scores[EMPIRICAL].ev_usd), abs=0.01)
-    assert top.implied_ev_usd < 0                      # the market's own view: minus costs
-    assert top.stress_ev_usd < top.forecast_ev_usd    # a shock can only hurt a short-vol trade
-    assert top.score == pytest.approx(top.conservative_ev_usd / top.cvar95_usd, abs=0.001)
+    assert top.is_credit and set(top.scores) == {IMPLIED, REAL_WORLD}
+    assert top.ev_usd > 0 > top.implied_ev_usd                 # the market's own view: minus costs
+    assert top.stress_ev_usd < top.ev_usd                     # a shock can only hurt a short-vol trade
+    assert top.score == pytest.approx(top.ev_usd / top.cvar95_usd, abs=0.001)
     assert 0 < top.p_max_loss < 1 and 0 < top.pop < 1
     assert top.cvar95_usd >= 0.10 * top.max_loss_usd
+    assert top.premium_ratio == 0.5 and top.premium_observations == 300
+    assert res.premiums["SPY"]["ratio"] == 0.5
 
 
-def test_gate_requires_a_real_gap_between_implied_and_forecast_volatility():
-    """At the forecast's own level nothing passes; two points above it almost nothing."""
-    hist = history(0.15)
-    at_forecast = run_scan([chain(iv=0.145)], {"SPY": hist}, main_config(), asof=ASOF)
-    assert at_forecast.passed == []
-    two_points = run_scan([chain(iv=0.165)], {"SPY": hist}, main_config(), asof=ASOF)
-    assert len(two_points.passed) < 0.10 * max(1, two_points.structures_scored)
+def test_no_premium_means_nothing_passes():
+    """lambda >= 1: realised variance matched or beat the implied; there is nothing to sell."""
+    for ratio in (1.0, 1.2):
+        res = run_scan([chain(iv=0.25)], {"SPY": premium(ratio)}, main_config(), asof=ASOF)
+        assert res.passed == [], ratio
+        assert res.rejections["EV_TOO_SMALL"] > 0
 
 
-def test_cheap_implied_vol_versus_wild_history_sells_no_premium():
-    res = run_scan([chain(iv=0.15)], {"SPY": history(0.45)}, main_config(), asof=ASOF)
-    assert not any(c.is_credit for c in res.passed)
+def test_stress_gate_rejects_thin_edges_and_every_pass_survives_the_shock():
+    """A thin premium (lambda 0.8) leaves trades whose edge a 3 % shock wipes out."""
+    res = run_scan([chain(iv=0.25)], {"SPY": premium(0.8)}, main_config(), asof=ASOF)
+    assert res.rejections["STRESS_EV_NEGATIVE"] > 0
+    assert all(c.stress_ev_usd >= 0 for c in res.passed)
+    assert res.near_misses and all(c.reject_reason in {"EV_TOO_SMALL", "STRESS_EV_NEGATIVE",
+                                                       "RETURN_ON_RISK_TOO_LOW"} for c in res.near_misses)
+    rich = run_scan([chain(iv=0.25)], {"SPY": premium(0.5)}, main_config(), asof=ASOF)
+    assert len(rich.passed) > len(res.passed) and all(c.stress_ev_usd >= 0 for c in rich.passed)
 
 
 def test_without_history_nothing_passes_and_chain_is_flagged():
@@ -197,44 +273,51 @@ def test_without_history_nothing_passes_and_chain_is_flagged():
     assert res.rejections["MODEL_UNAVAILABLE"] > 0
 
 
+def test_open_pick_blocks_the_name_until_it_settles():
+    res = run_scan([chain(iv=0.25)], {"SPY": premium(0.5)}, main_config(), asof=ASOF,
+                   open_underlyings={"spy"})
+    assert res.passed == [] and res.structures_scored == 0
+    assert res.chains_blocked == {"SPY": "OPEN_POSITION"} and res.rejections["OPEN_POSITION"] == 1
+
+
 def test_stale_or_unknown_quote_age_never_passes():
     old = ASOF - timedelta(hours=3)
-    stale = run_scan([chain(iv=0.25, quote_at=old)], {"SPY": history(0.15)}, main_config(), asof=ASOF)
+    stale = run_scan([chain(iv=0.25, quote_at=old)], {"SPY": premium(0.5)}, main_config(), asof=ASOF)
     assert stale.passed == [] and stale.rejections["STALE_QUOTE"] > 0
-    unknown = run_scan([chain(iv=0.25, quote_at=False)], {"SPY": history(0.15)}, main_config(), asof=ASOF)
+    unknown = run_scan([chain(iv=0.25, quote_at=False)], {"SPY": premium(0.5)}, main_config(), asof=ASOF)
     assert unknown.passed == [] and unknown.rejections["QUOTE_AGE_UNKNOWN"] > 0
 
 
 def test_no_real_market_wings_are_rejected_before_scoring():
-    res = run_scan([chain(iv=0.25, wing_quote=(0.08, 0.01, 0.06))], {"SPY": history(0.15)},
+    res = run_scan([chain(iv=0.25, wing_quote=(0.08, 0.01, 0.06))], {"SPY": premium(0.5)},
                    main_config(), asof=ASOF)
     assert res.rejections["NO_REAL_MARKET"] > 0
     assert not any(l["bid"] == 0.01 for c in res.passed for l in c.legs)
 
 
-def test_single_name_with_two_expiries_is_blocked_etf_is_not():
-    hist = history(0.15)
-    single = chain(iv=0.25, underlying="NVDA", expiries=EXPIRIES[:2])
-    res = run_scan([single], {"NVDA": hist}, main_config(), asof=ASOF)
-    assert res.chains_blocked == {"NVDA": "EVENT_UNDETECTABLE"} and res.passed == []
-    etf = chain(iv=0.25, underlying="SPY", expiries=EXPIRIES[:2])
-    assert run_scan([etf], {"SPY": hist}, main_config(), asof=ASOF).passed
-
-
 def test_event_blackout_rejects_expiries_spanning_the_event():
     assert event_blackout_from_env("NVDA:2026-11-19, junk, AAPL:bad") == {"NVDA": date(2026, 11, 19)}
-    res = run_scan([chain(iv=0.25, underlying="NVDA")], {"NVDA": history(0.15)}, main_config(),
+    res = run_scan([chain(iv=0.25, underlying="NVDA")], {"NVDA": premium(0.5)}, main_config(),
                    asof=ASOF, blackout={"NVDA": date(2026, 11, 19)})
     assert res.rejections["EVENT_BLACKOUT"] > 0
     assert all(c.expiration < "2026-11-19" for c in res.passed)
+
+
+def test_skewed_smile_is_priced_as_the_market_prices_it():
+    """Selling the skew is not an edge by itself: with lambda = 1 nothing passes on a skewed chain."""
+    res = run_scan([chain(iv=0.22, put_skew=0.6)], {"SPY": premium(1.0, implied=0.22)},
+                   main_config(), asof=ASOF)
+    assert res.passed == []
+    some = run_scan([chain(iv=0.22, put_skew=0.6)], {"SPY": premium(0.6, implied=0.22)},
+                    main_config(), asof=ASOF)
+    assert some.passed
 
 
 def test_picks_are_one_per_underlying_best_first():
     a = chain(iv=0.25)
     b = build_chain("QQQ", ASOF, synthetic_quotes(iv=0.24), snapshot_id=None, spot=100.0,
                     source="TEST", min_dte=7, max_dte=45)
-    res = run_scan([a, b], {"SPY": history(0.15), "QQQ": history(0.15, seed=3)},
-                   main_config(), asof=ASOF)
+    res = run_scan([a, b], {"SPY": premium(0.5), "QQQ": premium(0.55)}, main_config(), asof=ASOF)
     assert [c.underlying for c in res.picks] == sorted({"SPY", "QQQ"}, key=lambda u: [c.underlying for c in res.passed].index(u))
     assert len({c.underlying for c in res.picks}) == len(res.picks) <= main_config().top_n
 
@@ -245,75 +328,31 @@ def test_trading_days_counts_remaining_session_fraction():
     assert trading_days_to_expiry(ASOF, "2026-11-03") == 0.0
 
 
-def test_commission_default_is_saxo_classic_tier(monkeypatch):
+def test_commission_default_is_saxo_bronze_tier(monkeypatch):
     monkeypatch.delenv("CHRISTIANIA_COMMISSION_PER_CONTRACT", raising=False)
     assert main_config().cost.commission_per_contract == 2.00
 
 
 # ----------------------------------------------------------------------- 0DTE
-def intraday_sessions(n=60, seed=5, vol=0.12):
-    rng = np.random.default_rng(seed)
-    out = []
-    day = date(2026, 8, 1)
-    while len(out) < n:
-        day += timedelta(days=1)
-        if day.weekday() >= 5:
-            continue
-        minutes = tuple(9 * 60 + 35 + 5 * i for i in range(78))
-        path = 100 * np.exp(np.cumsum(rng.normal(0, vol / math.sqrt(252 * 78), 78)))
-        out.append(IntradaySession(day.isoformat(), minutes, tuple(float(x) for x in path)))
-    return out
-
-
-def test_zero_dte_distributions_use_remaining_session_returns():
-    sessions = intraday_sessions()
-    closes = {s.session_date: s.last_close for s in sessions}
-    hist = IntradayHistory("SPY", tuple(sessions), closes)
-    asof = datetime(2026, 11, 4, 15, 0, tzinfo=UTC)   # 10:00 NY
-    d = zero_dte_distributions(hist, asof=asof, expiration="2026-11-04", today=date(2026, 11, 4))
-    assert set(d) == {VOL_FORECAST, EMPIRICAL}
-    assert "10:00" in d[EMPIRICAL].note and len(d[EMPIRICAL].log_returns) == 60
-    late = zero_dte_distributions(hist, asof=datetime(2026, 11, 4, 20, 30, tzinfo=UTC),
-                                  expiration="2026-11-04", today=date(2026, 11, 4))
-    assert late[EMPIRICAL].horizon_variance < d[EMPIRICAL].horizon_variance
-    nxt = zero_dte_distributions(hist, asof=asof, expiration="2026-11-05", today=date(2026, 11, 4))
-    assert nxt[EMPIRICAL].horizon_variance > d[EMPIRICAL].horizon_variance
-    with pytest.raises(ModelUnavailable):
-        zero_dte_distributions(IntradayHistory("SPY", tuple(sessions[:10]), closes), asof=asof,
-                               expiration="2026-11-04", today=date(2026, 11, 4))
-
-
-def test_zero_dte_lane_scores_only_with_intraday_history():
+def test_zero_dte_lane_uses_the_same_premium_and_fails_closed_without_it():
     q = synthetic_quotes(iv=0.30, expiries=("2026-11-04", "2026-11-05"),
                          strikes=np.arange(90, 110.5, 0.5))
     c = build_chain("SPY", ASOF, q, snapshot_id=None, spot=100.0, source="TEST",
                     min_dte=0, max_dte=1)
-    sessions = intraday_sessions(vol=0.10)
-    hist = IntradayHistory("SPY", tuple(sessions), {s.session_date: s.last_close for s in sessions})
-    res = run_scan([c], {}, zero_dte_config(), asof=ASOF, intraday_by_symbol={"SPY": hist})
+    res = run_scan([c], {"SPY": premium(0.5, implied=0.30)}, zero_dte_config(), asof=ASOF)
     assert res.structures_scored > 0 and res.chains_without_history == []
     assert all(p.expiration in {"2026-11-04", "2026-11-05"} for p in res.passed)
     none = run_scan([c], {}, zero_dte_config(), asof=ASOF)
     assert none.passed == [] and none.chains_without_history == ["SPY"]
 
 
-def test_parse_ohlc_sessions_groups_bars_and_drops_partial_days():
-    rows = []
-    for d, n in (("2026-11-03", 78), ("2026-11-04", 10)):
-        for i in range(n):
-            rows.append({"timestamp": f"{d}T{9 + (30 + 5 * i) // 60:02d}:{(30 + 5 * i) % 60:02d}:00",
-                         "open": 100, "high": 101, "low": 99, "close": 100 + i * 0.01, "volume": 1})
-    sessions = parse_ohlc_sessions({"response": rows})
-    assert [s.session_date for s in sessions] == ["2026-11-03"]
-    assert sessions[0].minutes[0] == 9 * 60 + 35 and sessions[0].price_at(9 * 60 + 34) is None
-
-
 # --------------------------------------------------------------------- ledger
-def seed_scan(conn, asof, iv=0.25, underlying="SPY", spot=100.0):
+def seed_scan(conn, asof, iv=0.25, underlying="SPY", spot=100.0, ratio=0.5, open_names=()):
     expiries = tuple((asof.date() + timedelta(days=k)).isoformat() for k in (9, 16, 30, 44))
     q = synthetic_quotes(asof=asof, iv=iv, spot=spot, expiries=expiries)
     c = build_chain(underlying, asof, q, snapshot_id=None, spot=spot, source="T", min_dte=7, max_dte=45)
-    res = run_scan([c], {underlying: history(0.15)}, main_config(), asof=asof)
+    res = run_scan([c], {underlying: premium(ratio)}, main_config(), asof=asof,
+                   open_underlyings=open_names)
     return record_scan(conn, res, completed_at=asof), res
 
 
@@ -331,12 +370,19 @@ def test_picks_freeze_once_per_session_at_the_decision_scan(db_path):
     picks = session_picks(conn, LANE_MAIN, "2026-11-04")
     assert len(picks) == 1 and picks[0]["first_scan_id"] == first_id
     assert conn.execute("SELECT COUNT(*) FROM engine_scans WHERE decision=1").fetchone()[0] == 1
-    # The next session freezes again.
-    seed_scan(conn, datetime(2026, 11, 5, 15, 5, tzinfo=UTC))
+    assert latest_scan(conn, LANE_MAIN)["premiums"]["SPY"]["ratio"] == 0.5
+    # The next session: the name is open, so the worker would skip it...
+    assert open_pick_underlyings(conn, LANE_MAIN, today=date(2026, 11, 5)) == {"SPY"}
+    assert open_pick_underlyings(conn, LANE_MAIN, today=date(2027, 1, 1)) == set()
+    _, blocked = seed_scan(conn, datetime(2026, 11, 5, 15, 5, tzinfo=UTC), open_names={"SPY"})
+    assert blocked.chains_blocked == {"SPY": "OPEN_POSITION"}
+    assert len(picks_with_outcomes(conn)) == 1
+    # ...and a different name freezes on a later session's decision scan.
+    seed_scan(conn, datetime(2026, 11, 6, 15, 5, tzinfo=UTC), underlying="QQQ")
     assert len(picks_with_outcomes(conn)) == 2
     with pytest.raises(sqlite3.DatabaseError):
         with conn:
-            conn.execute("UPDATE engine_picks SET conservative_ev_usd=999")
+            conn.execute("UPDATE engine_picks SET ev_usd=999")
     conn.close()
 
 
@@ -395,14 +441,15 @@ def test_real_trades_record_close_settle_and_exposure(db_path):
 
 
 def test_scorecard_clusters_by_expiry_day_and_verdict_waits_for_sixty_days():
-    def pick(day, pnl):
-        return {"pnl_usd": pnl, "settlement_date": day, "max_loss_usd": 200.0,
-                "conservative_ev_usd": 20.0, "near_strike": 0, "record": {"pop": 0.6}}
+    def pick(day, pnl, max_loss=200.0):
+        return {"pnl_usd": pnl, "settlement_date": day, "max_loss_usd": max_loss,
+                "ev_usd": 20.0, "near_strike": 0, "record": {"pop": 0.6, "p_max_loss": 0.2}}
     few = [pick("2026-11-20", 50), pick("2026-11-20", -200), pick("2026-11-27", 40), {"pnl_usd": None,
-           "settlement_date": None, "max_loss_usd": 200.0, "conservative_ev_usd": 20.0, "record": {}}]
+           "settlement_date": None, "max_loss_usd": 200.0, "ev_usd": 20.0, "record": {}}]
     card = scorecard(few)
     assert card.expiry_days == 2 and card.settled == 3 and card.open == 1
     assert card.worst_day_usd == -150 and card.max_drawdown_usd == -150
+    assert card.max_loss_rate == pytest.approx(1 / 3) and card.predicted_max_loss_rate == pytest.approx(0.2)
     assert verdict(card)[0] == "wait"
     rng = np.random.default_rng(1)
     many = [pick(f"2027-{1 + i // 28:02d}-{1 + i % 28:02d}", float(rng.choice([400, -200], p=[0.7, 0.3])))
@@ -429,12 +476,20 @@ def test_parse_eod_rows_keys_by_session_date_flags_after_hours_and_skips_garbage
 
 
 class FakeTheta:
+    """Stock EOD closes indexed by business day, and small Black-76 EOD option chains
+    (two expiries at 21 and 42 days, constant IV) for any session."""
+
     base_url = "fake"
 
-    def __init__(self, closes, intraday_vol=0.10):
+    def __init__(self, closes, option_iv=0.25, empty_chain_days=()):
         self.closes = closes
-        self.intraday_vol = intraday_vol
+        self.option_iv = option_iv
+        self.empty_chain_days = {d.isoformat() if isinstance(d, date) else d for d in empty_chain_days}
         self.calls = []
+
+    def close_on(self, day: date) -> float:
+        i = int(np.busday_count("2020-01-01", day.isoformat()))
+        return float(self.closes[i % len(self.closes)])
 
     def _get_payload(self, path, params):
         self.calls.append((path, dict(params)))
@@ -447,27 +502,31 @@ class FakeTheta:
                 if day.weekday() < 5:
                     # Index by business day since a fixed epoch so chunked requests
                     # continue the same price path instead of restarting it.
-                    i = int(np.busday_count("2020-01-01", day.isoformat()))
-                    rows.append({"close": self.closes[i % len(self.closes)],
+                    rows.append({"close": self.close_on(day),
                                  "created": f"{day.isoformat()}T17:15:00",
                                  "last_trade": f"{day.isoformat()}T16:00:00"})
                 day += timedelta(days=1)
             return {"response": rows}
-        if path == "/stock/history/ohlc":
-            start = datetime.strptime(params["start_date"], "%Y%m%d").date()
-            end = datetime.strptime(params["end_date"], "%Y%m%d").date()
-            assert (end - start).days <= 31, "multi-day OHLC requests are limited to one month"
-            rng = np.random.default_rng(start.toordinal())
-            rows, day = [], start
-            while day <= end:
-                if day.weekday() < 5:
-                    px = 100.0
-                    for i in range(78):
-                        px *= math.exp(rng.normal(0, self.intraday_vol / math.sqrt(252 * 78)))
-                        m = 9 * 60 + 30 + 5 * i
-                        rows.append({"timestamp": f"{day.isoformat()}T{m // 60:02d}:{m % 60:02d}:00",
-                                     "open": px, "high": px, "low": px, "close": px, "volume": 1})
-                day += timedelta(days=1)
+        if path == "/option/history/eod":
+            session = datetime.strptime(params["start_date"], "%Y%m%d").date()
+            assert params["start_date"] == params["end_date"]
+            if session.isoformat() in self.empty_chain_days:
+                return {"response": []}
+            spot = self.close_on(session)
+            rows = []
+            for dte in (21, 42):
+                exp = session + timedelta(days=dte)
+                t = dte / 365.0
+                f = spot * math.exp(0.04 * t)
+                for k in np.arange(round(spot * 0.8), round(spot * 1.2) + 1, 2.0):
+                    for right in ("CALL", "PUT"):
+                        p = black76_price(right[0], f, float(k), t, self.option_iv)
+                        if p < 0.03:
+                            continue
+                        sp = max(0.02, 0.04 * p)
+                        rows.append({"contract": {"symbol": params["symbol"], "expiration": exp.isoformat(),
+                                                  "strike": float(k), "right": right},
+                                     "data": [{"bid": round(p - sp / 2, 2), "ask": round(p + sp / 2, 2)}]})
             return {"response": rows}
         if path == "/option/snapshot/quote":
             return {"response": []}
@@ -497,18 +556,37 @@ def test_last_completed_session_respects_eod_report_time():
     assert last_completed_session(datetime(2026, 11, 2, 14, 0, tzinfo=UTC)) == date(2026, 10, 30)
 
 
-def test_refresh_intraday_fetches_bounded_ranges_newest_first(db_path):
+# -------------------------------------------------------------- iv history
+def test_iv_history_backfills_within_budget_newest_first_and_never_refetches(db_path):
+    from src.engine.history import refresh_closes
+    from src.engine.premium import (
+        iv_history, iv_history_counts, refresh_iv_history, risk_premium_for,
+    )
+
     conn = get_connection(db_path)
-    fake = FakeTheta([100])
+    fake = FakeTheta(history(0.15, n=600), empty_chain_days=["2026-11-02"])
     now = datetime(2026, 11, 4, 15, 0, tzinfo=UTC)
-    status = refresh_intraday(conn, fake, ["SPY"], now=now, max_requests=2)
-    assert status["SPY"].startswith("PARTIAL") or status["SPY"].startswith("FETCHED")
-    stored = conn.execute("SELECT MIN(session_date), MAX(session_date), COUNT(*) FROM engine_intraday_sessions").fetchone()
-    assert stored[1] == "2026-11-03" and stored[2] >= 30
-    status = refresh_intraday(conn, fake, ["SPY"], now=now, max_requests=4)
-    assert status["SPY"] in {"CURRENT"} or status["SPY"].startswith("FETCHED")
-    assert refresh_intraday(conn, fake, ["SPY"], now=now, max_requests=4)["SPY"] == "CURRENT"
-    assert all(p == "/stock/history/ohlc" for p, _ in fake.calls)
+    status = refresh_iv_history(conn, fake, ["SPY"], now=now, max_requests=5)
+    assert status == {"SPY": "PARTIAL:5"}
+    stored = conn.execute("SELECT session_date, iv30 FROM engine_iv_history ORDER BY session_date DESC").fetchall()
+    assert [r[0] for r in stored][:2] == ["2026-11-03", "2026-11-02"]        # newest first
+    assert stored[1][1] is None                                             # empty chain: stored as NULL
+    assert all(abs(r[1] - 0.25) < 0.01 for r in stored if r[1] is not None)
+    chain_calls = sum(1 for p, _ in fake.calls if p == "/option/history/eod")
+    status = refresh_iv_history(conn, fake, ["SPY"], now=now, max_requests=2000)
+    assert status["SPY"].startswith("FETCHED")
+    assert refresh_iv_history(conn, fake, ["SPY"], now=now, max_requests=2000) == {"SPY": "CURRENT"}
+    total = sum(1 for p, _ in fake.calls if p == "/option/history/eod")
+    assert total > chain_calls and total == conn.execute("SELECT COUNT(*) FROM engine_iv_history").fetchone()[0]
+    assert iv_history_counts(conn, ["SPY", "QQQ"]) == {"SPY": total - 1, "QQQ": 0}
+    points = iv_history(conn, "SPY", before=date(2026, 11, 4))
+    assert points == sorted(points) and "2026-11-02" not in {d for d, _ in points}
+    # No closes yet: no premium. With closes: lambda is about (0.15/0.25)^2.
+    assert risk_premium_for(conn, "SPY", before=date(2026, 11, 4)) is None
+    refresh_closes(conn, fake, ["SPY"], now=now)
+    prem = risk_premium_for(conn, "SPY", before=date(2026, 11, 4))
+    assert prem is not None and prem.observations >= MIN_PREMIUM_OBSERVATIONS
+    assert 0.2 < prem.ratio < 0.6 and prem.implied_vol == pytest.approx(0.25, abs=0.01)
     conn.close()
 
 
@@ -524,7 +602,8 @@ def seed_snapshot(db_path, underlying="SPY", captured=ASOF, iv=0.25):
              captured.astimezone(NY).date().isoformat()),
         ).lastrowid
         naive_ny = captured.astimezone(NY).replace(tzinfo=None).isoformat()
-        for q in synthetic_quotes(iv=iv):
+        for q in synthetic_quotes(asof=captured, iv=iv, expiries=tuple(
+                (captured.date() + timedelta(days=k)).isoformat() for k in (9, 16, 30, 44))):
             conn.execute(
                 """INSERT INTO option_quotes (snapshot_id, right, strike, expiration, quote_at,
                    bid, bid_source, ask, ask_source, last_source, iv_source, delta_source,
@@ -538,7 +617,12 @@ def seed_snapshot(db_path, underlying="SPY", captured=ASOF, iv=0.25):
     return sid
 
 
-def test_worker_step_end_to_end_records_scan_picks_and_history(db_path, monkeypatch):
+@pytest.fixture
+def big_backfill(monkeypatch):
+    monkeypatch.setenv("CHRISTIANIA_IV_BACKFILL_PER_STEP", "2000")
+
+
+def test_worker_step_end_to_end_records_scan_picks_history_and_slots(db_path, monkeypatch, big_backfill):
     from src.engine.worker import run_engine_step
 
     monkeypatch.setenv("CHRISTIANIA_ZERO_DTE_SYMBOLS", "SPY")
@@ -547,10 +631,19 @@ def test_worker_step_end_to_end_records_scan_picks_and_history(db_path, monkeypa
     summary = run_engine_step(theta_client=fake, db_path=db_path, now=ASOF + timedelta(minutes=5))
     assert summary.errors == [], summary.errors
     assert summary.main_scan_id is not None and summary.main_passed > 0
-    assert summary.closes["SPY"].startswith("FETCHED") and "SPY" in summary.intraday
+    assert summary.closes["SPY"].startswith("FETCHED") and summary.iv_history["SPY"].startswith("FETCHED")
+    assert summary.premiums_ready == 1
     conn = get_connection(db_path)
     assert len(picks_with_outcomes(conn, LANE_MAIN)) == 1       # 11:05 NY is after the decision time
     assert latest_scan(conn, "ZERO_DTE") is not None            # live chain empty, scan still recorded
+    # Next session: SPY has an open pick, so it is skipped and no second pick is frozen.
+    tomorrow = ASOF + timedelta(days=1, minutes=5)
+    seed_snapshot(db_path, captured=tomorrow)
+    again = run_engine_step(theta_client=fake, db_path=db_path, now=tomorrow)
+    assert again.errors == [] and again.main_passed == 0
+    scan = latest_scan(conn, LANE_MAIN)
+    assert scan["chains_blocked"] == {"SPY": "OPEN_POSITION"}
+    assert len(picks_with_outcomes(conn, LANE_MAIN)) == 1
     conn.close()
 
 
@@ -565,7 +658,7 @@ def test_worker_isolates_provider_failures(db_path):
 
     seed_snapshot(db_path)
     summary = run_engine_step(theta_client=Broken(), db_path=db_path, now=ASOF + timedelta(minutes=5))
-    assert summary.closes["SPY"].startswith("FAILED")
+    assert summary.closes["SPY"].startswith("FAILED") and summary.iv_history["SPY"].startswith("FAILED")
     assert summary.main_scan_id is not None and summary.main_passed == 0
 
 
@@ -596,15 +689,16 @@ class LiveTheta(FakeTheta):
     def _get_payload(self, path, params):
         if path == "/option/snapshot/quote":
             stamp = self.asof.astimezone(NY).replace(tzinfo=None).isoformat(timespec="seconds")
+            expiries = tuple((self.asof.date() + timedelta(days=k)).isoformat() for k in (9, 16, 30, 44))
             return {"response": [
                 {"expiration": q.expiration, "strike": q.strike, "right": q.right,
                  "bid": q.bid, "ask": q.ask, "timestamp": stamp}
-                for q in synthetic_quotes(asof=self.asof, iv=self.iv)
+                for q in synthetic_quotes(asof=self.asof, iv=self.iv, expiries=expiries)
             ]}
         return super()._get_payload(path, params)
 
 
-def test_reprice_scores_the_same_structure_on_live_quotes(db_path):
+def test_reprice_scores_the_same_structure_on_live_quotes(db_path, big_backfill):
     from src.engine.reprice import reprice
     from src.engine.worker import run_engine_step
 
@@ -612,15 +706,15 @@ def test_reprice_scores_the_same_structure_on_live_quotes(db_path):
     fake = LiveTheta(history(0.15, n=600))
     run_engine_step(theta_client=fake, db_path=db_path, now=ASOF + timedelta(minutes=5))
     conn = get_connection(db_path)
-    pick = next(p["record"] for p in picks_with_outcomes(conn, LANE_MAIN)
-                if p["record"]["entry_cash_usd"] > 0)
+    pick = picks_with_outcomes(conn, LANE_MAIN)[0]["record"]
     live = reprice(pick, theta_client=fake, conn=conn, now=ASOF + timedelta(minutes=20))
     assert live.status == "OK" and live.candidate.structure_key == pick["structure_key"]
     assert live.candidate.entry_cash_usd == pytest.approx(pick["entry_cash_usd"], abs=1.0)
-    # Vol has collapsed on the live chain: the same short-vol structure no longer passes.
-    cheap = LiveTheta(history(0.15, n=600), iv=0.12)
+    assert live.candidate.premium_ratio == pytest.approx(pick["premium_ratio"], abs=1e-6)
+    # Vol has come in on the live chain: the same structure pays a smaller credit.
+    cheap = LiveTheta(history(0.15, n=600), iv=0.21)
     worse = reprice(pick, theta_client=cheap, conn=conn, now=ASOF + timedelta(minutes=20))
-    assert worse.status == "OK" and not worse.candidate.passed
+    assert worse.status == "OK" and worse.candidate.entry_cash_usd < live.candidate.entry_cash_usd
     # A leg without a live quote is reported, not priced.
     gone = reprice({**pick, "legs": [{**pick["legs"][0], "strike": 1.0}] + pick["legs"][1:]},
                    theta_client=fake, conn=conn, now=ASOF + timedelta(minutes=20))
@@ -628,7 +722,7 @@ def test_reprice_scores_the_same_structure_on_live_quotes(db_path):
     conn.close()
 
 
-def test_record_trade_checks_fill_sign_and_exposure_counts_open_risk(db_path):
+def test_record_trade_checks_fill_sign_and_exposure_counts_open_risk(db_path, big_backfill):
     from src.engine.ledger import exposure, record_trade, trades_with_closes
     from src.engine.worker import run_engine_step
 
@@ -636,8 +730,8 @@ def test_record_trade_checks_fill_sign_and_exposure_counts_open_risk(db_path):
     run_engine_step(theta_client=FakeTheta(history(0.15, n=600)), db_path=db_path,
                     now=ASOF + timedelta(minutes=5))
     conn = get_connection(db_path)
-    rec = next(p["record"] for p in picks_with_outcomes(conn, LANE_MAIN)
-               if p["record"]["entry_cash_usd"] > 0)  # a credit structure
+    rec = picks_with_outcomes(conn, LANE_MAIN)[0]["record"]
+    assert rec["entry_cash_usd"] > 0                                       # every V2 pick is a credit
     with pytest.raises(ValueError):
         record_trade(conn, rec, lots=1, fill_per_share=-1.0, commission_usd=8.0, taken_at=ASOF)
     record_trade(conn, rec, lots=2, fill_per_share=rec["entry_cash_usd"] / 100 - 0.05,
@@ -656,27 +750,9 @@ def test_market_view_prices_skewed_structures_at_about_minus_costs():
     """Under the smile-implied distribution the market's own skew is not a free lunch."""
     from src.engine.pipeline import market_distribution
 
-    def skewed(atm=0.22, put_skew=0.60):
-        quotes = []
-        for exp in EXPIRIES:
-            t = calendar_years_to_expiry(ASOF, exp)
-            f = 100 * math.exp(0.04 * t)
-            for k in np.arange(70, 131, 1.0):
-                m = math.log(k / f)
-                iv = atm + (put_skew * -m if m < 0 else -0.10 * m)
-                for right in "CP":
-                    p = black76_price(right, f, float(k), t, iv)
-                    if p < 0.03:
-                        continue
-                    sp = max(0.02, 0.04 * p)
-                    quotes.append(Quote(right, float(k), exp, round(p - sp / 2, 2), round(p + sp / 2, 2),
-                                        ASOF.isoformat(), None))
-        return build_chain("SPY", ASOF, quotes, snapshot_id=None, spot=100.0, source="T",
-                           min_dte=7, max_dte=45)
-
     cost = CostPolicy(0.5, 2.0)
     for put_skew in (0.0, 0.6):
-        e = skewed(put_skew=put_skew).expiries[-1]
+        e = chain(iv=0.22, put_skew=put_skew).expiries[-1]
         market = market_distribution(e)
         spread = Structure("CREDIT_SPREAD", "PUT_CREDIT_SPREAD", "SPY", e.expiration,
                            (Leg(next(q for q in e.quotes if q.right == "P" and q.strike == 91), -1),
@@ -748,7 +824,7 @@ def test_max_loss_per_lot_gate_rejects_oversized_structures(monkeypatch):
     monkeypatch.setenv("CHRISTIANIA_MAX_LOSS_PER_LOT_USD", "150")
     cfg = main_config()
     assert cfg.max_loss_per_lot_usd == 150.0
-    res = run_scan([chain(iv=0.25)], {"SPY": history(0.15)}, cfg, asof=ASOF)
+    res = run_scan([chain(iv=0.25)], {"SPY": premium(0.5)}, cfg, asof=ASOF)
     assert all(c.max_loss_usd <= 150 for c in res.passed)
     assert res.rejections["MAX_LOSS_TOO_LARGE"] > 0
 

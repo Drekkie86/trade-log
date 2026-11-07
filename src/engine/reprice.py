@@ -1,9 +1,9 @@
 """Re-score one frozen candidate against live ThetaData quotes.
 
 The scan that produced a card may be an hour old. Before an order is placed the
-same structure is priced again on the live chain, with the same models and
-costs, so the operator sees today's credit, expected profit and score rather
-than the ones from the scan.
+same structure is priced again on the live chain, with the same distributions,
+risk premium and costs, so the operator sees today's credit, expected profit
+and score rather than the ones from the scan.
 """
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from datetime import UTC, datetime
 
 from src.engine.chains import NY, Chain, fetch_live_chain
 from src.engine.pipeline import (
-    LANE_MAIN, Candidate, ScanResult, main_config, scan_chain, score_structure,
-    trading_days_to_expiry, zero_dte_config,
+    LANE_MAIN, Candidate, ScanResult, _market_or_none, event_variances, main_config, scan_chain,
+    score_structure, trading_days_to_expiry, zero_dte_config,
 )
+from src.engine.premium import risk_premium_for
 from src.engine.structures import Leg, Structure
 
 
@@ -53,56 +54,23 @@ def reprice(record: dict, *, theta_client, conn, now: datetime | None = None,
     if structure is None:
         return Reprice("NO_LIVE_CHAIN" if "expiry" in problem else "LEG_NOT_QUOTED", detail=problem)
 
-    from src.engine.history import load_closes
-
-    intraday = None
-    closes = None
-    if lane == LANE_MAIN:
-        closes = load_closes(conn, symbol, before=today)
-    else:
-        from src.engine.intraday import load_intraday_history
-
-        intraday = load_intraday_history(conn, symbol, before=today)
-    # Run the regular chain scan so events, history and the gates are identical
-    # to the daemon's, then pick out this structure; if the grid did not
-    # generate it, score it directly on the same distributions.
+    premium = risk_premium_for(conn, symbol, before=today)
+    # Run the regular chain scan so the gates are identical to the daemon's, then
+    # pick out this structure; if the grid did not generate it, score it directly
+    # on the same distributions.
     result = ScanResult(lane=lane, asof=now, config=config)
-    scored = scan_chain(chain, closes, config, now, result, calendar, intraday=intraday)
+    scored = scan_chain(chain, premium, config, now, result, calendar)
     for cand in scored:
         if cand.structure_key == structure.key:
             return Reprice("OK", cand)
     expiry = next(e for e in chain.expiries if e.expiration == record["expiration"])
-    dists = _distributions_for(chain, expiry, closes, intraday, config, now, today, calendar)
-    if dists is None:
-        return Reprice("MODEL_UNAVAILABLE", detail="no model could be built from live data")
+    market = _market_or_none(expiry)
+    if market is None or premium is None:
+        return Reprice("MODEL_UNAVAILABLE",
+                       detail="no smile on the live chain" if market is None
+                       else "not enough implied/realised history for this name")
     td = trading_days_to_expiry(now, expiry.expiration, calendar)
-    cand = score_structure(structure, expiry=expiry, dists=dists[0], config=config, chain=chain,
-                           trading_days=td, event_variance=dists[1], asof=now,
-                           forecast_vol=dists[2])
+    cand = score_structure(structure, expiry=expiry, market=market, premium=premium, config=config,
+                           chain=chain, trading_days=td,
+                           event_variance=event_variances(chain).get(expiry.expiration, 0.0), asof=now)
     return Reprice("OK", cand)
-
-
-def _distributions_for(chain, expiry, closes, intraday, config, now, today, calendar):
-    from src.engine.models import (
-        ModelUnavailable, daily_log_returns, forecast_volatility, implied_event_variance,
-    )
-    from src.engine.pipeline import _expiry_distributions, _zero_dte_expiry_distributions
-
-    if config.lane != LANE_MAIN:
-        dists = _zero_dte_expiry_distributions(expiry, intraday, now, today)
-        return (dists, 0.0, None) if dists else None
-    usable = [e for e in chain.expiries if e.forward is not None and e.calendar_years > 0 and e.atm_iv]
-    events = dict(zip([e.expiration for e in usable],
-                      implied_event_variance([(e.calendar_years, e.atm_iv) for e in usable])))
-    forecast = None
-    if closes:
-        try:
-            forecast = forecast_volatility(daily_log_returns(closes))
-        except ModelUnavailable:
-            forecast = None
-    td = trading_days_to_expiry(now, expiry.expiration, calendar)
-    ev = events.get(expiry.expiration, 0.0)
-    dists = _expiry_distributions(expiry, closes, forecast, td, ev)
-    if not dists:
-        return None
-    return dists, ev, (None if forecast is None else forecast.annualized_vol)

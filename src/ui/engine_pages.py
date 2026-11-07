@@ -27,8 +27,8 @@ from src.ui.design import (
 )
 
 REJECTION_LABELS = {
-    "MODELS_DISAGREE": "the two forecast models disagree",
     "EV_TOO_SMALL": "expected profit too small after costs",
+    "STRESS_EV_NEGATIVE": "loses money once a shock is allowed for",
     "RETURN_ON_RISK_TOO_LOW": "profit too small for the tail risk",
     "WIDE_SPREAD": "bid/ask spread too wide",
     "ONE_SIDED_QUOTE": "a leg has no two-sided quote",
@@ -36,19 +36,18 @@ REJECTION_LABELS = {
     "LOW_OPEN_INTEREST": "too little open interest",
     "STALE_QUOTE": "quotes too old",
     "QUOTE_AGE_UNKNOWN": "quote age unknown",
-    "MODEL_UNAVAILABLE": "not enough price history",
+    "MODEL_UNAVAILABLE": "no smile, or less than a year of implied/realised history",
     "NO_USABLE_EXPIRY": "no usable expiry",
-    "EVENT_UNDETECTABLE": "too few expiries to detect earnings",
     "EVENT_BLACKOUT": "earnings before expiry (blackout list)",
     "MAX_LOSS_TOO_LARGE": "max loss above the per-lot limit",
+    "NOT_A_CREDIT": "not a credit",
     "NO_RISK_ARBITRAGE_SUSPECT": "suspect quotes",
+    "OPEN_POSITION": "a pick on this name is still open",
     "EXPIRED": "expired",
 }
 SHAPE_LABELS = {
     "PUT_CREDIT_SPREAD": "Put credit spread",
     "CALL_CREDIT_SPREAD": "Call credit spread",
-    "CALL_DEBIT_SPREAD": "Call debit spread",
-    "PUT_DEBIT_SPREAD": "Put debit spread",
     "IRON_CONDOR": "Iron condor",
     "IRON_FLY": "Iron fly",
 }
@@ -95,33 +94,32 @@ def shape(record: dict) -> str:
     return SHAPE_LABELS.get(record.get("shape"), FAMILY_LABELS.get(record.get("family"), ""))
 
 
-def model_label(model_id: str | None) -> str:
-    return {"VOL_FORECAST": "volatility forecast", "EMPIRICAL": "price-history",
-            "IMPLIED": "market pricing"}.get(model_id or "", "forecast")
-
-
 def why_text(c: dict) -> str:
-    w = float(c.get("forecast_weight") or 0.5)
     parts = []
-    if finite(c.get("atm_iv")) and finite(c.get("forecast_vol")):
-        parts.append(f"The options price {percent(c['atm_iv'])}% volatility; the stock's own "
-                     f"forecast is {percent(c['forecast_vol'])}%.")
-    parts.append(
-        f"Under the {model_label(c.get('forecast_model'))} model (the lower of the two forecasts) "
-        f"this pays {usd(c.get('forecast_ev_usd'), signed=True)}; priced at the market's own "
-        f"volatility it pays {usd(c.get('implied_ev_usd'), signed=True)}. The score blends the "
-        f"two, {w:.0%} forecast: {usd(c.get('conservative_ev_usd'), signed=True)}."
-    )
+    ratio, n = c.get("premium_ratio"), c.get("premium_observations")
+    if finite(c.get("atm_iv")):
+        parts.append(f"The options price {percent(c['atm_iv'])}% volatility.")
+    if finite(ratio) and finite(c.get("premium_implied_vol")) and finite(c.get("premium_realised_vol")):
+        parts.append(
+            f"Over the last {n} sessions {c['underlying']}'s options priced "
+            f"{percent(c['premium_implied_vol'])}% and the stock realised "
+            f"{percent(c['premium_realised_vol'])}%: {float(ratio):.0%} of the priced variance was "
+            "delivered. The score prices this trade under the market's own smile shrunk to that "
+            f"width: {usd(c.get('ev_usd'), signed=True)}. Under the smile as priced it pays "
+            f"{usd(c.get('implied_ev_usd'), signed=True)}, which is about the costs."
+        )
     if finite(c.get("stress_ev_usd")):
         parts.append(f"With the stress shock it pays {usd(c['stress_ev_usd'], signed=True)}.")
     return " ".join(parts)
 
 
 def sigma_move(c: dict) -> float | None:
-    vol, days = c.get("forecast_vol"), c.get("trading_days")
+    """One real-world standard deviation to expiry: ATM vol scaled by sqrt(lambda)."""
+    vol, days, ratio = c.get("atm_iv"), c.get("trading_days"), c.get("premium_ratio")
     if not (finite(vol) and finite(days)) or days <= 0:
         return None
-    return float(vol) * math.sqrt(float(days) / 252.0)
+    scale = math.sqrt(float(ratio)) if finite(ratio) and float(ratio) > 0 else 1.0
+    return float(vol) * scale * math.sqrt(float(days) / 252.0)
 
 
 def head(title: str, right: str = "", *, stale: bool = False) -> None:
@@ -231,8 +229,8 @@ def trade_columns(today: date, top_score: float) -> list[Col]:
             render=lambda c: money(c["entry_cash_usd"], signed=True)),
         Col("risk", "Max loss", "r", cls="opt", render=lambda c: money(c["max_loss_usd"])),
         Col("ev", "Expected", "r",
-            render=lambda c: money(c["conservative_ev_usd"], signed=True),
-            css=lambda c: tone(c["conservative_ev_usd"])),
+            render=lambda c: money(c["ev_usd"], signed=True),
+            css=lambda c: tone(c["ev_usd"])),
         Col("score", "Per $100 tail risk", "r", group_start=True, emphasis=True,
             render=lambda c: money(100 * float(c["score"]), signed=True, decimals=1)
             + bar(float(c["score"]), top_score, 3.0)),
@@ -254,8 +252,8 @@ def near_miss_columns(today: date) -> list[Col]:
             render=lambda c: f'{short_date(c["expiration"])}'
                              f'<span class="sub">{days_to(c["expiration"], today)} days</span>'),
         Col("ev", "Expected, $", "r", group_start=True,
-            render=lambda c: money(c["conservative_ev_usd"], signed=True),
-            css=lambda c: tone(c["conservative_ev_usd"])),
+            render=lambda c: money(c["ev_usd"], signed=True),
+            css=lambda c: tone(c["ev_usd"])),
         Col("score", "Per $100 tail risk", "r",
             render=lambda c: money(100 * float(c["score"]), signed=True, decimals=1)
             if finite(c.get("score")) else "–"),
@@ -284,18 +282,16 @@ def legs_table(c: dict) -> str:
 
 def sensitivity_table(c: dict, config: dict) -> str:
     scores = c.get("scores", {})
-    w = float(c.get("forecast_weight") or config.get("forecast_weight") or 0.5)
     jump = float(config.get("stress_jump", -0.10))
     p_jump = float(config.get("stress_jump_prob", 0.03))
+    ratio = c.get("premium_ratio")
     rows = []
-    for model_id, label in (("VOL_FORECAST", "Volatility forecast"),
-                            ("EMPIRICAL", "Price history"),
-                            ("IMPLIED", "Market pricing")):
-        if model_id in scores:
-            rows.append({"view": label, "ev": scores[model_id].get("ev_usd"),
-                         "pop": scores[model_id].get("pop"), "key": False})
-    rows.append({"view": f"Blend, {w:.0%} forecast (the score)", "ev": c.get("conservative_ev_usd"),
-                 "pop": c.get("pop"), "key": True})
+    if "IMPLIED" in scores:
+        rows.append({"view": "The market's smile as priced", "ev": scores["IMPLIED"].get("ev_usd"),
+                     "pop": scores["IMPLIED"].get("pop"), "key": False})
+    label = ("Smile shrunk to the delivered variance" if not finite(ratio)
+             else f"Smile shrunk to {float(ratio):.0%} of priced variance (the score)")
+    rows.append({"view": label, "ev": c.get("ev_usd"), "pop": c.get("pop"), "key": True})
     rows.append({"view": f"Stress: {p_jump:.0%} chance of a {jump:+.0%} shock",
                  "ev": c.get("stress_ev_usd"), "pop": None, "key": False})
     return table([
@@ -382,7 +378,7 @@ def _reprice_block(c: dict, db_path) -> None:
                 verdict_line("good" if live.passed else "bad",
                              f"Live: {'credit' if live.is_credit else 'debit'} "
                              f"{abs(live.entry_cash_usd) / 100:.2f} per share, expected "
-                             f"{usd(live.conservative_ev_usd, signed=True)}, score "
+                             f"{usd(live.ev_usd, signed=True)}, score "
                              f"{money(100 * live.score, signed=True, decimals=1)} per $100 tail risk; "
                              f"{state}.")
 
@@ -396,12 +392,12 @@ def detail_panel(c: dict, config: dict, *, risk_budget: float | None, trades: li
                         spot=c.get("spot"), breakevens=c.get("breakevens") or [],
                         sigma_move=sigma_move(c)))
         note("Profit or loss at expiry for one lot, after costs. Dots mark the breakevens; "
-             "the shaded band is the forecast's one-standard-deviation range.")
+             "the shaded band is one standard deviation at the delivered-variance width.")
         html(sensitivity_table(c, config))
         html(f'<div class="chr-detail"><p>{escape(why_text(c))}</p></div>')
         if c.get("event_move_pct"):
             note(f"The options price an event before expiry, about ±{c['event_move_pct']:.1f}% "
-                 "extra move (likely earnings). The models include it; it is still the main risk.",
+                 "extra move (likely earnings). The distribution includes it; it is still the main risk.",
                  warn=True)
     with right:
         html(f'<div class="chr-detail"><h3>{escape(c["underlying"])} {escape(shape(c))}, '
@@ -461,13 +457,13 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
 
     passed = scan.get("passed", [])
     top_n = int(config.get("top_n", 5))
-    w = float(config.get("forecast_weight", 0.5))
     scope = ("7 to 45 days to expiry" if lane == LANE_MAIN
              else "same-day and next-day SPY and QQQ, scanned 09:45 to 15:45 New York")
-    lede(f"{scan.get('passed_count', 0)} of {scan.get('structures_scored', 0):,} priced trades "
-         f"pass across {scan.get('chains_scanned', 0)} underlyings ({scope}). Expected profit "
-         f"blends the stock's own forecast ({w:.0%}) with the market's pricing; the score is "
-         "expected profit per $100 of expected loss in the worst 5% of outcomes, after costs.")
+    lede(f"{scan.get('passed_count', 0)} of {scan.get('structures_scored', 0):,} priced credit trades "
+         f"pass across {scan.get('chains_scanned', 0)} underlyings ({scope}). Expected profit is "
+         "priced under the market's own smile, shrunk to the share of priced variance each name has "
+         "delivered; the score is expected profit per $100 of expected loss in the worst 5% of "
+         "outcomes, after costs.")
     if scan.get("status") == "FAILED":
         note(f"The last scan failed: {scan.get('error_message')}", warn=True)
     elif stale:
@@ -475,12 +471,17 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
              "before trading.", warn=True)
     missing = scan.get("chains_without_history") or []
     if missing:
-        note(f"No price history yet for {', '.join(missing[:12])}"
-             + ("…" if len(missing) > 12 else "") + "; these cannot pass until it arrives.")
+        note(f"Less than a year of implied/realised history for {', '.join(missing[:12])}"
+             + ("…" if len(missing) > 12 else "") + "; these cannot pass until it is in.")
     blocked = scan.get("chains_blocked") or {}
     if blocked:
         note(f"Skipped: {', '.join(f'{k} ({REJECTION_LABELS.get(v, v)})' for k, v in list(blocked.items())[:10])}"
              + ("…" if len(blocked) > 10 else "") + ".")
+    premiums = scan.get("premiums") or {}
+    if premiums:
+        shown = sorted(premiums.items(), key=lambda kv: kv[1].get("ratio", 1.0))[:12]
+        note("Delivered share of priced variance: " + ", ".join(
+            f"{k} {float(v['ratio']):.0%}" for k, v in shown) + ("…" if len(premiums) > 12 else "") + ".")
 
     trades = read_trades_safe(db_path)
     session = str(scan.get("session_date") or today.isoformat())
@@ -529,7 +530,7 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
     with table_slot:
         html(table(trade_columns(today, top_score), rows, groups=TRADE_GROUPS, selected=selected))
         note("Max loss, %: chance of losing (nearly) the full amount at risk. Win, %: chance of "
-             "any profit. Both under the blended view.")
+             "any profit. Both under the shrunk smile.")
     chosen = rows[selected]
     detail_panel(chosen, config, risk_budget=risk_budget, trades=trades, today=today, cap=cap,
                  db_path=db_path, pick_id=frozen_by_key.get(chosen["structure_key"]))
@@ -612,19 +613,36 @@ def _backtest_section() -> None:
              "the live record cannot say how the engine behaves in a volatility shock.", warn=True)
         return
     period = summary.get("period", {})
-    rows = [{
-        "period": f"{period.get('start', '?')} to {period.get('end', '?')}",
-        "sessions": period.get("sessions"), "settled": summary.get("settled"),
-        "pnl": summary.get("total_pnl_usd"), "dd": summary.get("max_drawdown_usd"),
-        "worst": summary.get("worst_day_usd"),
-        "wm": summary.get("worst_month"), "hit": summary.get("hit_rate"),
-        "phit": summary.get("predicted_hit_rate"), "pred": summary.get("predicted_ev_usd"),
-    }]
+    crit = summary.get("criteria") or {}
+    if crit:
+        kind = {"PASS": "good", "FAIL": "bad"}.get(crit.get("verdict"), "wait")
+        verdict_line(kind, f"Out-of-sample verdict: {crit.get('verdict')}. {crit.get('statement', '')}")
+    oos = (summary.get("assumptions") or {}).get("oos_start")
+
+    def row(label: str, b: dict) -> dict:
+        return {"label": label, "settled": b.get("settled"), "days": b.get("expiry_days"),
+                "pnl": b.get("total_pnl_usd"), "pred": b.get("predicted_ev_usd"),
+                "dd": b.get("max_drawdown_usd"), "worst": b.get("worst_day_usd"), "wm": b.get("worst_month"),
+                "hit": b.get("hit_rate"), "phit": b.get("predicted_hit_rate"),
+                "mlr": b.get("max_loss_rate"), "pmlr": b.get("predicted_max_loss_rate"),
+                "ci": b.get("avg_pnl_ci95_usd")}
+
+    rows = [row(f"All picks, {period.get('start', '?')} to {period.get('end', '?')}", summary)]
+    if summary.get("calibration"):
+        rows.append(row(f"Calibration, before {oos}", summary["calibration"]))
+    if summary.get("out_of_sample"):
+        rows.append(row(f"Out of sample, from {oos}", summary["out_of_sample"]))
+    single = (summary.get("single_slot") or {}).get("out_of_sample")
+    if single:
+        rows.append(row("One position at a time, out of sample", single))
     html(table([
-        Col("period", "Period", "l", render=lambda r: escape(str(r["period"]))
-            + f'<span class="sub">{r["sessions"]} sessions, {r["settled"]} settled picks</span>'),
+        Col("label", "Window", "l", render=lambda r: escape(str(r["label"]))
+            + f'<span class="sub">{r["settled"]} settled picks, {r["days"]} expiry days</span>'),
         Col("pnl", "P&L", "r", group_start=True, emphasis=True,
-            render=lambda r: money(r["pnl"], signed=True)),
+            render=lambda r: money(r["pnl"], signed=True) + (
+                "" if not r["ci"] else
+                f'<span class="sub">average {money(r["ci"][0], signed=True)} to '
+                f'{money(r["ci"][1], signed=True)}</span>')),
         Col("pred", "Model predicted", "r", render=lambda r: money(r["pred"], signed=True)),
         Col("dd", "Max drawdown", "r", render=lambda r: money(r["dd"], signed=True),
             css=lambda r: tone(r["dd"])),
@@ -634,16 +652,10 @@ def _backtest_section() -> None:
         Col("hit", "Hit rate, %", "r", group_start=True,
             render=lambda r: percent(r["hit"]) + (
                 "" if r["phit"] is None else f'<span class="sub">model said {percent(r["phit"])}</span>')),
-    ], rows, groups=[("", 1), ("One lot per pick, $", 4), ("", 1)]))
-    by_year = summary.get("by_year") or {}
-    if by_year:
-        html(table([
-            Col("year", "Year", "l"),
-            Col("n", "Settled", "r", render=lambda r: str(r["settled"])),
-            Col("pnl", "P&L, $", "r", render=lambda r: money(r["pnl_usd"], signed=True),
-                css=lambda r: tone(r["pnl_usd"])),
-            Col("hit", "Hit rate, %", "r", render=lambda r: percent(r["hit_rate"])),
-        ], [{"year": y, **v} for y, v in sorted(by_year.items())]))
+        Col("mlr", "Full loss, %", "r",
+            render=lambda r: percent(r["mlr"]) + (
+                "" if r["pmlr"] is None else f'<span class="sub">model said {percent(r["pmlr"])}</span>')),
+    ], rows, groups=[("", 1), ("One lot per pick, $", 4), ("", 2)]))
 
 
 def render_track_record_page(*, db_path=None, now: datetime | None = None) -> None:
@@ -680,6 +692,7 @@ def render_track_record_page(*, db_path=None, now: datetime | None = None) -> No
             "picks": card.picks, "settled": card.settled, "open": card.open,
             "days": card.expiry_days, "pnl": card.total_pnl_usd, "ror": card.return_on_risk,
             "pred": card.predicted_ev_usd, "hit": card.hit_rate, "phit": card.predicted_hit_rate,
+            "mlr": card.max_loss_rate, "pmlr": card.predicted_max_loss_rate,
             "avg": card.avg_pnl_usd, "ci": card.pnl_ci95_usd, "dd": card.max_drawdown_usd,
             "worst": card.worst_day_usd, "pin": card.near_strike_settlements,
         }]
@@ -704,7 +717,11 @@ def render_track_record_page(*, db_path=None, now: datetime | None = None) -> No
                 render=lambda r: percent(r["hit"]) + (
                     "" if r["phit"] is None else
                     f'<span class="sub">model said {percent(r["phit"])}</span>')),
-        ], summary, groups=[("", 1), ("Money, $", 5), ("Accuracy", 2)]))
+            Col("mlr", "Full loss, %", "r",
+                render=lambda r: percent(r["mlr"]) + (
+                    "" if r["pmlr"] is None else
+                    f'<span class="sub">model said {percent(r["pmlr"])}</span>')),
+        ], summary, groups=[("", 1), ("Money, $", 5), ("Accuracy", 3)]))
         if card.near_strike_settlements:
             note(f"{card.near_strike_settlements} settlement(s) landed within 0.1% of a short strike; "
                  "check them against your broker statement (pin risk).", warn=True)
@@ -727,7 +744,7 @@ def render_track_record_page(*, db_path=None, now: datetime | None = None) -> No
                 groups[FAMILY_LABELS.get(p["family"], p["family"])].append(p)
             fam_rows = [{
                 "type": k, "n": len(v), "pnl": sum(float(p["pnl_usd"]) for p in v),
-                "pred": sum(float(p["conservative_ev_usd"]) for p in v),
+                "pred": sum(float(p["ev_usd"]) for p in v),
                 "hit": sum(float(p["pnl_usd"]) > 0 for p in v) / len(v),
             } for k, v in sorted(groups.items())]
             h2("By trade type")
@@ -750,7 +767,7 @@ def render_track_record_page(*, db_path=None, now: datetime | None = None) -> No
                                  f'<span class="sub">{escape(p["record"].get("description", ""))}</span>'),
             Col("exp", "Expiry", "l", render=lambda p: short_date(p["expiration"])),
             Col("risk", "Max loss", "r", group_start=True, render=lambda p: money(p["max_loss_usd"])),
-            Col("pred", "Expected", "r", render=lambda p: money(p["conservative_ev_usd"], signed=True)),
+            Col("pred", "Expected", "r", render=lambda p: money(p["ev_usd"], signed=True)),
             Col("res", "Result", "r",
                 render=lambda p: "–" if p.get("pnl_usd") is None else money(p["pnl_usd"], signed=True),
                 css=lambda p: tone(p.get("pnl_usd"))),
@@ -838,17 +855,22 @@ def _data_checks(now: datetime, db_key: str | None) -> list[tuple[str, bool | No
         except Exception as exc:
             out.append(("Price history", None, f"Unavailable ({type(exc).__name__})."))
         try:
-            counts = {str(r[0]): int(r[1]) for r in conn.execute(
-                "SELECT symbol, COUNT(*) FROM engine_intraday_sessions GROUP BY symbol")}
-            if not zero:
-                out.append(("Intraday history", None, "0DTE lane disabled."))
+            from src.engine.premium import iv_history_counts, sessions_needed
+
+            counts = iv_history_counts(conn, symbols)
+            need = sessions_needed()
+            ready = sorted(s for s, n in counts.items() if n >= need)
+            short = sorted(s for s, n in counts.items() if n < need)
+            if not counts:
+                out.append(("Risk-premium history", None, "No symbols to check yet."))
             else:
-                missing = [s for s in zero if counts.get(s, 0) < 40]
-                text = ", ".join(f"{s} {counts.get(s, 0)} sessions" for s in zero)
-                out.append(("Intraday history", not missing,
-                            text + (". The 0DTE lane needs 40 sessions per symbol." if missing else ".")))
+                text = f"{len(ready)} of {len(counts)} symbols have the {need} sessions of implied vol needed"
+                if short:
+                    text += "; still filling: " + ", ".join(
+                        f"{s} {counts[s]}" for s in short[:10]) + ("…" if len(short) > 10 else "")
+                out.append(("Risk-premium history", not short, text + "."))
         except Exception as exc:
-            out.append(("Intraday history", None, f"Unavailable ({type(exc).__name__})."))
+            out.append(("Risk-premium history", None, f"Unavailable ({type(exc).__name__})."))
         return out
     finally:
         conn.close()

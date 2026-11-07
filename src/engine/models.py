@@ -1,25 +1,26 @@
 """Terminal-price distributions for the engine.
 
-Three distributions are built per underlying and horizon:
+Two distributions are built per expiry:
 
-* IMPLIED   - lognormal at the expiry's ATM implied volatility. Under this
-              view every structure is worth roughly minus its costs, so it is
-              the benchmark to beat, never a vote.
-* VOL_FORECAST - lognormal at a forecast of realised volatility
-              (EWMA and GARCH(1,1) blended) from the stock's own history.
-* EMPIRICAL - resampled historical h-day log returns (fat tails, skew).
+* IMPLIED    - the market's risk-neutral distribution from the whole smile
+               (Breeden-Litzenberger on a fitted smile). Under it every structure
+               is worth about its market price, skew included: the benchmark.
+* REAL_WORLD - the same distribution with its spread around the forward scaled by
+               the square root of the underlying's variance risk premium ratio
+               lambda = realised variance / implied variance, measured over the
+               trailing window on matched 30-day horizons. The smile's shape
+               (skew, tails) is kept; only its width changes. lambda < 1 means the
+               options have paid more variance than was delivered, which is the
+               premium a seller collects; lambda >= 1 means there is nothing to
+               sell.
 
-VOL_FORECAST and EMPIRICAL share one information source (the price history),
-so they form ONE evidence family. The engine scores a trade by the worse of
-the two: agreement shows robustness to the tail assumption, not a second,
-independent confirmation.
+Both distributions are martingales around the forward (E[S_T] = F): the engine
+takes no directional view. Every distribution is a deterministic sample of log
+returns, so identical inputs always give identical scores.
 
-All distributions are martingales around the forward (E[S_T] = F): the engine
-takes no directional drift view. Any edge must come from volatility and
-distribution shape, not from a bullish or bearish assumption.
-
-Every distribution is a deterministic sample of log returns (quantile grid or
-historical windows), so identical inputs always give identical scores.
+V1's forecast models (EWMA/GARCH lognormal, resampled history) are gone. On the
+first backtest they disagreed with the smile mostly by having no skew, and the
+smile was right: see docs/reviews/HOSTILE_REVIEW_ENGINE_V1_2026-11-07.md.
 """
 from __future__ import annotations
 
@@ -30,23 +31,26 @@ from typing import Sequence
 import numpy as np
 from scipy.stats import norm
 
-from src.quant.types import QuantInputError
-from src.quant.vol_forecast import ewma_variance, fit_garch11, require_usable_garch_fit
-
 IMPLIED = "IMPLIED"
-VOL_FORECAST = "VOL_FORECAST"
-EMPIRICAL = "EMPIRICAL"
+REAL_WORLD = "REAL_WORLD"
 
 FAMILY_MARKET = "OPTIONS_MARKET"
-FAMILY_PRICE_HISTORY = "PRICE_HISTORY"
+FAMILY_RISK_PREMIUM = "RISK_PREMIUM_ADJUSTED"
 
 GRID_POINTS = 2001
 _Z_GRID = norm.ppf((np.arange(GRID_POINTS) + 0.5) / GRID_POINTS)
 
-MIN_RETURNS_FOR_VOL = 250          # a year of daily returns; GARCH on less is noise
-MIN_WINDOWS_FOR_EMPIRICAL = 200
-MAX_HISTORY_RETURNS = 504
-EWMA_DECAY = 0.94
+# Variance risk premium estimation. One year of daily observations is the minimum
+# (about twelve independent monthly windows); the window is two years when there
+# is that much history. Each observation pairs the 30-calendar-day constant-
+# maturity implied variance at a session's close with the realised variance of
+# the 21 sessions that followed it.
+IV_TARGET_DAYS = 30
+IV_NEAREST_TOLERANCE_DAYS = 10     # single-expiry fallback when 30 days is not bracketed
+REALISED_HORIZON_SESSIONS = 21
+MIN_PREMIUM_OBSERVATIONS = 250
+PREMIUM_WINDOW_SESSIONS = 504
+TRADING_DAYS_PER_YEAR = 252.0
 
 
 class ModelUnavailable(ValueError):
@@ -83,100 +87,10 @@ def daily_log_returns(closes: Sequence[float]) -> np.ndarray:
     c = np.asarray(closes, dtype=float)
     if c.ndim != 1 or len(c) < 2 or np.any(~np.isfinite(c)) or np.any(c <= 0):
         raise ModelUnavailable("closes must be positive and finite")
-    r = np.diff(np.log(c))
-    return r[-MAX_HISTORY_RETURNS:]
+    return np.diff(np.log(c))
 
 
-@dataclass(frozen=True)
-class VolForecast:
-    """Daily-variance forecast fitted once per underlying, applied per horizon."""
-
-    daily_variance_ewma: float
-    garch_unconditional: float | None = None
-    garch_next: float | None = None
-    garch_persistence: float | None = None
-
-    @property
-    def note(self) -> str:
-        return "EWMA only" if self.garch_next is None else "EWMA + GARCH(1,1) blend"
-
-    @property
-    def annualized_vol(self) -> float:
-        """One-month forecast expressed as an annualised volatility."""
-        return math.sqrt(self.horizon_variance(21.0) / 21.0 * 252.0)
-
-    def horizon_variance(self, trading_days: float) -> float:
-        ewma_h = self.daily_variance_ewma * trading_days
-        if self.garch_next is None:
-            return ewma_h
-        steps = max(1, int(math.ceil(trading_days)))
-        # Sum of k-step-ahead variances, scaled to a fractional horizon.
-        total = sum(
-            self.garch_unconditional
-            + self.garch_persistence ** (k - 1) * (self.garch_next - self.garch_unconditional)
-            for k in range(1, steps + 1)
-        )
-        return 0.5 * (ewma_h + float(total) * (trading_days / steps))
-
-
-def forecast_volatility(returns: np.ndarray) -> VolForecast:
-    if len(returns) < MIN_RETURNS_FOR_VOL:
-        raise ModelUnavailable(
-            f"VOL_FORECAST: {len(returns)} daily returns, need {MIN_RETURNS_FOR_VOL}"
-        )
-    try:
-        ewma = ewma_variance(returns, decay=EWMA_DECAY)
-    except QuantInputError as exc:
-        raise ModelUnavailable(f"VOL_FORECAST: {exc}") from exc
-    try:
-        fit = require_usable_garch_fit(fit_garch11(returns))
-    except (QuantInputError, ValueError, FloatingPointError):
-        return VolForecast(float(ewma))
-    return VolForecast(float(ewma), fit.unconditional_variance, fit.next_variance,
-                       fit.alpha + fit.beta)
-
-
-def vol_forecast_distribution(
-    forecast: VolForecast, trading_days: float, event_variance: float = 0.0
-) -> Distribution:
-    v = forecast.horizon_variance(trading_days) + max(0.0, event_variance)
-    return lognormal(VOL_FORECAST, FAMILY_PRICE_HISTORY, v, forecast.note)
-
-
-def empirical_distribution(
-    closes: Sequence[float], trading_days: float, event_variance: float = 0.0
-) -> Distribution:
-    """Overlapping historical h-day returns, demeaned, optionally event-widened.
-
-    For a horizon under one trading day (0DTE) the one-day returns are scaled
-    by sqrt(fraction): the shape is historical, the scaling is an assumption.
-    """
-    c = np.asarray(closes, dtype=float)[-(MAX_HISTORY_RETURNS + 1):]
-    logc = np.log(c)
-    if trading_days < 1.0:
-        windows = np.diff(logc) * math.sqrt(max(trading_days, 1e-6))
-        note = "1-day historical returns scaled to the remaining session"
-    else:
-        h = int(round(trading_days))
-        if len(logc) <= h:
-            raise ModelUnavailable("EMPIRICAL: history shorter than horizon")
-        windows = logc[h:] - logc[:-h]
-        note = f"{len(windows)} overlapping {h}-day historical windows"
-    if len(windows) < MIN_WINDOWS_FOR_EMPIRICAL:
-        raise ModelUnavailable(
-            f"EMPIRICAL: {len(windows)} windows, need {MIN_WINDOWS_FOR_EMPIRICAL}"
-        )
-    w = windows - float(np.mean(windows))
-    var = float(np.var(w))
-    if var <= 0:
-        raise ModelUnavailable("EMPIRICAL: zero variance history")
-    if event_variance > 0:
-        w = w * math.sqrt((var + event_variance) / var)
-        note += "; widened for an implied event"
-    w = np.sort(_martingale(w))
-    return Distribution(EMPIRICAL, FAMILY_PRICE_HISTORY, w, float(np.var(w)), note)
-
-
+# ------------------------------------------------------------------- market
 def implied_distribution(atm_iv: float, calendar_years: float) -> Distribution:
     """Lognormal at the ATM implied volatility: the market view without its skew."""
     if not (math.isfinite(atm_iv) and atm_iv > 0 and calendar_years > 0):
@@ -249,8 +163,8 @@ def implied_event_variance(
     ``expiries`` is ordered (calendar_years, atm_iv). A forward-variance
     interval far above the chain's median forward rate is treated as a priced
     event (earnings, macro); its excess total variance is added to every later
-    expiry. Forecast models ignore jumps, so without this they would call
-    selling premium into earnings free money.
+    expiry. The market distribution already contains it; the engine uses the
+    number to tell the operator that an event is in the window.
     """
     if not expiries:
         return []
@@ -277,3 +191,132 @@ def implied_event_variance(
             cumulative += (r - base) * dt
         out.append(cumulative)
     return out
+
+
+# ------------------------------------------------------------ risk premium
+def constant_maturity_iv(points: Sequence[tuple[float, float]],
+                         target_days: int = IV_TARGET_DAYS,
+                         nearest_tolerance_days: int = IV_NEAREST_TOLERANCE_DAYS) -> float | None:
+    """Implied vol at ``target_days`` from (calendar_years, atm_iv) points.
+
+    Total variance is interpolated linearly in time between the two expiries that
+    bracket the target. When the target is not bracketed, the single expiry
+    within ``nearest_tolerance_days`` of it is used as is; otherwise None.
+    """
+    pts = sorted((t, v) for t, v in points
+                 if t is not None and v is not None and math.isfinite(t) and math.isfinite(v)
+                 and t > 0 and v > 0)
+    if not pts:
+        return None
+    target = target_days / 365.0
+    below = [(t, v) for t, v in pts if t <= target]
+    above = [(t, v) for t, v in pts if t >= target]
+    if below and above:
+        t0, v0 = below[-1]
+        t1, v1 = above[0]
+        if t1 == t0:
+            return v0
+        w0, w1 = v0 * v0 * t0, v1 * v1 * t1
+        w = w0 + (w1 - w0) * (target - t0) / (t1 - t0)
+        return math.sqrt(w / target) if w > 0 else None
+    t, v = min(pts, key=lambda p: abs(p[0] - target))
+    if abs(t - target) * 365.0 <= nearest_tolerance_days:
+        return v
+    return None
+
+
+def realised_variances(closes: Sequence[tuple[str, float]],
+                       horizon: int = REALISED_HORIZON_SESSIONS) -> dict[str, float]:
+    """session_date -> annualised realised variance of the ``horizon`` sessions after it.
+
+    ``closes`` are ascending (session_date, split-adjusted close). Sum of squared
+    daily log returns, not demeaned, scaled to a year.
+    """
+    if len(closes) <= horizon:
+        return {}
+    dates = [d for d, _ in closes]
+    logc = np.log(np.asarray([c for _, c in closes], dtype=float))
+    r2 = np.diff(logc) ** 2                       # r2[i] is the return INTO session i+1
+    csum = np.concatenate([[0.0], np.cumsum(r2)])
+    out: dict[str, float] = {}
+    scale = TRADING_DAYS_PER_YEAR / horizon
+    for i in range(len(dates) - horizon):
+        out[dates[i]] = float((csum[i + horizon] - csum[i]) * scale)
+    return out
+
+
+@dataclass(frozen=True)
+class RiskPremium:
+    """Trailing variance risk premium of one underlying."""
+
+    ratio: float            # realised variance / implied variance over the window (lambda)
+    observations: int
+    first_session: str
+    last_session: str
+    implied_vol: float      # root of the window's mean implied variance, annualised
+    realised_vol: float     # root of the window's mean realised variance, annualised
+
+    @property
+    def scale(self) -> float:
+        """Factor applied to the market distribution's log-return spread."""
+        return math.sqrt(self.ratio)
+
+    @property
+    def note(self) -> str:
+        return (f"lambda {self.ratio:.2f} from {self.observations} sessions "
+                f"{self.first_session}..{self.last_session}: options priced "
+                f"{self.implied_vol:.1%}, the stock realised {self.realised_vol:.1%}")
+
+
+def estimate_risk_premium(iv_points: Sequence[tuple[str, float]],
+                          closes: Sequence[tuple[str, float]], *, before: str,
+                          window: int = PREMIUM_WINDOW_SESSIONS,
+                          min_observations: int = MIN_PREMIUM_OBSERVATIONS,
+                          horizon: int = REALISED_HORIZON_SESSIONS) -> RiskPremium:
+    """lambda = sum(realised variance) / sum(implied variance) over matched sessions.
+
+    ``iv_points`` are (session_date, 30-day constant-maturity implied vol), any
+    order. A session counts when its realised window of ``horizon`` sessions is
+    complete and ends strictly before ``before``; the newest ``window`` sessions
+    are used. Raises ModelUnavailable below ``min_observations``.
+    """
+    dates = sorted(d for d, _ in closes)
+    if len(dates) <= horizon:
+        raise ModelUnavailable("RISK_PREMIUM: not enough closes for a realised window")
+    realised = realised_variances(sorted(closes), horizon)
+    index = {d: i for i, d in enumerate(dates)}
+    usable: list[tuple[str, float, float]] = []
+    for day, iv in iv_points:
+        if iv is None or not math.isfinite(iv) or iv <= 0 or day not in realised:
+            continue
+        end = dates[index[day] + horizon]
+        if end >= before:
+            continue
+        usable.append((day, iv * iv, realised[day]))
+    usable.sort()
+    usable = usable[-window:]
+    if len(usable) < min_observations:
+        raise ModelUnavailable(
+            f"RISK_PREMIUM: {len(usable)} matched sessions, need {min_observations}")
+    implied_sum = sum(w for _, w, _ in usable)
+    realised_sum = sum(rv for _, _, rv in usable)
+    if implied_sum <= 0 or realised_sum <= 0:
+        raise ModelUnavailable("RISK_PREMIUM: degenerate variance sums")
+    n = len(usable)
+    return RiskPremium(ratio=realised_sum / implied_sum, observations=n,
+                       first_session=usable[0][0], last_session=usable[-1][0],
+                       implied_vol=math.sqrt(implied_sum / n),
+                       realised_vol=math.sqrt(realised_sum / n))
+
+
+def real_world_distribution(market: Distribution, premium: RiskPremium) -> Distribution:
+    """The market distribution with its spread scaled by sqrt(lambda), re-centred
+    on the forward. Skew and tail shape are the market's; only the width changes."""
+    if not math.isfinite(premium.ratio) or premium.ratio <= 0:
+        raise ModelUnavailable("REAL_WORLD: non-positive risk premium ratio")
+    r = market.log_returns
+    mu = float(np.mean(r))
+    scaled = mu + premium.scale * (r - mu)
+    adjusted = _martingale(scaled)
+    return Distribution(REAL_WORLD, FAMILY_RISK_PREMIUM, adjusted, float(np.var(adjusted)),
+                        premium.note)

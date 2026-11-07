@@ -277,13 +277,13 @@ def payoff_svg(legs: Sequence[dict], entry_cash: float, commission: float, *,
     parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
              f'aria-label="Profit or loss at expiry by underlying price" '
              f'style="font-family:IBM Plex Sans,sans-serif;font-variant-numeric:tabular-nums">']
-    # forecast range band (one standard deviation)
+    # one-standard-deviation band at the delivered-variance width
     if spot and sigma_move:
         a, b = spot * math.exp(-sigma_move), spot * math.exp(sigma_move)
         parts.append(f'<rect x="{X(max(a, lo)):.1f}" y="{T}" width="{X(min(b, hi)) - X(max(a, lo)):.1f}" '
                      f'height="{height - B - T}" fill="{PARCHMENT}" opacity="0.05"/>')
         parts.append(f'<text x="{X(max(a, lo)) + 4:.1f}" y="{height - B - 6}" fill="{FOG}" '
-                     f'font-size="12.5">forecast range</text>')
+                     f'font-size="12.5">one standard deviation</text>')
     # gridlines and y labels
     for t in _nice_ticks(ymin, ymax, 4):
         parts.append(f'<line x1="{L}" x2="{width - R}" y1="{Y(t):.1f}" y2="{Y(t):.1f}" '

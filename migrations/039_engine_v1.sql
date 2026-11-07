@@ -1,8 +1,8 @@
 -- Christiania schema v39: the single trade engine.
 -- Scans, the candidates each scan surfaced, one frozen pick per underlying per
--- session (decision scan only), daily closes and intraday bars for the models,
--- settled outcomes, and the real trades the operator records against them.
--- Additive only: no existing table is touched.
+-- session (decision scan only), daily closes and the implied-vol history behind
+-- the risk-premium estimate, settled outcomes, and the real trades the operator
+-- records against them. Additive only: no existing table is touched.
 
 PRAGMA foreign_keys = ON;
 
@@ -23,6 +23,7 @@ CREATE TABLE engine_scans (
     chains_without_history_json TEXT NOT NULL
         CHECK (json_valid(chains_without_history_json)),
     chains_blocked_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(chains_blocked_json)),
+    premiums_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(premiums_json)),
     error_message TEXT
 );
 CREATE INDEX idx_engine_scans_lane ON engine_scans (lane, id);
@@ -42,7 +43,8 @@ CREATE TABLE engine_candidates (
 );
 CREATE INDEX idx_engine_candidates_scan ON engine_candidates (scan_id);
 
--- One frozen pick per underlying per session, from the session's decision scan.
+-- One frozen pick per underlying per session, from the session's decision scan;
+-- a name with an unexpired pick is not scanned again until it settles.
 CREATE TABLE engine_picks (
     id INTEGER PRIMARY KEY,
     lane TEXT NOT NULL CHECK (lane IN ('MAIN','ZERO_DTE')),
@@ -56,7 +58,7 @@ CREATE TABLE engine_picks (
     first_seen_at TEXT NOT NULL,
     entry_cash_usd REAL NOT NULL,
     max_loss_usd REAL NOT NULL CHECK (max_loss_usd > 0),
-    conservative_ev_usd REAL NOT NULL,
+    ev_usd REAL NOT NULL,
     record_json TEXT NOT NULL CHECK (json_valid(record_json)),
     UNIQUE (lane, session_date, underlying)
 );
@@ -84,10 +86,13 @@ CREATE TABLE engine_daily_closes (
     PRIMARY KEY (symbol, session_date)
 );
 
-CREATE TABLE engine_intraday_sessions (
+-- 30-day constant-maturity implied vol at each session's close, from the
+-- ThetaData EOD option chain. NULL iv30 = fetched, chain could not yield a point.
+CREATE TABLE engine_iv_history (
     symbol TEXT NOT NULL,
     session_date TEXT NOT NULL,
-    bars_json TEXT NOT NULL CHECK (json_valid(bars_json)),
+    iv30 REAL CHECK (iv30 IS NULL OR iv30 > 0),
+    source TEXT NOT NULL CHECK (source = 'THETADATA_EOD'),
     fetched_at TEXT NOT NULL,
     PRIMARY KEY (symbol, session_date)
 );
