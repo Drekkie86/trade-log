@@ -50,17 +50,28 @@ to it), the same synthetic scenarios as the original probes.
 
 ### Still open, because the facts are yours
 
-* **Run the backtest** (`run_engine_backtest.py`, needs the Theta Terminal). Until the
-  curve through August 2024 and April 2025 exists, nothing above changes the verdict.
-* **Confirm on day one**: closes arrive (System → Price history), the first Friday
-  expiry settles, `close` matches the official close for a week.
-* **ThetaData stock tier** for the 0DTE lane's intraday bars (Value or higher); the
-  OHLC request parameters (`interval=5m`, `venue`) are from the docs, not yet exercised
-  on this account — the lane fails closed if they are wrong.
-* **Saxo**: your tier's commission into `CHRISTIANIA_COMMISSION_PER_CONTRACT`, the
-  Advanced margin profile, real-time OPRA quotes.
-* The pass rate is still a function of IV − forecast (P2 after): that is the
-  strategy, now priced honestly, not a bug the code can remove.
+Confirmed 2026-11-07 (Step 4 of the handover): Saxo Bronze, USD 2.00 per contract (matches
+the default), real-time OPRA Level 1 active (the delayed-quote concern in B4 is closed);
+ThetaData options Standard, stock FREE.
+
+* **Saxo Advanced profile — hard prerequisite.** Options appropriateness test not taken,
+  Advanced margin profile and short-option writing permission not verified, published minimum
+  capital USD 5,000 (Belgian applicability unverified). Every structure the engine surfaces
+  contains a short leg; on the basic profile none of them can be placed. Nothing goes live
+  before this is done, and the exposure cap should be set against that capital.
+* **ThetaData stock FREE** means EOD closes from 2023-06-01 (settlement and the main-lane models
+  work; the backtest's models become available about three months after that date) but no
+  intraday bars: the 0DTE lane is parked (`CHRISTIANIA_ZERO_DTE_ENABLED=0`) until the stock
+  subscription is Value or higher. The FREE tier's one-day delay is harmless for the models;
+  settlement of a Friday expiry may land on Tuesday instead of Monday.
+* **Run the backtest** (`run_engine_backtest.py`, needs the Theta Terminal). Until the curve
+  through August 2024 and April 2025 exists, nothing above changes the verdict. If the options
+  Standard history reaches back before 2023, a later version can derive the stock series from
+  the chains' parity forward and extend the test through 2020 and 2022.
+* **Confirm on day one**: closes arrive (System → Price history), the first expiry settles,
+  `close` matches the official close for a week.
+* The pass rate is still a function of IV − forecast (P2 after): that is the strategy, now
+  priced honestly, not a bug the code can remove.
 
 ## Findings
 
