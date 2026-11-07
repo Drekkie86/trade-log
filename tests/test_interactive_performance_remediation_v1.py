@@ -8,52 +8,12 @@ from src.dashboard.read_model import load_command_deck
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_navigation_is_resolved_before_expensive_runtime_snapshot():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    assert app.index('_primary = st.radio(') < app.index(
-        'snapshot, backup_inventory = _load_runtime_state(page)'
-    )
 
 
-def test_interactive_runtime_is_page_scoped_and_background_refreshed():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    cache_start = app.index("def _cached_page_runtime_state")
-    cache_end = app.index("def _load_runtime_state", cache_start)
-    cache_block = app[cache_start:cache_end]
-
-    assert 'refresh_mode="background"' in app
-    assert "page=page" in cache_block
-    assert "include_provider_health=False" in cache_block
-    assert "inventory_backups_fast().as_dict()" in cache_block
-    assert 'if page in {"Dashboard", "System"}' in cache_block
 
 
-def test_normal_runtime_snapshot_does_not_probe_theta_inline():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    assert "def _cached_theta_health()" in app
-    assert 'refresh_mode="background"' in app
-    assert "include_provider_health=False" in app
 
 
-def test_decision_desk_model_dossier_is_explicitly_requested():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    dossier_section = app.index('section_heading("Full model dossier"')
-    arguments_section = app.index(
-        'section_heading("Arguments for / against")',
-        dossier_section,
-    )
-    block = app[dossier_section:arguments_section]
-
-    assert 'st.button(' in block
-    assert '"Run model dossier"' in block
-    assert "_cached_candidate_model_dossier(full_selected)" in block
-    assert block.index('"Run model dossier"') < block.index(
-        "_cached_candidate_model_dossier(full_selected)"
-    )
 
 
 def test_dashboard_loader_skips_unrelated_populations(db_path):
@@ -174,14 +134,6 @@ def test_replay_latest_mark_uses_indexable_correlated_lookup():
     assert "LIMIT 1" in replay
 
 
-def test_deep_ops_readiness_is_scoped_instead_of_loading_every_page():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    start = app.index("def _cached_deep_ops_readiness")
-    end = app.index("with st.sidebar:", start)
-    block = app[start:end]
-
-    assert 'page="Ops Readiness"' in block
 
 
 def test_deployment_preflight_matches_python_313_runtime():
@@ -194,46 +146,7 @@ def test_deployment_preflight_matches_python_313_runtime():
     assert "Python 3.10 or newer is required" not in source
 
 
-def test_decision_desk_is_fragmented_for_row_interactions():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    page_start = app.index('elif page == "Decision Desk":')
-    next_page = app.index('elif page == "Research Runs":', page_start)
-    block = app[page_start:next_page]
-
-    assert "@st.fragment" in block
-    assert "def _render_decision_desk_page():" in block
-    assert '_show_selectable_table(' in block
-    assert '_render_decision_desk_page()' in block
 
 
-def test_other_interactive_pages_are_fragmented():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    expected = {
-        "Research Runs": "_render_research_runs_page",
-        "Calibration": "_render_calibration_page",
-        "Observations": "_render_observations_page",
-        "Shadow Lab": "_render_shadow_lab_page",
-        "Ops": "_render_ops_page",
-    }
-
-    for page, function_name in expected.items():
-        start = app.index(f'elif page == "{page}":')
-        next_page = app.find('elif page == "', start + 1)
-        block = app[start:] if next_page == -1 else app[start:next_page]
-
-        assert "@st.fragment" in block
-        assert f"def {function_name}():" in block
-        assert f"{function_name}()" in block
 
 
-def test_observation_cross_filter_reruns_only_its_fragment():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    start = app.index('elif page == "Observations":')
-    end = app.index('elif page == "Shadow Lab":', start)
-    block = app[start:end]
-
-    assert 'st.rerun(scope="fragment")' in block
-    assert "st.rerun()" not in block

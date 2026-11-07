@@ -1,47 +1,75 @@
 # Christiania
 
-Personal quantitative options research, calibration and shadow-trading workstation.
+Finds defined-risk US option trades with positive expected value after costs,
+and proves — or disproves — that they make money by settling every
+recommendation at expiry.
 
-Christiania is designed to test whether repeatable positive expectancy exists net realistic costs and slippage. It is research software, not a live autotrading system.
+Christiania never places orders. You re-quote and trade in your broker.
 
-## Authoritative V1 references
+## The app
 
-- `docs/V1_ARCHITECTURE.md` — current architecture and safety boundaries.
-- `docs/V1_STATUS.md` — current V1 construction/science status.
-- `docs/ROADMAP.md` — current path through secure web edge, advanced math and release acceptance.
+| Screen | What it answers |
+|---|---|
+| **Today's trades** | Which 7–45 day trades are worth taking right now, ranked by expected profit per dollar at risk |
+| **0DTE** | Same as above for same-day / next-day SPY and QQQ expiries, kept separate |
+| **Track record** | What every recommended trade actually earned, versus what the engine predicted |
+| **System** | Is data collection, the Theta terminal and the engine running |
+
+## The pipeline (`src/engine`)
+
+1. **Chain** – newest ThetaData snapshot per underlying (main lane) or a live
+   0–1 DTE fetch (0DTE lane). Forward from put-call parity, implied vol and
+   delta solved per contract (Black-76).
+2. **Structures** – every credit spread, debit spread, iron condor and iron fly
+   on a delta/width grid. All have bounded loss.
+3. **Models** – three terminal-price distributions per expiry:
+   - *Implied*: lognormal at the expiry's ATM IV. The market's view — every
+     trade is worth about minus its costs here. Benchmark, not a vote.
+   - *Vol forecast*: lognormal at an EWMA + GARCH(1,1) forecast of realised vol.
+   - *Empirical*: resampled historical h-day returns (fat tails, skew).
+   Vol forecast and empirical share the price history, so they count as **one**
+   evidence family. Events priced in the term structure (earnings) are added
+   to both.
+4. **Score** – hold-to-expiry P&L after slippage (half the half-spread per leg
+   by default) and commission. **Conservative EV = the worse of the two
+   forecast models.** A trade passes only when both are positive, the EV is at
+   least $5 and at least 3% of max loss.
+5. **Rank & freeze** – best per underlying first; the top 5 (0DTE: top 3) are
+   frozen as picks the first time they appear in a session.
+6. **Settle** – at expiry, at the ThetaData EOD close (intrinsic value). The
+   track record is built only from these frozen picks.
+
+The engine runs inside the daemon after every collection cycle
+(`src/engine/worker.py`); a failure there never stops data collection.
+
+Configuration (environment): `CHRISTIANIA_ZERO_DTE_SYMBOLS`,
+`CHRISTIANIA_SLIPPAGE_FRACTION`, `CHRISTIANIA_COMMISSION_PER_CONTRACT`,
+`CHRISTIANIA_ENGINE_DISABLED`.
+
+## Known limits
+
+- The edge is a volatility forecast. If realised volatility beats the forecast,
+  the trades lose; the track record is the only judge.
+- American early assignment on single-stock options is not modelled.
+- Main-lane quotes can be up to ~60 minutes old (12 of 48 symbols are
+  refreshed per 15-minute cycle). Always re-quote before trading.
+- Settlement uses the ThetaData EOD report close, which can include an
+  after-hours last trade.
 
 ## Local operation
 
-Activate the virtual environment and start Theta Terminal, then use:
-
-- `python run_theta_probe.py`
-- `python run_christiania_app.py`
-- `python run_christiania_daemon.py`
-- `python christiania_health.py`
-- `python christiania_ops.py status`
-
-## V1 operational architecture
-
-The one-VM target uses SQLite WAL, a read-only Streamlit command deck, verified online backups, isolated restore drills, audit exports, XNYS-aware scheduling, systemd supervision and a managed Theta control plane.
-
-Package 6 adds the release web boundary: Caddy HTTPS -> oauth2-proxy OIDC -> loopback-only Streamlit. Christiania stores no end-user passwords.
-
-Package 7 adds the research-only quantitative model library and Quant Bench: BSM/Black-76, implied volatility, analytic/numerical Greeks, CRR trees, Monte Carlo, Heston, Merton jump diffusion, SVI, SABR, local-volatility extraction, realized-volatility estimators, EWMA/GARCH, scenarios, tail diagnostics, structure EV/risk and model-disagreement diagnostics.
-
-## Governance
-
-Surfaced anomalies are observational evidence, not validated edge. Prospective evidence remains separated from discovery evidence. Model decision/admission flags remain disabled under the frozen V1 protocol. The V1 application contains no broker-order path.
-
-## External hostile review
-
-For a complete adversarial review bundle covering every tracked file, code path, quantitative model, research protocol, test, migration and deployment asset, use:
-
 ```powershell
-python .\build_claude_hostile_review_package.py
+python run_theta_probe.py
+python run_christiania_app.py
+python run_christiania_daemon.py
+python christiania_health.py
+python christiania_ops.py status
 ```
 
-The canonical workflow and reviewer contract are documented in:
+Operations, release and backup tooling are unchanged; see `docs/V1_ARCHITECTURE.md`
+and `docs/operations/`.
 
-- `docs/CLAUDE_HOSTILE_REVIEW_PACKAGE.md`;
-- `docs/CLAUDE_HOSTILE_REVIEW_FULL_PROMPT.md`;
-- `docs/CLAUDE_HOSTILE_REVIEW_DECLARED_INVARIANTS.md`.
+## Archive
+
+Research tooling that the app no longer uses lives in `archive/` with its
+history intact (see `archive/README.md`).

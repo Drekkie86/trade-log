@@ -741,6 +741,24 @@ def run_one_iteration(
         return summary
 
 
+def _run_trade_engine(*, theta_client, db_path=None) -> None:
+    """Score trades after every iteration; never let the engine stop the daemon."""
+    if os.environ.get("CHRISTIANIA_ENGINE_DISABLED") == "1":
+        return
+    try:
+        from src.engine.worker import run_engine_step
+
+        engine = run_engine_step(theta_client=theta_client, db_path=db_path)
+        print(
+            f"Trade engine: main passed {engine.main_passed}; "
+            f"0DTE passed {engine.zero_dte_passed}; settled {engine.settled}"
+        )
+        for error in engine.errors:
+            print(f"Trade engine warning: {error}")
+    except Exception as exc:  # pragma: no cover - defensive isolation
+        print(f"Trade engine failed: {type(exc).__name__}: {exc}")
+
+
 def run_daemon(
     *,
     symbols: list[str],
@@ -1019,6 +1037,8 @@ def run_daemon(
                     f"{summary.error_type}: "
                     f"{summary.error_message}"
                 )
+
+            _run_trade_engine(theta_client=theta_client, db_path=db_path)
 
             print()
 
