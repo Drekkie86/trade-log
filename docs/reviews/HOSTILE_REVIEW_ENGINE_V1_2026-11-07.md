@@ -23,6 +23,45 @@ gates fail open, and the broker's actual costs and mechanics are not in the mode
 The good news: every blocker below has a concrete fix and the most important one
 (a backtest) is feasible with the data subscription you already have.
 
+## Fixes applied (same day, same PR)
+
+Every finding below was addressed in code on 2026-11-07; the "after" numbers come
+from `probe_engine_v1_2026-11-07_after_fixes.py` (output in the `.out` file next
+to it), the same synthetic scenarios as the original probes.
+
+| ID | Fix | Before → after |
+|---|---|---|
+| B1 | Score = blend of forecast and **smile-implied** market view (`CHRISTIANIA_FORECAST_WEIGHT`, 0.5); market view built from the whole smile (Breeden–Litzenberger), so skew is priced; stress column (3 % × −10 %); rank by EV / CVaR95; card shows every view | IV 18 %: 86/273 pass → 2/252; skewed chain top pick +$77 forecast-only → blend +$28 with market view −$16 shown; a skewed put spread's market-view EV +$4.9 (ATM lognormal) → −$4.8 (smile) |
+| B2 | One frozen pick per underlying per session at the first scan ≥ 10:00 NY; cluster bootstrap by expiry day; verdict needs 60 expiry days; max drawdown and worst day shown; "95 % confidence" wording gone | 12 picks per session per underlying → 1; 30 trades over 6 days → "Too early to judge" |
+| B3 | EOD history chunked ≤ 360 days; `history_status` on the System page; settlement records after-hours and near-strike flags; backtest harness `run_engine_backtest.py` + `src/engine/backtest.py` (cached, resumable, writes summary/picks/daily P&L; shown on Track record and System) | fetch of 760 days → 3 requests; backtest exists, not yet run (needs your Theta Terminal) |
+| B4 | Commission default USD 2.00 (Saxo Classic); expiry-day exit rule on every card; "I took this trade" records real fills; trades settle or close by hand; exposure shown | modelled 0.65 → 2.00; assignment risk stated where the order is placed |
+| M1 | Liquidity gate: bid ≥ 0.05 and relative spread ≤ 50 % per leg; OI gate off (feed carries none) | 23 passers with 0.01 × 0.06 wings → 0; `liquid()` → `NO_REAL_MARKET` |
+| M2 | Unknown quote age rejects (`QUOTE_AGE_UNKNOWN`); card says "quote age unknown" | garbage/NULL timestamps: 224 pass → 0 |
+| M3 | Card shows EV under forecast, price history, market, blend and stress; break-even realised vol unchanged (the maths was right; the display was not) | P7 fly: card now shows +$83 / −$16 / blend +$33 / stress +$75, P(max loss) 29 %, win 54 % |
+| M4 | Rank by blend EV / CVaR95 (tail floor 10 % of max loss); P(max loss) shown | top-5 now carries P(max loss) 17–68 % explicitly |
+| M5 | `engine_trades` with real fills; open risk by name group (index/sector ETFs count as one); `CHRISTIANIA_MAX_OPEN_RISK_USD` cap warns on the card; sidebar shows open risk | none → exposure accounting |
+| M6 | `CHRISTIANIA_COLLECTOR_ONLY=1`: daemon persists snapshots and quotes only (`src/research/collector_cycle.py`), same tables, same iteration bookkeeping; default off until one session in shadow | optional decoupling, tested |
+| M7 | Single names with < 3 expiries in the window are skipped (`EVENT_UNDETECTABLE`); `CHRISTIANIA_EVENT_BLACKOUT=SYM:date` blocks named dates; ETFs exempt | 2-expiry single name: 0 pass, blocked |
+| M8 | Real-trade recording and manual close; fill vs modelled fill on the Track record | none → recorded |
+| M9 | 0DTE forecasts from remaining-session intraday returns (5-minute bars, `engine_intraday_sessions`), fail-closed when fewer than 40 sessions; `CHRISTIANIA_ZERO_DTE_ENABLED=0` parks the lane | close-to-close scaling → intraday returns |
+| m1 | "Re-price on live quotes" on every card: same structure, live chain, same models and gates | none → live re-score |
+| m2 | `after_hours` and `near_strike` recorded per settlement and flagged on the Track record | — |
+| m3 | Gap-fill from intraday snapshot prices removed; candidates of non-decision scans pruned after 30 days; "Show all N" label fixed; reason text rewritten; V1 docs marked superseded | — |
+
+### Still open, because the facts are yours
+
+* **Run the backtest** (`run_engine_backtest.py`, needs the Theta Terminal). Until the
+  curve through August 2024 and April 2025 exists, nothing above changes the verdict.
+* **Confirm on day one**: closes arrive (System → Price history), the first Friday
+  expiry settles, `close` matches the official close for a week.
+* **ThetaData stock tier** for the 0DTE lane's intraday bars (Value or higher); the
+  OHLC request parameters (`interval=5m`, `venue`) are from the docs, not yet exercised
+  on this account — the lane fails closed if they are wrong.
+* **Saxo**: your tier's commission into `CHRISTIANIA_COMMISSION_PER_CONTRACT`, the
+  Advanced margin profile, real-time OPRA quotes.
+* The pass rate is still a function of IV − forecast (P2 after): that is the
+  strategy, now priced honestly, not a bug the code can remove.
+
 ## Findings
 
 | ID | Severity | Finding |

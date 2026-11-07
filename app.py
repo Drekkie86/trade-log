@@ -23,8 +23,12 @@ from src.operations.saxo_quote_monitor_v1 import read_quote_status
 from src.providers.thetadata_control import probe_theta_terminal
 import src.ui.design as design
 from src.ui.datetime_display import format_local_datetime
+from src.engine.chains import NY
+from src.engine.ledger import exposure
+from src.ui.design import usd
 from src.ui.engine_pages import (
-    engine_checks, render_system, render_track_record_page, render_trades_page,
+    engine_checks, open_risk_cap, read_trades_safe, render_system, render_track_record_page,
+    render_trades_page,
 )
 from src.ui.home_pages import system_checks
 
@@ -89,6 +93,17 @@ with st.sidebar:
         "Risk limit per trade, $", min_value=0, value=500, step=50,
         help="Only used to show how many lots fit. The engine ranks trades per lot.",
     )
+    st.number_input(
+        "Open risk cap, $ (0 = none)", min_value=0, step=500, key="open_risk_cap",
+        value=int(open_risk_cap()),
+        help="Sum of max loss across your open recorded trades. Cards warn when a trade would "
+             "exceed it. Default from CHRISTIANIA_MAX_OPEN_RISK_USD.",
+    )
+    _trades = read_trades_safe()
+    if _trades:
+        _ex = exposure(_trades, today=datetime.now(UTC).astimezone(NY).date())
+        st.caption(f"Open risk {usd(_ex.open_risk_usd)} in {_ex.open_trades} trade"
+                   f"{'s' if _ex.open_trades != 1 else ''}")
     if st.button("Refresh data", width="stretch"):
         st.cache_data.clear()
         st.rerun()

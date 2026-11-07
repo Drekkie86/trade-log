@@ -178,9 +178,67 @@ def empirical_distribution(
 
 
 def implied_distribution(atm_iv: float, calendar_years: float) -> Distribution:
+    """Lognormal at the ATM implied volatility: the market view without its skew."""
     if not (math.isfinite(atm_iv) and atm_iv > 0 and calendar_years > 0):
         raise ModelUnavailable("IMPLIED: no usable ATM implied volatility")
-    return lognormal(IMPLIED, FAMILY_MARKET, atm_iv * atm_iv * calendar_years)
+    return lognormal(IMPLIED, FAMILY_MARKET, atm_iv * atm_iv * calendar_years, "ATM volatility, no skew")
+
+
+SMILE_MIN_POINTS = 5
+SMILE_GRID = 1201
+SMILE_RANGE_SD = 6.0
+
+
+def smile_implied_distribution(points: Sequence[tuple[float, float]], atm_iv: float,
+                               calendar_years: float, rate: float = 0.04) -> Distribution:
+    """Risk-neutral terminal distribution from the whole smile (Breeden-Litzenberger).
+
+    ``points`` are (log-moneyness ln(K/F), implied vol) of out-of-the-money quotes.
+    A quadratic smile in log-moneyness is fitted, call prices are computed on a
+    fine strike grid and twice differenced into a density. Under this
+    distribution every structure is worth about its market price, skew
+    included, so selling expensive puts is no longer "free" in the market view.
+    Falls back to the ATM lognormal when the smile cannot be fitted.
+    """
+    T = calendar_years
+    if not (math.isfinite(atm_iv) and atm_iv > 0 and T > 0):
+        raise ModelUnavailable("IMPLIED: no usable ATM implied volatility")
+    pts = [(m, v) for m, v in points if math.isfinite(m) and math.isfinite(v) and 0.02 < v < 3.0]
+    lo_side = sum(1 for m, _ in pts if m < 0)
+    hi_side = sum(1 for m, _ in pts if m > 0)
+    if len(pts) < SMILE_MIN_POINTS or lo_side < 2 or hi_side < 2:
+        return implied_distribution(atm_iv, T)
+    m = np.array([p[0] for p in pts])
+    v = np.array([p[1] for p in pts])
+    # Quadratic in log-moneyness, least squares; weights favour near-the-money points.
+    w = np.exp(-(m / (2.0 * atm_iv * math.sqrt(T) + 1e-9)) ** 2)
+    A = np.vstack([np.ones_like(m), m, m * m]).T * w[:, None]
+    coef, *_ = np.linalg.lstsq(A, v * w, rcond=None)
+    sd = atm_iv * math.sqrt(T)
+    grid_m = np.linspace(-SMILE_RANGE_SD * sd, SMILE_RANGE_SD * sd, SMILE_GRID)
+    iv = np.clip(coef[0] + coef[1] * grid_m + coef[2] * grid_m * grid_m, 0.5 * atm_iv, 4.0 * atm_iv)
+    # Black-76 calls on the grid with forward 1 (log-moneyness is strike).
+    K = np.exp(grid_m)
+    s = iv * math.sqrt(T)
+    d1 = (-grid_m + 0.5 * s * s) / s
+    d2 = d1 - s
+    calls = norm.cdf(d1) - K * norm.cdf(d2)
+    density = np.gradient(np.gradient(calls, K), K)
+    density = np.clip(density, 0.0, None)
+    mass = np.trapezoid(density, K) if hasattr(np, "trapezoid") else np.trapz(density, K)
+    if not math.isfinite(mass) or mass < 0.9:
+        return implied_distribution(atm_iv, T)
+    density = density / mass
+    cdf = np.cumsum((density[1:] + density[:-1]) * 0.5 * np.diff(K))
+    cdf = np.concatenate([[0.0], cdf]) / cdf[-1]
+    probs = (np.arange(GRID_POINTS) + 0.5) / GRID_POINTS
+    sample_k = np.interp(probs, cdf, K)
+    r = np.log(sample_k)
+    var = float(np.var(r))
+    if not math.isfinite(var) or var <= 0:
+        return implied_distribution(atm_iv, T)
+    return Distribution(IMPLIED, FAMILY_MARKET, _martingale(r), var,
+                        f"smile from {len(pts)} strikes")
 
 
 def implied_event_variance(

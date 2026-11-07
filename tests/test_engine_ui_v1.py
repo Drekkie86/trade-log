@@ -48,3 +48,23 @@ def test_trade_screens_render(engine_db, page):
     assert 'class="chr-head"' in text
     if page == "Today's trades":
         assert '<table class="chr">' in text and "Combo limit" in text
+
+
+def test_trade_card_offers_reprice_exit_rule_and_trade_form(engine_db):
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    text = " ".join(m.value for m in at.markdown)
+    assert "Expiry day:" in text and "Priced under" in text and "Stress" in text
+    labels = {b.label for b in at.button}
+    assert "Re-price on live quotes" in labels and "Record trade" in labels
+    assert any("Open risk now" in m.value for m in at.markdown)
+
+
+def test_system_page_reports_history_and_backtest(engine_db):
+    at = AppTest.from_file(APP, default_timeout=90)
+    at.run()
+    at.sidebar.radio[0].set_value("System").run()
+    assert not at.exception, [e.value for e in at.exception]
+    text = " ".join(m.value for m in at.markdown)
+    assert "Price history" in text and "Intraday history" in text and "Backtest" in text

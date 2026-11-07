@@ -207,17 +207,23 @@ def generate(underlying: str, expiry: Expiry, grid: GenerationGrid) -> list[Stru
     return list(out.values())
 
 
-def liquid(structure: Structure, *, max_relative_spread: float, max_abs_spread: float,
-           min_open_interest: int) -> str | None:
-    """Return a rejection reason, or None when every leg is tradeable."""
+def liquid(structure: Structure, *, max_relative_spread: float, min_bid: float,
+           min_open_interest: int = 0) -> str | None:
+    """Return a rejection reason, or None when every leg has a real two-sided market.
+
+    Fails closed: a leg with no bid, a bid under ``min_bid`` or a spread wider than
+    ``max_relative_spread`` of its mid is not something the engine may price at mid.
+    Open interest is only checked when the provider supplies it.
+    """
     for leg in structure.legs:
         q = leg.quote
         if not q.two_sided:
             return "ONE_SIDED_QUOTE"
-        spread = q.ask - q.bid
-        if q.relative_spread > max_relative_spread and spread > max_abs_spread:
+        if q.bid < min_bid:
+            return "NO_REAL_MARKET"
+        if q.relative_spread > max_relative_spread:
             return "WIDE_SPREAD"
-        if q.open_interest is not None and q.open_interest < min_open_interest:
+        if min_open_interest and q.open_interest is not None and q.open_interest < min_open_interest:
             return "LOW_OPEN_INTEREST"
     return None
 

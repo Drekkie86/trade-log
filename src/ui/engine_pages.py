@@ -1,20 +1,25 @@
 """Christiania screens: Today's trades, 0DTE, Track record and System.
 
-Everything shown comes from the engine's frozen scans and picks. The UI reads
-and explains; it never computes or changes a recommendation.
+Everything shown comes from the engine's frozen scans, picks and the trades the
+operator recorded. The UI never computes or changes a recommendation; the only
+things it writes are the operator's own trades and a live re-price request.
 """
 from __future__ import annotations
 
 import math
+import os
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from html import escape
 from typing import Any
 
 import streamlit as st
 
 from src.engine.chains import NY, parse_utc
-from src.engine.ledger import conservative_pop, latest_scan, picks_with_outcomes, scorecard
+from src.engine.ledger import (
+    close_trade, exposure, latest_scan, load_backtest_summary, picks_with_outcomes,
+    record_trade, scorecard, session_picks, trades_with_closes, verdict,
+)
 from src.engine.pipeline import LANE_MAIN, LANE_ZERO_DTE
 from src.engine.structures import FAMILY_LABELS
 from src.ui.design import (
@@ -24,13 +29,17 @@ from src.ui.design import (
 REJECTION_LABELS = {
     "MODELS_DISAGREE": "the two forecast models disagree",
     "EV_TOO_SMALL": "expected profit too small after costs",
-    "RETURN_ON_RISK_TOO_LOW": "return on risk too low",
+    "RETURN_ON_RISK_TOO_LOW": "profit too small for the tail risk",
     "WIDE_SPREAD": "bid/ask spread too wide",
     "ONE_SIDED_QUOTE": "a leg has no two-sided quote",
+    "NO_REAL_MARKET": "a leg's bid is below 0.05",
     "LOW_OPEN_INTEREST": "too little open interest",
     "STALE_QUOTE": "quotes too old",
+    "QUOTE_AGE_UNKNOWN": "quote age unknown",
     "MODEL_UNAVAILABLE": "not enough price history",
     "NO_USABLE_EXPIRY": "no usable expiry",
+    "EVENT_UNDETECTABLE": "too few expiries to detect earnings",
+    "EVENT_BLACKOUT": "earnings before expiry (blackout list)",
     "NO_RISK_ARBITRAGE_SUSPECT": "suspect quotes",
     "EXPIRED": "expired",
 }
@@ -43,6 +52,9 @@ SHAPE_LABELS = {
     "IRON_FLY": "Iron fly",
 }
 STALE_SCAN_MINUTES = 30
+EXIT_RULE = ("Expiry day: if the price is within 1% of a short strike at 15:30 New York, close "
+             "the whole spread. US stock and ETF options are physically delivered; a short leg "
+             "assigned while its hedge expires worthless leaves you with stock over the weekend.")
 
 
 # --------------------------------------------------------------------- helpers
@@ -82,27 +94,25 @@ def shape(record: dict) -> str:
     return SHAPE_LABELS.get(record.get("shape"), FAMILY_LABELS.get(record.get("family"), ""))
 
 
+def model_label(model_id: str | None) -> str:
+    return {"VOL_FORECAST": "volatility forecast", "EMPIRICAL": "price-history",
+            "IMPLIED": "market pricing"}.get(model_id or "", "forecast")
+
+
 def why_text(c: dict) -> str:
-    scores = c.get("scores", {})
-    vol = scores.get("VOL_FORECAST", {}).get("ev_usd")
-    emp = scores.get("EMPIRICAL", {}).get("ev_usd")
-    imp = scores.get("IMPLIED", {}).get("ev_usd")
+    w = float(c.get("forecast_weight") or 0.5)
     parts = []
-    if c.get("atm_iv") and c.get("forecast_vol"):
-        rich = c["atm_iv"] > c["forecast_vol"]
-        parts.append(
-            f"The options price {percent(c['atm_iv'])}% volatility; the stock's own forecast is "
-            f"{percent(c['forecast_vol'])}%, so options look {'expensive' if rich else 'cheap'}."
-        )
+    if finite(c.get("atm_iv")) and finite(c.get("forecast_vol")):
+        parts.append(f"The options price {percent(c['atm_iv'])}% volatility; the stock's own "
+                     f"forecast is {percent(c['forecast_vol'])}%.")
     parts.append(
-        f"The volatility model expects {usd(vol, signed=True)} and the price-history model "
-        f"{usd(emp, signed=True)}; the score uses the lower."
+        f"Under the {model_label(c.get('forecast_model'))} model (the lower of the two forecasts) "
+        f"this pays {usd(c.get('forecast_ev_usd'), signed=True)}; priced at the market's own "
+        f"volatility it pays {usd(c.get('implied_ev_usd'), signed=True)}. The score blends the "
+        f"two, {w:.0%} forecast: {usd(c.get('conservative_ev_usd'), signed=True)}."
     )
-    if imp is not None:
-        parts.append(
-            f"At the market's own volatility the trade is worth {usd(imp, signed=True)}, "
-            "roughly minus the costs: the edge exists only if the forecast is right."
-        )
+    if finite(c.get("stress_ev_usd")):
+        parts.append(f"With the stress shock it pays {usd(c['stress_ev_usd'], signed=True)}.")
     return " ".join(parts)
 
 
@@ -134,6 +144,14 @@ def verdict_line(kind: str, text: str) -> None:
     html(f'<p class="chr-verdict {kind}">{escape(text)}</p>')
 
 
+def _db_key(db_path) -> str | None:
+    return None if db_path is None else str(db_path)
+
+
+def _engine_tables_missing(exc: Exception) -> bool:
+    return "no such table" in str(exc).lower()
+
+
 # ------------------------------------------------------------------------ reads
 @st.cache_data(ttl=60, show_spinner=False)
 def _read_scan(lane: str, db_key: str | None) -> dict | None:
@@ -142,6 +160,17 @@ def _read_scan(lane: str, db_key: str | None) -> dict | None:
     conn = open_readonly_connection(db_key)
     try:
         return latest_scan(conn, lane)
+    finally:
+        conn.close()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _read_session_picks(lane: str, session_date: str, db_key: str | None) -> list[dict]:
+    from src.operations.sqlite_runtime import open_readonly_connection
+
+    conn = open_readonly_connection(db_key)
+    try:
+        return session_picks(conn, lane, session_date)
     finally:
         conn.close()
 
@@ -157,12 +186,33 @@ def _read_picks(db_key: str | None) -> list[dict]:
         conn.close()
 
 
-def _engine_tables_missing(exc: Exception) -> bool:
-    return "no such table" in str(exc).lower()
+@st.cache_data(ttl=60, show_spinner=False)
+def _read_trades(db_key: str | None) -> list[dict]:
+    from src.operations.sqlite_runtime import open_readonly_connection
+
+    conn = open_readonly_connection(db_key)
+    try:
+        return trades_with_closes(conn)
+    finally:
+        conn.close()
+
+
+def read_trades_safe(db_path=None) -> list[dict]:
+    try:
+        return _read_trades(_db_key(db_path))
+    except Exception:
+        return []
+
+
+def open_risk_cap() -> float:
+    try:
+        return float(os.environ.get("CHRISTIANIA_MAX_OPEN_RISK_USD", "0") or 0)
+    except ValueError:
+        return 0.0
 
 
 # ------------------------------------------------------------------ trade table
-def trade_columns(today: date, risk_budget: float | None, top_edge: float) -> list[Col]:
+def trade_columns(today: date, top_score: float) -> list[Col]:
     def trade_cell(c: dict) -> str:
         return (f'<span class="tick">{escape(c["underlying"])}</span> {escape(shape(c))}'
                 f'<span class="sub">{escape(c["description"])}</span>')
@@ -171,10 +221,6 @@ def trade_columns(today: date, risk_budget: float | None, top_edge: float) -> li
         d = days_to(c["expiration"], today)
         when = "today" if d == 0 else "tomorrow" if d == 1 else f"{d} days"
         return f'{short_date(c["expiration"])}<span class="sub">{when}</span>'
-
-    def size_cell(c: dict) -> str:
-        n = contracts_for(float(c["max_loss_usd"]), risk_budget)
-        return "–" if n is None else str(n)
 
     return [
         Col("rank", "", "r", render=lambda c: str(c["_rank"]), css=lambda c: "rank"),
@@ -186,15 +232,16 @@ def trade_columns(today: date, risk_budget: float | None, top_edge: float) -> li
         Col("ev", "Expected", "r",
             render=lambda c: money(c["conservative_ev_usd"], signed=True),
             css=lambda c: tone(c["conservative_ev_usd"])),
-        Col("edge", "Per $100 risk", "r", group_start=True, emphasis=True,
-            render=lambda c: money(100 * c["ev_per_risk"], signed=True, decimals=1)
-            + bar(c["ev_per_risk"], top_edge, 3.0)),
-        Col("pop", "Win, %", "r", render=lambda c: percent(conservative_pop(c)), cls="opt"),
-        Col("size", "Lots", "r", group_start=True, render=size_cell, cls="opt"),
+        Col("score", "Per $100 tail risk", "r", group_start=True, emphasis=True,
+            render=lambda c: money(100 * float(c["score"]), signed=True, decimals=1)
+            + bar(float(c["score"]), top_score, 3.0)),
+        Col("pmax", "Max loss, %", "r", group_start=True, cls="opt",
+            render=lambda c: percent(c.get("p_max_loss"))),
+        Col("pop", "Win, %", "r", render=lambda c: percent(c.get("pop")), cls="opt"),
     ]
 
 
-TRADE_GROUPS = [("", 3), ("Per lot, $", 3), ("Edge", 2), ("Size", 1)]
+TRADE_GROUPS = [("", 3), ("Per lot, $", 3), ("Score", 1), ("Odds", 2)]
 
 
 def near_miss_columns(today: date) -> list[Col]:
@@ -205,11 +252,12 @@ def near_miss_columns(today: date) -> list[Col]:
         Col("expiry", "Expiry", "l",
             render=lambda c: f'{short_date(c["expiration"])}'
                              f'<span class="sub">{days_to(c["expiration"], today)} days</span>'),
-        Col("ev", "Expected profit, $", "r", group_start=True,
+        Col("ev", "Expected, $", "r", group_start=True,
             render=lambda c: money(c["conservative_ev_usd"], signed=True),
             css=lambda c: tone(c["conservative_ev_usd"])),
-        Col("edge", "Per $100 at risk", "r",
-            render=lambda c: money(100 * c["ev_per_risk"], signed=True, decimals=1)),
+        Col("score", "Per $100 tail risk", "r",
+            render=lambda c: money(100 * float(c["score"]), signed=True, decimals=1)
+            if finite(c.get("score")) else "–"),
         Col("why", "Why it fails", "l", group_start=True,
             render=lambda c: escape(REJECTION_LABELS.get(c.get("reject_reason"), "")),
             css=lambda c: "muted"),
@@ -233,7 +281,113 @@ def legs_table(c: dict) -> str:
     return table(cols, rows)
 
 
-def detail_panel(c: dict, risk_budget: float | None) -> None:
+def sensitivity_table(c: dict, config: dict) -> str:
+    scores = c.get("scores", {})
+    w = float(c.get("forecast_weight") or config.get("forecast_weight") or 0.5)
+    jump = float(config.get("stress_jump", -0.10))
+    p_jump = float(config.get("stress_jump_prob", 0.03))
+    rows = []
+    for model_id, label in (("VOL_FORECAST", "Volatility forecast"),
+                            ("EMPIRICAL", "Price history"),
+                            ("IMPLIED", "Market pricing")):
+        if model_id in scores:
+            rows.append({"view": label, "ev": scores[model_id].get("ev_usd"),
+                         "pop": scores[model_id].get("pop"), "key": False})
+    rows.append({"view": f"Blend, {w:.0%} forecast (the score)", "ev": c.get("conservative_ev_usd"),
+                 "pop": c.get("pop"), "key": True})
+    rows.append({"view": f"Stress: {p_jump:.0%} chance of a {jump:+.0%} shock",
+                 "ev": c.get("stress_ev_usd"), "pop": None, "key": False})
+    return table([
+        Col("view", "Priced under", "l", render=lambda r: f'<span class="{"tick" if r["key"] else ""}">'
+                                                       f'{escape(r["view"])}</span>'),
+        Col("ev", "Expected, $", "r", render=lambda r: money(r["ev"], signed=True),
+            css=lambda r: tone(r["ev"])),
+        Col("pop", "Win, %", "r", render=lambda r: percent(r["pop"])),
+    ], rows)
+
+
+def _exposure_line(c: dict, trades: list[dict], today: date, cap: float, lots: int) -> None:
+    ex = exposure(trades, today=today)
+    added = float(c["max_loss_usd"]) * max(lots, 1)
+    after = ex.after(added)
+    text = (f"Open risk now {usd(ex.open_risk_usd)} in {ex.open_trades} trade"
+            f"{'s' if ex.open_trades != 1 else ''}; after this trade {usd(after)}")
+    if cap > 0:
+        text += f"; cap {usd(cap)}"
+    note(text + ".", warn=cap > 0 and after > cap)
+
+
+def _took_it_form(c: dict, config: dict, trades: list[dict], today: date, cap: float,
+                  risk_budget: float | None, db_path, pick_id: int | None) -> None:
+    key = f"took_{c['structure_key']}"
+    fit = contracts_for(float(c["max_loss_usd"]), risk_budget) or 1
+    per_contract = float(config.get("cost", {}).get("commission_per_contract", 2.0))
+    credit = float(c["entry_cash_usd"]) > 0
+    with st.expander("I took this trade"):
+        with st.form(key):
+            lots = st.number_input("Lots", min_value=1, value=max(1, fit), step=1)
+            fill = st.number_input(
+                f"Fill per share ({'credit' if credit else 'debit'})", min_value=0.0,
+                value=round(limit_price(c), 2), step=0.01, format="%.2f")
+            commission = st.number_input(
+                "Commission, $ (all legs, all lots)", min_value=0.0,
+                value=round(per_contract * len(c["legs"]) * max(1, fit), 2), step=0.5, format="%.2f")
+            text = st.text_input("Note", value="")
+            submitted = st.form_submit_button("Record trade")
+        if submitted:
+            from src.database.repository import get_connection
+
+            conn = get_connection(db_path)
+            try:
+                record_trade(conn, c, lots=int(lots), fill_per_share=(fill if credit else -fill),
+                             commission_usd=float(commission), taken_at=datetime.now(UTC),
+                             note=text or None, pick_id=pick_id)
+            finally:
+                conn.close()
+            st.cache_data.clear()
+            st.success("Recorded. It will settle at expiry with the picks, or close it on the "
+                       "Track record page.")
+    _exposure_line(c, trades, today, cap, fit)
+
+
+def _reprice_block(c: dict, db_path) -> None:
+    key = f"reprice_{c['structure_key']}"
+    if st.button("Re-price on live quotes", key=key):
+        from src.database.repository import get_connection
+        from src.engine.reprice import reprice
+        from src.providers.thetadata import ThetaDataClient
+
+        client = ThetaDataClient(base_url=os.environ.get("CHRISTIANIA_THETA_BASE_URL",
+                                                         "http://127.0.0.1:25503/v3"),
+                                 timeout_seconds=30.0)
+        conn = get_connection(db_path)
+        try:
+            with st.spinner("Pricing on the live chain…"):
+                result = reprice(c, theta_client=client, conn=conn)
+        except Exception as exc:
+            result = None
+            note(f"Re-pricing failed: {type(exc).__name__}. Is the Theta Terminal running?",
+                 warn=True)
+        finally:
+            conn.close()
+        if result is not None:
+            if result.status != "OK" or result.candidate is None:
+                note(f"Cannot re-price: {result.detail or result.status.lower().replace('_', ' ')}.",
+                     warn=True)
+            else:
+                live = result.candidate
+                state = "still passes" if live.passed else \
+                    f"would not pass now ({REJECTION_LABELS.get(live.reject_reason, live.reject_reason)})"
+                verdict_line("good" if live.passed else "bad",
+                             f"Live: {'credit' if live.is_credit else 'debit'} "
+                             f"{abs(live.entry_cash_usd) / 100:.2f} per share, expected "
+                             f"{usd(live.conservative_ev_usd, signed=True)}, score "
+                             f"{money(100 * live.score, signed=True, decimals=1)} per $100 tail risk; "
+                             f"{state}.")
+
+
+def detail_panel(c: dict, config: dict, *, risk_budget: float | None, trades: list[dict],
+                 today: date, cap: float, db_path, pick_id: int | None) -> None:
     left, right = st.columns([1, 1], gap="large")
     credit = float(c["entry_cash_usd"]) > 0
     with left:
@@ -242,6 +396,12 @@ def detail_panel(c: dict, risk_budget: float | None) -> None:
                         sigma_move=sigma_move(c)))
         note("Profit or loss at expiry for one lot, after costs. Dots mark the breakevens; "
              "the shaded band is the forecast's one-standard-deviation range.")
+        html(sensitivity_table(c, config))
+        html(f'<div class="chr-detail"><p>{escape(why_text(c))}</p></div>')
+        if c.get("event_move_pct"):
+            note(f"The options price an event before expiry, about ±{c['event_move_pct']:.1f}% "
+                 "extra move (likely earnings). The models include it; it is still the main risk.",
+                 warn=True)
     with right:
         html(f'<div class="chr-detail"><h3>{escape(c["underlying"])} {escape(shape(c))}, '
              f'{escape(short_date(c["expiration"]))}</h3></div>')
@@ -256,14 +416,15 @@ def detail_panel(c: dict, risk_budget: float | None) -> None:
                   if n else f" One lot exceeds your {usd(risk_budget)} limit.")
         note(f"Hold to expiry. Commission assumed {usd(c['commission_usd'], decimals=2)}."
              + sizing)
-        if c.get("quote_age_seconds") is not None:
-            note(f"Quotes were {float(c['quote_age_seconds']) / 60:.0f} minutes old at the scan. "
-                 "Re-quote in your broker first.")
-        html(f'<div class="chr-detail"><p>{escape(why_text(c))}</p></div>')
-        if c.get("event_move_pct"):
-            note(f"The options price an event before expiry, about ±{c['event_move_pct']:.1f}% "
-                 "extra move (likely earnings). The models include it; it is still the main risk.",
-                 warn=True)
+        age = c.get("quote_age_seconds")
+        if age is None:
+            note("Quote age unknown.", warn=True)
+        else:
+            note(f"Quotes were {float(age) / 60:.0f} minutes old at the scan. "
+                 "Re-price before you place the order.")
+        _reprice_block(c, db_path)
+        note(EXIT_RULE, warn=True)
+        _took_it_form(c, config, trades, today, cap, risk_budget, db_path, pick_id)
 
 
 def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
@@ -271,7 +432,7 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
     now = now or datetime.now(UTC)
     today = now.astimezone(NY).date()
     title = "Today's trades" if lane == LANE_MAIN else "0DTE"
-    db_key = None if db_path is None else str(db_path)
+    db_key = _db_key(db_path)
     try:
         scan = _read_scan(lane, db_key)
     except Exception as exc:
@@ -289,6 +450,7 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
              "Trades appear here after the first one.")
         return
 
+    config = scan.get("config", {}) or {}
     age = minutes_ago(scan.get("asof_at"), now)
     stale = age is not None and age > STALE_SCAN_MINUTES
     fresh = f"Scanned {ny_time(scan.get('asof_at'))}"
@@ -297,22 +459,44 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
     head(title, fresh, stale=stale)
 
     passed = scan.get("passed", [])
-    top_n = int(scan.get("config", {}).get("top_n", 5))
+    top_n = int(config.get("top_n", 5))
+    w = float(config.get("forecast_weight", 0.5))
     scope = ("7 to 45 days to expiry" if lane == LANE_MAIN
              else "same-day and next-day SPY and QQQ, scanned 09:45 to 15:45 New York")
     lede(f"{scan.get('passed_count', 0)} of {scan.get('structures_scored', 0):,} priced trades "
-         f"pass across {scan.get('chains_scanned', 0)} underlyings ({scope}). "
-         "Ranked by expected profit per $100 at risk, after slippage and commission.")
+         f"pass across {scan.get('chains_scanned', 0)} underlyings ({scope}). Expected profit "
+         f"blends the stock's own forecast ({w:.0%}) with the market's pricing; the score is "
+         "expected profit per $100 of expected loss in the worst 5% of outcomes, after costs.")
     if scan.get("status") == "FAILED":
         note(f"The last scan failed: {scan.get('error_message')}", warn=True)
     elif stale:
-        note("This scan is old and prices have moved. Use it as a watch-list and re-quote "
-             "everything before trading.", warn=True)
+        note("This scan is old and prices have moved. Use it as a watch-list and re-price "
+             "before trading.", warn=True)
     missing = scan.get("chains_without_history") or []
     if missing:
         note(f"No price history yet for {', '.join(missing[:12])}"
              + ("…" if len(missing) > 12 else "") + "; these cannot pass until it arrives.")
+    blocked = scan.get("chains_blocked") or {}
+    if blocked:
+        note(f"Skipped: {', '.join(f'{k} ({REJECTION_LABELS.get(v, v)})' for k, v in list(blocked.items())[:10])}"
+             + ("…" if len(blocked) > 10 else "") + ".")
 
+    trades = read_trades_safe(db_path)
+    session = str(scan.get("session_date") or today.isoformat())
+    try:
+        frozen = _read_session_picks(lane, session, db_key)
+    except Exception:
+        frozen = []
+    frozen_by_key = {p["structure_key"]: int(p["id"]) for p in frozen}
+    decision_time = str(config.get("decision_time", "10:00"))
+    if frozen:
+        note(f"Today's frozen picks ({decision_time} NY decision scan): "
+             + ", ".join(sorted({p['underlying'] for p in frozen})) + ". Later scans update this "
+             "screen, not the track record.")
+    elif scan.get("decision") == 0:
+        note(f"Picks are frozen by the first scan at or after {decision_time} NY; this scan is a preview.")
+
+    cap = float(st.session_state.get("open_risk_cap", open_risk_cap()) or 0)
     if not passed:
         rej = sorted(scan.get("rejections", {}).items(), key=lambda kv: -kv[1])[:3]
         verdict_line("wait", "No trade clears the bar right now. Doing nothing is a valid result.")
@@ -324,10 +508,17 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
             html(table(near_miss_columns(today), scan["near_misses"]))
         return
 
-    show_all = len(passed) > top_n and st.toggle(
-        f"Show all {len(passed)} passing trades", key=f"all_{lane}")
-    rows = [{**c, "_rank": i} for i, c in enumerate(passed if show_all else passed[:top_n], 1)]
-    top_edge = max(float(r["ev_per_risk"]) for r in rows)
+    # Best structure per underlying first (what the picks are), then the rest.
+    seen: set[str] = set()
+    best, rest = [], []
+    for c in passed:
+        (rest if c["underlying"] in seen else best).append(c)
+        seen.add(c["underlying"])
+    ordered = best + rest
+    show_all = len(ordered) > top_n and st.toggle(
+        f"Show all {len(ordered)} stored passing trades", key=f"all_{lane}")
+    rows = [{**c, "_rank": i} for i, c in enumerate(ordered if show_all else ordered[:top_n], 1)]
+    top_score = max(float(r["score"]) for r in rows)
 
     table_slot = st.container()
     options = [f"{r['_rank']}  {r['underlying']}" for r in rows]
@@ -335,27 +526,129 @@ def render_trades_page(lane: str, *, risk_budget: float | None, db_path=None,
                                   key=f"sel_{lane}_{show_all}")
     selected = options.index(choice) if choice in options else 0
     with table_slot:
-        html(table(trade_columns(today, risk_budget, top_edge), rows,
-                   groups=TRADE_GROUPS, selected=selected))
-    detail_panel(rows[selected], risk_budget)
+        html(table(trade_columns(today, top_score), rows, groups=TRADE_GROUPS, selected=selected))
+        note("Max loss, %: chance of losing (nearly) the full amount at risk. Win, %: chance of "
+             "any profit. Both under the blended view.")
+    chosen = rows[selected]
+    detail_panel(chosen, config, risk_budget=risk_budget, trades=trades, today=today, cap=cap,
+                 db_path=db_path, pick_id=frozen_by_key.get(chosen["structure_key"]))
 
 
 # ----------------------------------------------------------------- track record
-def verdict(card) -> tuple[str, str]:
-    if card.settled < 30:
-        return ("wait", f"Too early to judge: {card.settled} settled trade"
-                f"{'s' if card.settled != 1 else ''}. Results start to mean something around 30.")
-    lo, hi = card.pnl_ci95_usd
-    if lo > 0:
-        return ("good", "Making money: the average trade is profitable with 95% confidence.")
-    if hi < 0:
-        return ("bad", "Losing money: the average trade loses with 95% confidence. "
-                "The models' edge is not showing up in real outcomes.")
-    return ("wait", "Not distinguishable from zero yet. Keep collecting before adding risk.")
+def _close_trade_form(open_trades: list[dict], db_path) -> None:
+    if not open_trades:
+        return
+    with st.expander("Close a trade by hand"):
+        labels = {f"#{t['id']} {t['underlying']} {shape(t['record'])} {short_date(t['expiration'])} "
+                  f"× {t['lots']}": int(t["id"]) for t in open_trades}
+        with st.form("close_trade"):
+            which = st.selectbox("Trade", list(labels))
+            cash = st.number_input("Cash per share to close (received +, paid −)", value=0.0,
+                                   step=0.01, format="%.2f")
+            commission = st.number_input("Commission, $", min_value=0.0, value=0.0, step=0.5,
+                                         format="%.2f")
+            price = st.number_input("Underlying price (optional)", min_value=0.0, value=0.0,
+                                    step=0.01, format="%.2f")
+            submitted = st.form_submit_button("Record close")
+        if submitted:
+            from src.database.repository import get_connection
+
+            conn = get_connection(db_path)
+            try:
+                pnl = close_trade(conn, labels[which], cash_per_share=float(cash),
+                                  commission_usd=float(commission), closed_at=datetime.now(UTC),
+                                  underlying_price=float(price) or None)
+            finally:
+                conn.close()
+            st.cache_data.clear()
+            st.success(f"Closed: {usd(pnl, signed=True)}.")
 
 
-def render_track_record_page(*, db_path=None) -> None:
-    db_key = None if db_path is None else str(db_path)
+def _trades_section(trades: list[dict], today: date, db_path) -> None:
+    h2("Your trades")
+    if not trades:
+        note("No trades recorded. Use \"I took this trade\" on a card; real fills are the only "
+             "way to check the fill and commission assumptions.")
+        return
+    ex = exposure(trades, today=today)
+    groups = ", ".join(f"{k} {usd(v)}" for k, v in sorted(ex.by_group.items(), key=lambda kv: -kv[1]))
+    note(f"Open risk {usd(ex.open_risk_usd)} in {ex.open_trades} trade"
+         f"{'s' if ex.open_trades != 1 else ''}" + (f" ({groups})" if groups else "")
+         + f". Realised {usd(ex.realised_pnl_usd, signed=True)} on closed trades.")
+    rows = []
+    for t in trades:
+        r = t["record"]
+        modelled = abs(float(r["entry_cash_usd"])) / 100
+        real = abs(float(t["fill_per_share"]))
+        rows.append({**t, "_modelled": modelled, "_real": real,
+                     "_status": "Open" if t.get("pnl_usd") is None else
+                     ("Settled" if t.get("close_kind") == "EXPIRY" else "Closed")})
+    html(table([
+        Col("taken", "Taken", "l", render=lambda t: escape(ny_time(t["taken_at"], "%d %b"))),
+        Col("trade", "Trade", "l",
+            render=lambda t: f'<span class="tick">{escape(t["underlying"])}</span> '
+                             f'{escape(shape(t["record"]))}'
+                             f'<span class="sub">{escape(t["record"].get("description", ""))}</span>'),
+        Col("exp", "Expiry", "l", render=lambda t: short_date(t["expiration"])),
+        Col("lots", "Lots", "r", render=lambda t: str(t["lots"])),
+        Col("fill", "Fill", "r", group_start=True, render=lambda t: money(t["_real"], decimals=2)),
+        Col("mod", "Modelled", "r", render=lambda t: money(t["_modelled"], decimals=2)),
+        Col("risk", "Max loss", "r", group_start=True, render=lambda t: money(t["max_loss_usd"])),
+        Col("pnl", "P&L", "r", render=lambda t: "–" if t.get("pnl_usd") is None
+            else money(t["pnl_usd"], signed=True), css=lambda t: tone(t.get("pnl_usd"))),
+        Col("status", "Status", "l", render=lambda t: t["_status"],
+            css=lambda t: "muted" if t["_status"] == "Open" else ""),
+    ], rows, groups=[("", 4), ("Per share, $", 2), ("Total, $", 3)]))
+    _close_trade_form([t for t in trades if t.get("pnl_usd") is None], db_path)
+
+
+def _backtest_section() -> None:
+    summary = load_backtest_summary(os.environ.get("CHRISTIANIA_BACKTEST_SUMMARY"))
+    h2("Backtest")
+    if not summary:
+        note("No backtest summary found. Run run_engine_backtest.py on a machine with the Theta "
+             "Terminal and point CHRISTIANIA_BACKTEST_SUMMARY at its summary.json. Without it, "
+             "the live record cannot say how the engine behaves in a volatility shock.", warn=True)
+        return
+    period = summary.get("period", {})
+    rows = [{
+        "period": f"{period.get('start', '?')} to {period.get('end', '?')}",
+        "sessions": period.get("sessions"), "settled": summary.get("settled"),
+        "pnl": summary.get("total_pnl_usd"), "dd": summary.get("max_drawdown_usd"),
+        "worst": summary.get("worst_day_usd"),
+        "wm": summary.get("worst_month"), "hit": summary.get("hit_rate"),
+        "phit": summary.get("predicted_hit_rate"), "pred": summary.get("predicted_ev_usd"),
+    }]
+    html(table([
+        Col("period", "Period", "l", render=lambda r: escape(str(r["period"]))
+            + f'<span class="sub">{r["sessions"]} sessions, {r["settled"]} settled picks</span>'),
+        Col("pnl", "P&L", "r", group_start=True, emphasis=True,
+            render=lambda r: money(r["pnl"], signed=True)),
+        Col("pred", "Model predicted", "r", render=lambda r: money(r["pred"], signed=True)),
+        Col("dd", "Max drawdown", "r", render=lambda r: money(r["dd"], signed=True),
+            css=lambda r: tone(r["dd"])),
+        Col("worst", "Worst day", "r", render=lambda r: money(r["worst"], signed=True)
+            + (f'<span class="sub">worst month {escape(str(r["wm"][0]))} '
+               f'{money(r["wm"][1], signed=True)}</span>' if r["wm"] else "")),
+        Col("hit", "Hit rate, %", "r", group_start=True,
+            render=lambda r: percent(r["hit"]) + (
+                "" if r["phit"] is None else f'<span class="sub">model said {percent(r["phit"])}</span>')),
+    ], rows, groups=[("", 1), ("One lot per pick, $", 4), ("", 1)]))
+    by_year = summary.get("by_year") or {}
+    if by_year:
+        html(table([
+            Col("year", "Year", "l"),
+            Col("n", "Settled", "r", render=lambda r: str(r["settled"])),
+            Col("pnl", "P&L, $", "r", render=lambda r: money(r["pnl_usd"], signed=True),
+                css=lambda r: tone(r["pnl_usd"])),
+            Col("hit", "Hit rate, %", "r", render=lambda r: percent(r["hit_rate"])),
+        ], [{"year": y, **v} for y, v in sorted(by_year.items())]))
+
+
+def render_track_record_page(*, db_path=None, now: datetime | None = None) -> None:
+    now = now or datetime.now(UTC)
+    today = now.astimezone(NY).date()
+    db_key = _db_key(db_path)
     try:
         picks = _read_picks(db_key)
     except Exception as exc:
@@ -367,98 +660,109 @@ def render_track_record_page(*, db_path=None) -> None:
         return
     first = min((p["first_seen_at"] for p in picks), default=None)
     head("Track record", f"Since {ny_time(first, '%d %b %Y')}" if first else "")
-    lede("Every trade the engine recommended, settled at expiry, one lot each. "
-         "This decides whether the engine makes money, not the model.")
+    lede("One frozen pick per underlying per session, settled at expiry, one lot each. This is "
+         "the engine's record, scored by expiry day. Your own trades are below it.")
     lane = st.segmented_control("Lane", ["All", "Main", "0DTE"], default="All",
                                 label_visibility="collapsed", key="record_lane")
     if lane == "Main":
         picks = [p for p in picks if p["lane"] == LANE_MAIN]
     elif lane == "0DTE":
         picks = [p for p in picks if p["lane"] == LANE_ZERO_DTE]
+
     if not picks:
-        note("No recommended trades yet. They appear here as soon as the engine surfaces one.")
-        return
-
-    card = scorecard(picks)
-    kind, text = verdict(card)
-    verdict_line(kind, text)
-    summary = [{
-        "picks": card.picks, "settled": card.settled, "open": card.open,
-        "pnl": card.total_pnl_usd, "ror": card.return_on_risk, "pred": card.predicted_ev_usd,
-        "hit": card.hit_rate, "phit": card.predicted_hit_rate,
-        "avg": card.avg_pnl_usd, "ci": card.pnl_ci95_usd,
-    }]
-    cols = [
-        Col("picks", "Recommended", "r",
-            render=lambda r: f'{r["picks"]}<span class="sub">{r["settled"]} settled, '
-                             f'{r["open"]} open</span>'),
-        Col("pnl", "Settled P&L", "r", group_start=True, emphasis=True,
-            render=lambda r: money(r["pnl"], signed=True)),
-        Col("pred", "Model predicted", "r", render=lambda r: money(r["pred"], signed=True)),
-        Col("avg", "Average trade", "r",
-            render=lambda r: money(r["avg"], signed=True) + (
-                "" if not r["ci"] else
-                f'<span class="sub">95% range {money(r["ci"][0], signed=True)} to '
-                f'{money(r["ci"][1], signed=True)}</span>')),
-        Col("ror", "Return on risk, %", "r", group_start=True,
-            render=lambda r: percent(r["ror"], 1)),
-        Col("hit", "Hit rate, %", "r",
-            render=lambda r: percent(r["hit"]) + (
-                "" if r["phit"] is None else
-                f'<span class="sub">model said {percent(r["phit"])}</span>')),
-    ]
-    html(table(cols, summary, groups=[("", 1), ("Money, $", 3), ("Accuracy", 2)]))
-
-    settled = sorted((p for p in picks if p.get("pnl_usd") is not None),
-                     key=lambda p: p["settlement_date"])
-    if settled:
-        by_day: dict[str, float] = defaultdict(float)
-        for p in settled:
-            by_day[p["settlement_date"]] += float(p["pnl_usd"])
-        running, points = 0.0, []
-        for d in sorted(by_day):
-            running += by_day[d]
-            points.append((short_date(d), running))
-        h2("Cumulative settled P&L, $")
-        html(line_svg(points))
-
-        groups: dict[str, list[dict]] = defaultdict(list)
-        for p in settled:
-            groups[FAMILY_LABELS.get(p["family"], p["family"])].append(p)
-        fam_rows = [{
-            "type": k, "n": len(v), "pnl": sum(float(p["pnl_usd"]) for p in v),
-            "pred": sum(float(p["conservative_ev_usd"]) for p in v),
-            "hit": sum(float(p["pnl_usd"]) > 0 for p in v) / len(v),
-        } for k, v in sorted(groups.items())]
-        h2("By trade type")
+        note("No frozen picks yet. They appear after the first decision scan of a session.")
+    else:
+        card = scorecard(picks)
+        kind, text = verdict(card)
+        verdict_line(kind, text)
+        summary = [{
+            "picks": card.picks, "settled": card.settled, "open": card.open,
+            "days": card.expiry_days, "pnl": card.total_pnl_usd, "ror": card.return_on_risk,
+            "pred": card.predicted_ev_usd, "hit": card.hit_rate, "phit": card.predicted_hit_rate,
+            "avg": card.avg_pnl_usd, "ci": card.pnl_ci95_usd, "dd": card.max_drawdown_usd,
+            "worst": card.worst_day_usd, "pin": card.near_strike_settlements,
+        }]
         html(table([
-            Col("type", "Trade type", "l"),
-            Col("n", "Settled", "r", render=lambda r: str(r["n"])),
-            Col("pnl", "P&L, $", "r", group_start=True,
-                render=lambda r: money(r["pnl"], signed=True), css=lambda r: tone(r["pnl"])),
-            Col("pred", "Predicted, $", "r", render=lambda r: money(r["pred"], signed=True)),
-            Col("hit", "Hit rate, %", "r", group_start=True, render=lambda r: percent(r["hit"])),
-        ], fam_rows))
+            Col("picks", "Picks", "r",
+                render=lambda r: f'{r["picks"]}<span class="sub">{r["settled"]} settled, '
+                                 f'{r["open"]} open, {r["days"]} expiry days</span>'),
+            Col("pnl", "Settled P&L", "r", group_start=True, emphasis=True,
+                render=lambda r: money(r["pnl"], signed=True)),
+            Col("pred", "Model predicted", "r", render=lambda r: money(r["pred"], signed=True)),
+            Col("avg", "Average trade", "r",
+                render=lambda r: money(r["avg"], signed=True) + (
+                    "" if not r["ci"] else
+                    f'<span class="sub">bootstrap by expiry day {money(r["ci"][0], signed=True)} to '
+                    f'{money(r["ci"][1], signed=True)}</span>')),
+            Col("dd", "Max drawdown", "r", render=lambda r: money(r["dd"], signed=True),
+                css=lambda r: tone(r["dd"])),
+            Col("worst", "Worst day", "r", render=lambda r: money(r["worst"], signed=True)),
+            Col("ror", "Return on risk, %", "r", group_start=True,
+                render=lambda r: percent(r["ror"], 1)),
+            Col("hit", "Hit rate, %", "r",
+                render=lambda r: percent(r["hit"]) + (
+                    "" if r["phit"] is None else
+                    f'<span class="sub">model said {percent(r["phit"])}</span>')),
+        ], summary, groups=[("", 1), ("Money, $", 5), ("Accuracy", 2)]))
+        if card.near_strike_settlements:
+            note(f"{card.near_strike_settlements} settlement(s) landed within 0.1% of a short strike; "
+                 "check them against your broker statement (pin risk).", warn=True)
 
-    h2("Every recommendation")
-    ordered = sorted(picks, key=lambda p: (p.get("pnl_usd") is not None, p["expiration"]))
-    html(table([
-        Col("seen", "Recommended", "l", render=lambda p: escape(ny_time(p["first_seen_at"], "%d %b"))),
-        Col("trade", "Trade", "l",
-            render=lambda p: f'<span class="tick">{escape(p["underlying"])}</span> '
-                             f'{escape(shape(p))}{" (0DTE)" if p["lane"] == LANE_ZERO_DTE else ""}'
-                             f'<span class="sub">{escape(p["record"].get("description", ""))}</span>'),
-        Col("exp", "Expiry", "l", render=lambda p: short_date(p["expiration"])),
-        Col("risk", "Max loss", "r", group_start=True, render=lambda p: money(p["max_loss_usd"])),
-        Col("pred", "Predicted", "r", render=lambda p: money(p["conservative_ev_usd"], signed=True)),
-        Col("res", "Result", "r", emphasis=False,
-            render=lambda p: "–" if p.get("pnl_usd") is None else money(p["pnl_usd"], signed=True),
-            css=lambda p: tone(p.get("pnl_usd"))),
-        Col("status", "Status", "l", group_start=True,
-            render=lambda p: "Open" if p.get("pnl_usd") is None
-            else f"Settled at {float(p['settlement_price']):,.2f}",
-            css=lambda p: "muted" if p.get("pnl_usd") is None else ""),
-    ], ordered, groups=[("", 3), ("Per lot, $", 3), ("", 1)]))
+        settled = sorted((p for p in picks if p.get("pnl_usd") is not None),
+                         key=lambda p: p["settlement_date"])
+        if settled:
+            by_day: dict[str, float] = defaultdict(float)
+            for p in settled:
+                by_day[p["settlement_date"]] += float(p["pnl_usd"])
+            running, points = 0.0, []
+            for d in sorted(by_day):
+                running += by_day[d]
+                points.append((short_date(d), running))
+            h2("Cumulative settled P&L, $")
+            html(line_svg(points))
+
+            groups: dict[str, list[dict]] = defaultdict(list)
+            for p in settled:
+                groups[FAMILY_LABELS.get(p["family"], p["family"])].append(p)
+            fam_rows = [{
+                "type": k, "n": len(v), "pnl": sum(float(p["pnl_usd"]) for p in v),
+                "pred": sum(float(p["conservative_ev_usd"]) for p in v),
+                "hit": sum(float(p["pnl_usd"]) > 0 for p in v) / len(v),
+            } for k, v in sorted(groups.items())]
+            h2("By trade type")
+            html(table([
+                Col("type", "Trade type", "l"),
+                Col("n", "Settled", "r", render=lambda r: str(r["n"])),
+                Col("pnl", "P&L, $", "r", group_start=True,
+                    render=lambda r: money(r["pnl"], signed=True), css=lambda r: tone(r["pnl"])),
+                Col("pred", "Predicted, $", "r", render=lambda r: money(r["pred"], signed=True)),
+                Col("hit", "Hit rate, %", "r", group_start=True, render=lambda r: percent(r["hit"])),
+            ], fam_rows))
+
+        h2("Every pick")
+        ordered = sorted(picks, key=lambda p: (p.get("pnl_usd") is not None, p["expiration"]))
+        html(table([
+            Col("seen", "Frozen", "l", render=lambda p: escape(ny_time(p["first_seen_at"], "%d %b"))),
+            Col("trade", "Trade", "l",
+                render=lambda p: f'<span class="tick">{escape(p["underlying"])}</span> '
+                                 f'{escape(shape(p))}{" (0DTE)" if p["lane"] == LANE_ZERO_DTE else ""}'
+                                 f'<span class="sub">{escape(p["record"].get("description", ""))}</span>'),
+            Col("exp", "Expiry", "l", render=lambda p: short_date(p["expiration"])),
+            Col("risk", "Max loss", "r", group_start=True, render=lambda p: money(p["max_loss_usd"])),
+            Col("pred", "Expected", "r", render=lambda p: money(p["conservative_ev_usd"], signed=True)),
+            Col("res", "Result", "r",
+                render=lambda p: "–" if p.get("pnl_usd") is None else money(p["pnl_usd"], signed=True),
+                css=lambda p: tone(p.get("pnl_usd"))),
+            Col("status", "Status", "l", group_start=True,
+                render=lambda p: "Open" if p.get("pnl_usd") is None
+                else f"Settled at {float(p['settlement_price']):,.2f}"
+                + (" (pin)" if p.get("near_strike") else "")
+                + (" (after-hours print)" if p.get("settlement_after_hours") else ""),
+                css=lambda p: "muted" if p.get("pnl_usd") is None else ""),
+        ], ordered, groups=[("", 3), ("Per lot, $", 3), ("", 1)]))
+
+    _trades_section(read_trades_safe(db_path), today, db_path)
+    _backtest_section()
 
 
 # ----------------------------------------------------------------------- system
@@ -501,4 +805,50 @@ def engine_checks(now: datetime, db_key: str | None = None) -> list[tuple[str, b
                     f"Last scan {ny_time(scan['asof_at'])}: {scan['structures_scored']:,} trades "
                     f"priced, {scan['passed_count']} passed."
                     if ok else f"Last scan failed: {scan.get('error_message')}"))
+    out.extend(_data_checks(now, db_key))
+    summary = load_backtest_summary(os.environ.get("CHRISTIANIA_BACKTEST_SUMMARY"))
+    if summary:
+        p = summary.get("period", {})
+        out.append(("Backtest", True, f"Summary from {p.get('start')} to {p.get('end')}, "
+                    f"{summary.get('settled')} settled picks."))
+    else:
+        out.append(("Backtest", None, "No summary file. Run run_engine_backtest.py before trusting "
+                    "the engine."))
     return out
+
+
+def _data_checks(now: datetime, db_key: str | None) -> list[tuple[str, bool | None, str]]:
+    from src.engine.history import history_status
+    from src.operations.sqlite_runtime import open_readonly_connection
+
+    try:
+        conn = open_readonly_connection(db_key)
+    except Exception as exc:
+        return [("Price history", None, f"Unavailable ({type(exc).__name__}).")]
+    try:
+        floor = (now - timedelta(days=14)).astimezone(UTC).isoformat().replace("+00:00", "Z")
+        symbols = {str(r[0]) for r in conn.execute(
+            "SELECT DISTINCT underlying FROM market_snapshots WHERE captured_at >= ?", (floor,))}
+        zero = [s.strip().upper() for s in os.environ.get("CHRISTIANIA_ZERO_DTE_SYMBOLS", "SPY,QQQ").split(",") if s.strip()]
+        symbols |= set(zero)
+        out: list[tuple[str, bool | None, str]] = []
+        try:
+            hs = history_status(conn, symbols, now=now)
+            out.append(("Price history", hs.ok, hs.sentence()))
+        except Exception as exc:
+            out.append(("Price history", None, f"Unavailable ({type(exc).__name__})."))
+        try:
+            counts = {str(r[0]): int(r[1]) for r in conn.execute(
+                "SELECT symbol, COUNT(*) FROM engine_intraday_sessions GROUP BY symbol")}
+            if not zero:
+                out.append(("Intraday history", None, "0DTE lane disabled."))
+            else:
+                missing = [s for s in zero if counts.get(s, 0) < 40]
+                text = ", ".join(f"{s} {counts.get(s, 0)} sessions" for s in zero)
+                out.append(("Intraday history", not missing,
+                            text + (". The 0DTE lane needs 40 sessions per symbol." if missing else ".")))
+        except Exception as exc:
+            out.append(("Intraday history", None, f"Unavailable ({type(exc).__name__})."))
+        return out
+    finally:
+        conn.close()

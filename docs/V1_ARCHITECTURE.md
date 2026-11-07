@@ -1,3 +1,9 @@
+> **Superseded (2026-11-07).** The research command deck, decision desk, shadow lab and the
+> A–F research packages described below are retired to `archive/`. The product is now the
+> trade engine (`src/engine`) with four screens; see `README.md` and
+> `docs/reviews/HOSTILE_REVIEW_ENGINE_V1_2026-11-07.md`. Operations, release, backup and
+> Theta control sections remain accurate.
+
 # Christiania V1.0 Architecture
 
 This is the authoritative V1 architecture reference.
