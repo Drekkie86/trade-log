@@ -83,7 +83,7 @@ def test_quotes_from_eod_rows_normalises_rights_dates_and_timestamps():
 
 def test_backtest_runs_settles_caches_and_summarises(tmp_path):
     fake = FakeEodTheta()
-    settings = BacktestSettings(symbols=("SPY", "NOPE"), start=date(2026, 8, 3), end=date(2026, 9, 18),
+    settings = BacktestSettings(stock_pace_seconds=0.0, symbols=("SPY", "NOPE"), start=date(2026, 8, 3), end=date(2026, 9, 18),
                                 cache_dir=tmp_path / "cache", config=main_config())
     messages = []
     report = run_backtest(fake, settings, progress=messages.append)
@@ -111,5 +111,5 @@ def test_backtest_runs_settles_caches_and_summarises(tmp_path):
 
 def test_backtest_rejects_an_empty_range(tmp_path):
     with pytest.raises(ValueError):
-        run_backtest(FakeEodTheta(), BacktestSettings(symbols=("SPY",), start=date(2026, 8, 1),
+        run_backtest(FakeEodTheta(), BacktestSettings(stock_pace_seconds=0.0, symbols=("SPY",), start=date(2026, 8, 1),
                                                       end=date(2026, 8, 2), cache_dir=tmp_path))

@@ -686,3 +686,59 @@ def test_market_view_prices_skewed_structures_at_about_minus_costs():
         # never a positive edge from selling the skew.
         assert -12 < ev < 0, (put_skew, ev)
         assert market.note.startswith("smile") if put_skew else True
+
+
+def test_eod_history_respects_the_terminal_limits(monkeypatch):
+    """365-day cap, first-served-date clamp, rate-limit retry, partial-chunk tolerance."""
+    from src.engine.history import fetch_eod_closes
+    from src.providers.thetadata import ThetaDataResponseError
+
+    monkeypatch.setattr("src.engine.history._time.sleep", lambda s: None)
+
+    class Terminal:
+        base_url = "fake"
+        first_served = date(2023, 6, 1)
+
+        def __init__(self):
+            self.calls = []
+            self.throttled_once = False
+
+        def _get_payload(self, path, params):
+            start = datetime.strptime(params["start_date"], "%Y%m%d").date()
+            end = datetime.strptime(params["end_date"], "%Y%m%d").date()
+            self.calls.append((start, end))
+            if (end - start).days > 365:
+                raise ThetaDataResponseError("ThetaData HTTP 400: Too many days between start and end date; max 365 days allowed")
+            if start < self.first_served:
+                raise ThetaDataResponseError("ThetaData HTTP 400: start date precedes the first available date")
+            if not self.throttled_once:
+                self.throttled_once = True
+                raise ThetaDataResponseError("ThetaData HTTP 429: Too Many Requests")
+            rows, day = [], start
+            while day <= end:
+                if day.weekday() < 5:
+                    rows.append({"close": 100.0, "created": f"{day.isoformat()}T17:15:00",
+                                 "last_trade": f"{day.isoformat()}T16:00:00"})
+                day += timedelta(days=1)
+            return {"response": rows}
+
+    term = Terminal()
+    closes = fetch_eod_closes(term, "SPY", date(2021, 6, 3), date(2024, 7, 1))
+    assert all((e - s).days <= 364 for s, e in term.calls)
+    assert min(s for s, _ in term.calls) >= date(2023, 6, 1)         # clamped, no wasted calls
+    assert closes[0].session_date == "2023-06-01" and closes[-1].session_date == "2024-07-01"
+    assert term.throttled_once                                        # the 429 was retried, not fatal
+
+    # A tier that serves earlier data: override the clamp.
+    monkeypatch.setenv("CHRISTIANIA_STOCK_HISTORY_FIRST_DATE", "2016-01-01")
+    term2 = Terminal()
+    term2.first_served = date(2016, 1, 1)
+    closes = fetch_eod_closes(term2, "SPY", date(2021, 6, 3), date(2021, 12, 31))
+    assert closes and closes[0].session_date == "2021-06-03"
+
+    # Every chunk rejected: the error surfaces.
+    term3 = Terminal()
+    term3.first_served = date(2030, 1, 1)
+    monkeypatch.setenv("CHRISTIANIA_STOCK_HISTORY_FIRST_DATE", "2023-06-01")
+    with pytest.raises(ThetaDataResponseError):
+        fetch_eod_closes(term3, "SPY", date(2024, 1, 1), date(2024, 6, 1))

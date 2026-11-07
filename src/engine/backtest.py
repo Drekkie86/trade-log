@@ -41,6 +41,8 @@ class BacktestSettings:
     cache_dir: Path
     config: EngineConfig = field(default_factory=main_config)
     max_dte: int = 45
+    stock_pace_seconds: float = 2.1      # FREE stock tier: 30 requests/minute
+    option_pace_seconds: float = 0.0
 
     @property
     def top_n(self) -> int:
@@ -94,22 +96,42 @@ def quotes_from_eod_rows(rows: Iterable[dict], session: date) -> list[Quote]:
 class CachedSource:
     """ThetaData access with a plain-file cache: one JSON per symbol per session."""
 
-    def __init__(self, theta_client, cache_dir: Path, max_dte: int = 45):
+    def __init__(self, theta_client, cache_dir: Path, max_dte: int = 45,
+                 pace_seconds: float = 2.1, option_pace_seconds: float = 0.0):
         self.theta = theta_client
         self.cache_dir = Path(cache_dir)
         self.max_dte = max_dte
         self.requests = 0
+        # FREE stock tier: 30 requests per minute.
+        self.pace_seconds = pace_seconds
+        self.option_pace_seconds = option_pace_seconds
 
     def chain_rows(self, symbol: str, session: date) -> list[dict]:
         path = self.cache_dir / "option_eod" / symbol.upper() / f"{session.isoformat()}.json"
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
-        payload = self.theta._get_payload(
-            "/option/history/eod",
-            {"symbol": symbol.upper(), "expiration": "*", "start_date": session.strftime("%Y%m%d"),
-             "end_date": session.strftime("%Y%m%d"), "max_dte": self.max_dte},
-        )
+        from src.engine.history import RETRY_ATTEMPTS, RETRYABLE_MARKERS
+        from src.providers.thetadata import ThetaDataResponseError, ThetaDataUnavailable
+
+        delay = 2.0
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                payload = self.theta._get_payload(
+                    "/option/history/eod",
+                    {"symbol": symbol.upper(), "expiration": "*",
+                     "start_date": session.strftime("%Y%m%d"),
+                     "end_date": session.strftime("%Y%m%d"), "max_dte": self.max_dte},
+                )
+                break
+            except (ThetaDataResponseError, ThetaDataUnavailable) as exc:
+                text = str(exc).lower()
+                if attempt == RETRY_ATTEMPTS or not any(m in text for m in RETRYABLE_MARKERS):
+                    raise
+                clock.sleep(delay)
+                delay = min(delay * 2, 20.0)
         self.requests += 1
+        if self.option_pace_seconds:
+            clock.sleep(self.option_pace_seconds)
         rows = _flatten(payload)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(rows), encoding="utf-8")
@@ -120,7 +142,7 @@ class CachedSource:
         if path.exists():
             raw = json.loads(path.read_text(encoding="utf-8"))
             return {d: DailyClose(d, float(c), lt, bool(ah)) for d, c, lt, ah in raw}
-        closes = fetch_eod_closes(self.theta, symbol, start, end)
+        closes = fetch_eod_closes(self.theta, symbol, start, end, pace_seconds=self.pace_seconds)
         self.requests += 1
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps([[c.session_date, c.close, c.last_trade_at, c.after_hours] for c in closes]),
@@ -148,7 +170,9 @@ def _session_dates(start: date, end: date, calendar=None) -> list[date]:
 def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
                  progress: Callable[[str], None] | None = None) -> BacktestReport:
     say = progress or (lambda _: None)
-    source = CachedSource(theta_client, settings.cache_dir, settings.max_dte)
+    source = CachedSource(theta_client, settings.cache_dir, settings.max_dte,
+                          pace_seconds=settings.stock_pace_seconds,
+                          option_pace_seconds=settings.option_pace_seconds)
     sessions = _session_dates(settings.start, settings.end, calendar)
     if not sessions:
         raise ValueError("no sessions in range")
@@ -159,7 +183,7 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
         try:
             series = source.closes(s, history_start, close_end)
         except Exception as exc:  # a symbol without stock history is skipped, not fatal
-            say(f"{s}: no stock history ({type(exc).__name__}); skipped")
+            say(f"{s}: no stock history ({type(exc).__name__}: {str(exc)[:200]}); skipped")
             continue
         if not series:
             say(f"{s}: no stock history returned; skipped")

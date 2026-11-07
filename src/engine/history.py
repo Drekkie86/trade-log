@@ -9,7 +9,9 @@ stays missing and shows up in ``history_status``.
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
+import time as _time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Iterable
@@ -24,6 +26,10 @@ OFFICIAL_CLOSE = time(16, 0, 5)
 
 @dataclass(frozen=True)
 class DailyClose:
+    """One EOD report row. ``after_hours`` records that the report's last trade printed
+    after 16:00 New York; for liquid names that is nearly always true and the ``close``
+    field still matched neither the 17:15 bid nor ask in the 2026-11-07 probe, so it is
+    kept for audit, not raised as a warning."""
     session_date: str
     close: float
     last_trade_at: str | None = None
@@ -63,19 +69,71 @@ def parse_eod_rows(payload: Any) -> list[DailyClose]:
     return [out[d] for d in sorted(out)]
 
 
-def fetch_eod_closes(theta_client, symbol: str, start: date, end: date) -> list[DailyClose]:
-    """One or more bounded requests; never more than MAX_REQUEST_DAYS per call."""
+def stock_history_first_date() -> date:
+    """Earliest session the stock subscription serves (FREE tier: 2023-06-01).
+
+    Requests that start before it are rejected by the terminal, so the window is
+    clamped. Override with CHRISTIANIA_STOCK_HISTORY_FIRST_DATE after an upgrade.
+    """
+    raw = os.environ.get("CHRISTIANIA_STOCK_HISTORY_FIRST_DATE", "2023-06-01")
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return date(2023, 6, 1)
+
+
+RETRYABLE_MARKERS = ("429", "rate limit", "too many requests", "502", "503", "504")
+RETRY_ATTEMPTS = 5
+
+
+def _eod_request(theta_client, symbol: str, chunk_start: date, chunk_end: date) -> Any:
+    """One EOD request with backoff on rate limiting and transient errors."""
+    from src.providers.thetadata import ThetaDataResponseError, ThetaDataUnavailable
+
+    delay = 2.0
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return theta_client._get_payload(
+                "/stock/history/eod",
+                {"symbol": symbol.upper(), "start_date": chunk_start.strftime("%Y%m%d"),
+                 "end_date": chunk_end.strftime("%Y%m%d")},
+            )
+        except (ThetaDataResponseError, ThetaDataUnavailable) as exc:
+            text = str(exc).lower()
+            if attempt == RETRY_ATTEMPTS or not any(m in text for m in RETRYABLE_MARKERS):
+                raise
+            _time.sleep(delay)
+            delay = min(delay * 2, 20.0)
+
+
+def fetch_eod_closes(theta_client, symbol: str, start: date, end: date, *,
+                     pace_seconds: float = 0.0) -> list[DailyClose]:
+    """Bounded requests (<= MAX_REQUEST_DAYS each) from max(start, first served date).
+
+    A chunk that the terminal rejects is skipped and the others are kept; the
+    error is raised only when every chunk failed. ``pace_seconds`` sleeps between
+    requests to stay under the stock tier's per-minute limit.
+    """
+    from src.providers.thetadata import ThetaDataError
+
     out: list[DailyClose] = []
-    chunk_start = start
+    chunk_start = max(start, stock_history_first_date())
+    if chunk_start > end:
+        return out
+    failures: list[Exception] = []
+    attempted = 0
     while chunk_start <= end:
         chunk_end = min(end, chunk_start + timedelta(days=MAX_REQUEST_DAYS - 1))
-        payload = theta_client._get_payload(
-            "/stock/history/eod",
-            {"symbol": symbol.upper(), "start_date": chunk_start.strftime("%Y%m%d"),
-             "end_date": chunk_end.strftime("%Y%m%d")},
-        )
-        out.extend(parse_eod_rows(payload))
+        attempted += 1
+        try:
+            out.extend(parse_eod_rows(_eod_request(theta_client, symbol, chunk_start, chunk_end)))
+        except ThetaDataError as exc:
+            failures.append(exc)
         chunk_start = chunk_end + timedelta(days=1)
+        if pace_seconds and chunk_start <= end:
+            _time.sleep(pace_seconds)
+    if failures and len(failures) == attempted:
+        raise failures[-1]
     return out
 
 

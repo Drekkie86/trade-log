@@ -31,6 +31,10 @@ def main() -> int:
     parser.add_argument("--start", default="2023-07-03")
     parser.add_argument("--end", default=None)
     parser.add_argument("--cache", default="data/backtest_cache")
+    parser.add_argument("--stock-pace", type=float, default=2.1,
+                        help="seconds between stock EOD requests (FREE tier allows 30/min)")
+    parser.add_argument("--option-pace", type=float, default=0.0,
+                        help="seconds between option chain requests")
     parser.add_argument("--out", default="data/backtest")
     parser.add_argument("--theta-base-url", default=os.environ.get("CHRISTIANIA_THETA_BASE_URL",
                                                                     "http://127.0.0.1:25503/v3"))
@@ -41,6 +45,7 @@ def main() -> int:
     settings = BacktestSettings(
         symbols=tuple(s.strip().upper() for s in args.symbols.split(",") if s.strip()),
         start=date.fromisoformat(args.start), end=end, cache_dir=Path(args.cache),
+        stock_pace_seconds=args.stock_pace, option_pace_seconds=args.option_pace,
     )
     client = ThetaDataClient(base_url=args.theta_base_url, timeout_seconds=120.0)
     report = run_backtest(client, settings, progress=print)

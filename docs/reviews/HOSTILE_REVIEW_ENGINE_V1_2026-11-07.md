@@ -64,6 +64,15 @@ ThetaData options Standard, stock FREE.
   intraday bars: the 0DTE lane is parked (`CHRISTIANIA_ZERO_DTE_ENABLED=0`) until the stock
   subscription is Value or higher. The FREE tier's one-day delay is harmless for the models;
   settlement of a Friday expiry may land on Tuesday instead of Monday.
+* **First live run (2026-11-07, commit 7168d89) found one more bug.** The terminal probes
+  confirmed the 365-day cap (HTTP 400) and that stock OHLC needs the Value tier (HTTP 403);
+  the stock EOD report fields are `close`, `created` (17:15 NY), `last_trade`, bid/ask, OHLC,
+  and `close` matched neither the 17:15 bid nor ask, consistent with an official close. The
+  backtest skipped every symbol: the history window reached back to 2021, before the FREE tier's
+  first served date, and one rejected chunk failed the whole fetch. Fixed in `fcf5b6c`+:
+  the window is clamped at `CHRISTIANIA_STOCK_HISTORY_FIRST_DATE` (2023-06-01), a rejected
+  chunk no longer discards the others, 429s are retried with backoff, stock requests are paced
+  at 2.1 s for the 30/min limit, and the skip line now prints the terminal's message.
 * **Run the backtest** (`run_engine_backtest.py`, needs the Theta Terminal). Until the curve
   through August 2024 and April 2025 exists, nothing above changes the verdict. If the options
   Standard history reaches back before 2023, a later version can derive the stock series from

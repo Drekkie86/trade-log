@@ -756,8 +756,7 @@ def render_track_record_page(*, db_path=None, now: datetime | None = None) -> No
             Col("status", "Status", "l", group_start=True,
                 render=lambda p: "Open" if p.get("pnl_usd") is None
                 else f"Settled at {float(p['settlement_price']):,.2f}"
-                + (" (pin)" if p.get("near_strike") else "")
-                + (" (after-hours print)" if p.get("settlement_after_hours") else ""),
+                + (" (pin)" if p.get("near_strike") else ""),
                 css=lambda p: "muted" if p.get("pnl_usd") is None else ""),
         ], ordered, groups=[("", 3), ("Per lot, $", 3), ("", 1)]))
 
