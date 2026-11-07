@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import time as clock
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -91,30 +92,48 @@ class CachedSource:
         self.pace_seconds = pace_seconds
         self.option_pace_seconds = option_pace_seconds
 
+    @staticmethod
+    def _read(path: Path):
+        """Cached payload, or None when the file is missing or was left half-written
+        (a run stopped mid-write); a damaged file is removed so it is fetched again."""
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            path.unlink(missing_ok=True)
+            return None
+
+    @staticmethod
+    def _write(path: Path, payload) -> None:
+        """Write to a sibling temp file and rename, so a cache entry is whole or absent."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+
     def chain_rows(self, symbol: str, session: date) -> list[dict]:
         path = self.cache_dir / "option_eod" / symbol.upper() / f"{session.isoformat()}.json"
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
+        cached = self._read(path)
+        if cached is not None:
+            return cached
         rows = fetch_eod_chain_rows(self.theta, symbol, session, max_dte=self.max_dte)
         self.requests += 1
         if self.option_pace_seconds:
             clock.sleep(self.option_pace_seconds)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(rows), encoding="utf-8")
+        self._write(path, rows)
         return rows
 
     def closes(self, symbol: str, start: date, end: date,
                problems: list[str] | None = None) -> dict[str, DailyClose]:
         path = self.cache_dir / "stock_eod" / f"{symbol.upper()}_{start.isoformat()}_{end.isoformat()}.json"
-        if path.exists():
-            raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = self._read(path)
+        if raw is not None:
             return {d: DailyClose(d, float(c), lt, bool(ah)) for d, c, lt, ah in raw}
         closes = fetch_eod_closes(self.theta, symbol, start, end, pace_seconds=self.pace_seconds,
                                   problems=problems)
         self.requests += 1
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps([[c.session_date, c.close, c.last_trade_at, c.after_hours] for c in closes]),
-                        encoding="utf-8")
+        self._write(path, [[c.session_date, c.close, c.last_trade_at, c.after_hours] for c in closes])
         return {c.session_date: c for c in closes}
 
 

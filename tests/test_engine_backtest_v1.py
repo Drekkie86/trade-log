@@ -132,6 +132,20 @@ def test_backtest_warms_up_scores_one_open_pick_per_name_settles_caches_and_summ
     assert fake.requests == before + 1 and again.summary["total_pnl_usd"] == s["total_pnl_usd"]
 
 
+def test_half_written_cache_entries_are_refetched_not_trusted(tmp_path):
+    from src.engine.backtest import CachedSource
+
+    fake = FakeEodTheta()
+    source = CachedSource(fake, tmp_path / "cache", pace_seconds=0.0)
+    rows = source.chain_rows("SPY", date(2026, 8, 3))
+    path = tmp_path / "cache" / "option_eod" / "SPY" / "2026-08-03.json"
+    assert rows and path.exists() and not list(path.parent.glob("*.tmp"))
+    path.write_text(path.read_text()[:40], encoding="utf-8")          # a run died mid-write
+    before = fake.requests
+    assert source.chain_rows("SPY", date(2026, 8, 3)) == rows and fake.requests == before + 1
+    assert source.chain_rows("SPY", date(2026, 8, 3)) == rows and fake.requests == before + 1
+
+
 def test_backtest_rejects_an_empty_range(tmp_path):
     with pytest.raises(ValueError):
         run_backtest(FakeEodTheta(), settings_for(tmp_path, start=date(2026, 8, 1), end=date(2026, 8, 2)))
