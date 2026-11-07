@@ -55,10 +55,13 @@ def test_product_interface_doc_tracks_current_navigation():
 
 
 def test_streamlit_theme_matches_product_palette():
+    from src.ui import design
+
     text = (ROOT / ".streamlit/config.toml").read_text(encoding="utf-8")
-    assert 'primaryColor = "#D9A84E"' in text
-    assert 'backgroundColor = "#031522"' in text
-    assert 'secondaryBackgroundColor = "#08283E"' in text
+    assert f'primaryColor = "{design.BRASS}"' in text
+    assert f'backgroundColor = "{design.HARBOUR}"' in text
+    assert f'secondaryBackgroundColor = "{design.DEEP}"' in text
+    assert f'textColor = "{design.PARCHMENT}"' in text
 
 
 

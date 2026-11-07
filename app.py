@@ -8,6 +8,7 @@ Four screens:
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import streamlit as st
@@ -20,25 +21,21 @@ from src.operations.release_manifest import read_deployed_commit
 from src.operations.saxo_health_status_v1 import probe_saxo_live
 from src.operations.saxo_quote_monitor_v1 import read_quote_status
 from src.providers.thetadata_control import probe_theta_terminal
-from src.ui import inject_christiania_theme
+import src.ui.design as design
+from src.ui.datetime_display import format_local_datetime
 from src.ui.engine_pages import (
-    render_trades_page, render_track_record_page, ny_time, _read_scan,
+    engine_checks, render_system, render_track_record_page, render_trades_page,
 )
-from src.ui.home_pages import render_system_page
+from src.ui.home_pages import system_checks
 
 ROOT = Path(__file__).resolve().parent
 LOGO_PATH = ROOT / "assets" / "christiania_logo.png"
 
-PAGES = {
-    "💰 Today's trades": "trades",
-    "⚡ 0DTE": "zero_dte",
-    "📊 Track record": "record",
-    "🩺 System": "system",
-}
+PAGES = ["Today's trades", "0DTE", "Track record", "System"]
 
 st.set_page_config(page_title="Christiania", page_icon="⚓", layout="wide",
                    initial_sidebar_state="auto")
-inject_christiania_theme()
+design.inject()
 
 
 @st.cache_data(show_spinner=False, ttl=30, max_entries=1)
@@ -62,7 +59,7 @@ def _cached_recovery_status() -> dict:
     return read_backup_system_status().as_dict()
 
 
-@st.cache_data(show_spinner="Loading system status…", ttl=180, max_entries=1)
+@st.cache_data(show_spinner="Checking the system…", ttl=180, max_entries=1)
 def _cached_system_state():
     snapshot = load_command_deck(include_provider_health=False, deep_integrity=False,
                                  page="System")
@@ -86,52 +83,43 @@ def _schema_version() -> int | None:
 with st.sidebar:
     if LOGO_PATH.exists():
         st.image(str(LOGO_PATH), width="stretch")
-    st.divider()
-    choice = st.radio("Navigation", list(PAGES), label_visibility="collapsed")
-    page = PAGES[choice]
+    page = st.radio("Navigation", PAGES, label_visibility="collapsed")
     st.divider()
     risk_budget = st.number_input(
-        "Max risk per trade ($)", min_value=0.0, value=500.0, step=50.0,
-        help="Used only to show how many contracts fit. The engine ranks trades per lot.",
+        "Risk limit per trade, $", min_value=0, value=500, step=50,
+        help="Only used to show how many lots fit. The engine ranks trades per lot.",
     )
-    if st.button("↻ Refresh", width="stretch"):
+    if st.button("Refresh data", width="stretch"):
         st.cache_data.clear()
         st.rerun()
     sha = read_deployed_commit()
     schema = _schema_version()
     st.caption(
-        (f"Deployed [{sha[:8]}](https://github.com/Drekkie86/trade-log/commit/{sha})"
-         if sha else "Deployed build: identity unavailable")
-        + (f" · schema v{schema}" if schema is not None else "")
+        (f"Build [{sha[:8]}](https://github.com/Drekkie86/trade-log/commit/{sha})"
+         if sha else "Build identity unavailable")
+        + (f", schema v{schema}" if schema is not None else "")
     )
 
-if page == "trades":
-    render_trades_page(LANE_MAIN, risk_budget=risk_budget or None)
-elif page == "zero_dte":
-    render_trades_page(LANE_ZERO_DTE, risk_budget=risk_budget or None)
-elif page == "record":
+if page == "Today's trades":
+    render_trades_page(LANE_MAIN, risk_budget=float(risk_budget) or None)
+elif page == "0DTE":
+    render_trades_page(LANE_ZERO_DTE, risk_budget=float(risk_budget) or None)
+elif page == "Track record":
     render_track_record_page()
 else:
     snapshot, backups = _cached_system_state()
     if not snapshot.get("ready"):
+        design.html('<div class="chr-head"><h1>System</h1></div>')
         st.error(f"Christiania cannot open the database: {snapshot.get('reason')}")
         st.stop()
-    render_system_page(
+    rows = system_checks(
         snapshot, _cached_theta_health(), backups,
         saxo=_cached_saxo_health(), recovery=_cached_recovery_status(),
         feed=_cached_saxo_feed_status(),
+    ) + engine_checks(datetime.now(UTC))
+    clock = snapshot.get("market_clock", {}) or {}
+    render_system(
+        rows,
+        next_collection=format_local_datetime(clock.get("next_sample_at")),
+        collecting=str(clock.get("state") or "").upper() == "ACTIVE_SAMPLE_WINDOW",
     )
-    st.markdown("#### Trade engine")
-    for lane, label in ((LANE_MAIN, "Main scan"), (LANE_ZERO_DTE, "0DTE scan")):
-        try:
-            scan = _read_scan(lane, None)
-        except Exception as exc:  # engine tables absent before migration 039
-            st.caption(f"{label}: unavailable ({type(exc).__name__})")
-            continue
-        if scan is None:
-            st.caption(f"{label}: no scan yet")
-        else:
-            st.caption(
-                f"{label}: {scan['status'].lower()} at {ny_time(scan['asof_at'])} — "
-                f"{scan['structures_scored']:,} trades priced, {scan['passed_count']} passed"
-            )
