@@ -21,3 +21,6 @@ review_packages/
 
 audit_exports/
 runtime_evidence/
+
+# Backtest cache and output (large, regenerable)
+data/
