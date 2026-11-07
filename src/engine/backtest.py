@@ -26,7 +26,9 @@ import numpy as np
 
 from src.engine import ENGINE_VERSION
 from src.engine.chains import NY, Quote, build_chain
-from src.engine.history import DailyClose, fetch_eod_closes
+from src.engine.history import (
+    DailyClose, adjusted_closes, fetch_eod_closes, split_factor_between,
+)
 from src.engine.ledger import cluster_bootstrap_ci, drawdown, pick_pnl_at
 from src.engine.pipeline import EngineConfig, main_config, run_scan
 
@@ -262,7 +264,8 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
             chains.append(build_chain(s, asof, quotes, snapshot_id=None,
                                       spot=spot.close if spot else None, source="THETADATA_EOD",
                                       min_dte=settings.config.min_dte, max_dte=settings.max_dte))
-            closes_by_symbol[s] = [closes[s][d].close for d in sorted(closes[s]) if d < session.isoformat()]
+            closes_by_symbol[s] = adjusted_closes(
+                [(d, closes[s][d].close) for d in sorted(closes[s]) if d < session.isoformat()])
         if aborted_reason:
             say(f"ABORTED: {aborted_reason}")
             break
@@ -275,7 +278,10 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
         for c in result.picks:
             rec = c.to_record()
             settle = closes[c.underlying].get(c.expiration)
-            pnl = pick_pnl_at(rec, settle.close) if settle else None
+            factor = split_factor_between(
+                [(d, closes[c.underlying][d].close) for d in sorted(closes[c.underlying])
+                 if d <= c.expiration], session.isoformat(), c.expiration) if settle else 1.0
+            pnl = pick_pnl_at(rec, settle.close * factor) if settle else None
             picks.append({
                 "session": session.isoformat(), "underlying": c.underlying, "expiration": c.expiration,
                 "family": c.family, "shape": c.shape, "description": c.description,
@@ -284,7 +290,8 @@ def run_backtest(theta_client, settings: BacktestSettings, *, calendar=None,
                 "implied_ev_usd": c.implied_ev_usd, "stress_ev_usd": c.stress_ev_usd,
                 "score": c.score, "pop": c.pop, "p_max_loss": c.p_max_loss,
                 "atm_iv": c.atm_iv, "forecast_vol": c.forecast_vol, "event_move_pct": c.event_move_pct,
-                "settlement_price": settle.close if settle else None,
+                "settlement_price": settle.close * factor if settle else None,
+                "split_factor": factor if settle else None,
                 "settlement_after_hours": settle.after_hours if settle else None,
                 "pnl_usd": None if pnl is None else round(pnl, 2),
             })

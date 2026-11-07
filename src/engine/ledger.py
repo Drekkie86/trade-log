@@ -146,7 +146,7 @@ def near_short_strike(record: dict, price: float) -> bool:
 def settle_due_picks(conn: sqlite3.Connection, *, now: datetime) -> int:
     local = now.astimezone(NY)
     rows = conn.execute(
-        """SELECT p.id, p.underlying, p.expiration, p.record_json FROM engine_picks p
+        """SELECT p.id, p.underlying, p.expiration, p.session_date, p.record_json FROM engine_picks p
            LEFT JOIN engine_pick_outcomes o ON o.pick_id = p.id
            WHERE o.pick_id IS NULL AND p.expiration <= ?""",
         (local.date().isoformat(),),
@@ -156,7 +156,8 @@ def settle_due_picks(conn: sqlite3.Connection, *, now: datetime) -> int:
         expiration = str(r["expiration"])
         if expiration == local.date().isoformat() and local.time() < SETTLE_AFTER:
             continue
-        found = settlement_price(conn, str(r["underlying"]), expiration)
+        found = settlement_price(conn, str(r["underlying"]), expiration,
+                                 entered=str(r["session_date"]))
         if found is None:
             continue
         record = json.loads(r["record_json"])
@@ -235,7 +236,8 @@ def settle_due_trades(conn: sqlite3.Connection, *, now: datetime) -> int:
         expiration = str(t["expiration"])
         if expiration == local.date().isoformat() and local.time() < SETTLE_AFTER:
             continue
-        found = settlement_price(conn, str(t["underlying"]), expiration)
+        found = settlement_price(conn, str(t["underlying"]), expiration,
+                                 entered=str(t["taken_at"])[:10])
         if found is None:
             continue
         payoff = payoff_per_share(json.loads(t["record_json"]), found.price)

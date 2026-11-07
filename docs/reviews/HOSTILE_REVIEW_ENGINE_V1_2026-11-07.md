@@ -124,8 +124,25 @@ consecutive chain failures abort too; the stock-history window is clamped at tod
 skipped chunks are printed; `summary.json` carries a `coverage` block (sessions with chains,
 failures, first/last pick, abort reason) and predicted EV and return on risk per family.
 
-Next: rerun the six-symbol backtest from cache (the 788 chains are kept), then the full
-universe; decide with the curve from June 2024 through April 2025 in hand.
+**Second attempt (commit `2814e23`, same evening):** reached 19 December 2024 before the
+terminal returned HTTP 478 "invalid session" repeatedly and the harness stopped as designed.
+2,228 chains cached, 640 settled picks (first possible pick now June 2024 because of the
+250-return minimum), provisional P&L **−$26,579**, hit rate 26.4 % vs 35.1 % predicted,
+max drawdown −$32,482. Two things to settle before reading that number:
+
+* **Splits.** ThetaData closes are unadjusted; NVDA split 10:1 on 2024‑06‑10, at the very
+  start of this window. A −90 % "return" in the history inflates a year of NVDA volatility
+  forecasts, and a pick with pre-split strikes settled against a post-split close books a
+  bogus max loss. Split detection, adjusted close series for the models and split-aware
+  settlement are now in `history.py` (used by the live engine and the backtest); the
+  cached chains re-score without refetching.
+* **The 478s.** The account's Theta Terminal also runs on the production server; ThetaData
+  permits one terminal session per account, so two terminals log each other out. Run the
+  backtest on the server next to the existing terminal (separate checkout of the branch),
+  or stop the server's `christiania-theta` service while the PC runs.
+
+Next: rerun from cache, then the full universe; decide with the curve from June 2024
+through April 2025 in hand.
 
 ## Findings
 

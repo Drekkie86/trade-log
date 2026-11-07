@@ -14,7 +14,7 @@ import sqlite3
 import time as _time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from src.engine.chains import NY
 
@@ -204,15 +204,79 @@ def refresh_closes(conn: sqlite3.Connection, theta_client, symbols: Iterable[str
     return status
 
 
+# ------------------------------------------------------------ corporate actions
+# ThetaData's EOD closes are unadjusted. A 10:1 split shows up as a -90 % "return",
+# which would poison a year of volatility forecasts and mis-settle every pick whose
+# strikes are in pre-split dollars. Splits are recognised as a one-day ratio within
+# 2 % of a plausible split ratio; anything else is treated as a real move.
+SPLIT_RATIOS = (1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0, 100.0)
+SPLIT_TOLERANCE = 0.02
+
+
+def detect_splits(series: Sequence[tuple[str, float]]) -> dict[str, float]:
+    """Map session_date -> split ratio applying from that session (prev close / close).
+
+    ``series`` is ascending (session_date, raw close). A ratio above 1 is a forward
+    split (10.0 for 10:1); below 1 a reverse split (0.1 for 1:10).
+    """
+    out: dict[str, float] = {}
+    for (_, prev), (day, close) in zip(series, series[1:]):
+        if prev <= 0 or close <= 0:
+            continue
+        ratio = prev / close
+        if abs(math.log(ratio)) < math.log(1.4):
+            continue
+        for r in SPLIT_RATIOS:
+            for candidate in (r, 1.0 / r):
+                if abs(ratio / candidate - 1.0) <= SPLIT_TOLERANCE:
+                    out[day] = candidate
+                    break
+            if day in out:
+                break
+    return out
+
+
+def adjusted_closes(series: Sequence[tuple[str, float]]) -> list[float]:
+    """Closes expressed in the units of the latest session (earlier closes divided
+    by every split that follows them), so returns are continuous across splits."""
+    splits = detect_splits(series)
+    out = [c for _, c in series]
+    factor = 1.0
+    for i in range(len(series) - 1, -1, -1):
+        day = series[i][0]
+        out[i] = out[i] / factor
+        if day in splits:
+            factor *= splits[day]
+    return out
+
+
+def split_factor_between(series: Sequence[tuple[str, float]], start_date: str, end_date: str) -> float:
+    """Product of split ratios with start_date < session <= end_date; multiply a raw
+    close at end_date by it to express it in the strike units of start_date."""
+    factor = 1.0
+    for day, ratio in detect_splits(series).items():
+        if start_date < day <= end_date:
+            factor *= ratio
+    return factor
+
+
+def raw_close_series(conn: sqlite3.Connection, symbol: str, *, before: date | None = None,
+                     through: date | None = None) -> list[tuple[str, float]]:
+    sql = "SELECT session_date, close FROM engine_daily_closes WHERE symbol=?"
+    params: list = [symbol.upper()]
+    if before is not None:
+        sql += " AND session_date<?"
+        params.append(before.isoformat())
+    if through is not None:
+        sql += " AND session_date<=?"
+        params.append(through.isoformat())
+    sql += " ORDER BY session_date"
+    return [(str(r[0]), float(r[1])) for r in conn.execute(sql, params)]
+
+
 def load_closes(conn: sqlite3.Connection, symbol: str, *, before: date) -> list[float]:
-    """Ascending EOD closes strictly before ``before`` (today's session excluded)."""
-    return [
-        float(r[0]) for r in conn.execute(
-            """SELECT close FROM engine_daily_closes WHERE symbol=? AND session_date<?
-               ORDER BY session_date""",
-            (symbol.upper(), before.isoformat()),
-        )
-    ]
+    """Ascending split-adjusted EOD closes strictly before ``before``."""
+    return adjusted_closes(raw_close_series(conn, symbol, before=before))
 
 
 @dataclass(frozen=True)
@@ -268,16 +332,26 @@ def history_status(conn: sqlite3.Connection, symbols: Iterable[str], *, now: dat
 
 @dataclass(frozen=True)
 class Settlement:
-    price: float
+    price: float            # in the strike units of the pick (split-adjusted back if needed)
     source: str
     after_hours: bool
+    raw_close: float | None = None
+    split_factor: float = 1.0
 
 
-def settlement_price(conn: sqlite3.Connection, symbol: str, session_date: str) -> Settlement | None:
+def settlement_price(conn: sqlite3.Connection, symbol: str, session_date: str,
+                     *, entered: str | None = None) -> Settlement | None:
+    """Close at ``session_date``; when ``entered`` is given and the underlying split in
+    between, the close is multiplied back into the pick's pre-split strike units."""
     row = conn.execute(
         "SELECT close, after_hours FROM engine_daily_closes WHERE symbol=? AND session_date=?",
         (symbol.upper(), session_date),
     ).fetchone()
     if row is None:
         return None
-    return Settlement(float(row[0]), "THETADATA_EOD", bool(row[1]))
+    factor = 1.0
+    if entered is not None:
+        series = raw_close_series(conn, symbol, through=date.fromisoformat(session_date))
+        factor = split_factor_between(series, entered, session_date)
+    return Settlement(float(row[0]) * factor, "THETADATA_EOD", bool(row[1]),
+                      raw_close=float(row[0]), split_factor=factor)

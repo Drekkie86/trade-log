@@ -769,3 +769,35 @@ def test_eod_history_never_asks_for_the_future(monkeypatch):
     fetch_eod_closes(Term(), "SPY", date(2026, 1, 1), date(2026, 12, 28), today=date(2026, 11, 7),
                      problems=problems)
     assert seen and max(e for _, e in seen) == "20261107"
+
+
+def test_splits_are_recognised_adjusted_and_settled_in_strike_units(db_path):
+    from src.engine.history import (
+        adjusted_closes, detect_splits, settlement_price, split_factor_between,
+    )
+
+    # A 10:1 split on day 4; a genuine -20% day on day 7 must not be treated as a split.
+    raw = [("2024-06-03", 1200.0), ("2024-06-04", 1210.0), ("2024-06-05", 1190.0),
+           ("2024-06-06", 1220.0), ("2024-06-07", 121.0), ("2024-06-10", 123.0),
+           ("2024-06-11", 125.0), ("2024-06-12", 100.0), ("2024-06-13", 102.0)]
+    splits = detect_splits(raw)
+    assert splits == {"2024-06-07": 10.0}
+    adj = adjusted_closes(raw)
+    assert adj[:4] == pytest.approx([120.0, 121.0, 119.0, 122.0])
+    assert adj[4:] == [121.0, 123.0, 125.0, 100.0, 102.0]
+    assert split_factor_between(raw, "2024-06-05", "2024-06-13") == 10.0
+    assert split_factor_between(raw, "2024-06-07", "2024-06-13") == 1.0   # entered after the split
+
+    conn = get_connection(db_path)
+    with conn:
+        conn.executemany(
+            "INSERT INTO engine_daily_closes (symbol, session_date, close, source, fetched_at) "
+            "VALUES ('NVDA', ?, ?, 'THETADATA_EOD', 'x')", raw)
+    # Pick entered 2024-06-05 with pre-split strikes settles at 102 x 10 = 1,020.
+    s = settlement_price(conn, "NVDA", "2024-06-13", entered="2024-06-05")
+    assert s.price == pytest.approx(1020.0) and s.raw_close == 102.0 and s.split_factor == 10.0
+    # Models see a continuous series.
+    from src.engine.history import load_closes
+    series = load_closes(conn, "NVDA", before=date(2024, 6, 14))
+    assert max(abs(math.log(b / a)) for a, b in zip(series, series[1:])) < 0.3
+    conn.close()
