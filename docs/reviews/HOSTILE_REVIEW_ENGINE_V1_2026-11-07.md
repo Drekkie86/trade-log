@@ -261,6 +261,57 @@ verified), the appropriateness test (not taken), and the capital. At €500 the 
 on a $500-max-loss pick ends the account; the per-lot cap has to be set so that a full loss
 is a fraction of the capital, which on these names means more capital, not a smaller cap.
 
+### First V2 run, six names (2026-11-08 00:52): FAIL, and most of it was not real
+
+`e94fbcf`, SPY/QQQ/IWM/AAPL/MSFT/NVDA, 583 sessions from 2024-07-15, entirely from the cache
+(the V1 full run had fetched every chain through 2026-11-06 the hour before).
+
+| | Calibration (2024) | Out of sample (2025–26) |
+|---|---|---|
+| Settled picks / expiry days | 34 / 27 | 72 / 60 |
+| P&L on risk | +$110 on $7,015 | **+$1,896 on $13,677 (+13.9 %)** |
+| Average pick, bootstrap 95 % | +$3 (−103 to +116) | +$26 (**−$35** to +$91) |
+| Hit rate vs predicted | 41 % vs 46 % | 49 % vs 50 % |
+| Full-loss rate vs predicted | 56 % vs 44 % | 44 % vs 44 % |
+| Verdict | — | **FAIL** (lower bound below zero; the other checks pass) |
+
+The FAIL is the smaller problem. Sliced by the sign of the market's own (smile-implied) EV:
+
+| Out of sample | n | P&L | Risk |
+|---|---|---|---|
+| Implied EV ≤ 0 — the edge comes from λ alone | 9 | +$696 | $1,914 |
+| Implied EV > 0 — the quotes beat the smile | 63 | +$1,200 | $11,763 |
+
+76 % of the claimed real-world EV out of sample was already present under the market's own
+smile, i.e. it came from quotes, not from λ. Under the smile every structure is worth its
+fitted price minus costs; a positive EV there means a leg's EOD NBBO was far from the smile:
+1-wide QQQ spreads quoted at 0.53–0.81 of width 18 % out of the money, iron flies with a
+credit of 95–100 % of the wing width (max loss $7 on a 4-wide QQQ fly), the +$1,110 SPY fly
+whose quotes beat the smile by $61. Those fills do not exist. 65 of the 106 picks kept 60 % or
+more of their width as credit. The engine was a stale-quote picker with a λ label on it.
+
+Why λ left nothing else: the trailing ratio was 0.72–0.95 across the six names in 2024 and
+jumped to 1.15–1.31 for SPY, QQQ and AAPL in 2025Q2 (the April 2025 crash month dominates
+a two-year sum of realised variance) and stayed above 1 through 2026; only MSFT (0.72→0.9) and
+later IWM (0.85) stayed below. Under the model there was no premium to sell on four of six
+names for the whole out-of-sample window, which is what the model should say about a window
+containing a crash, and also exactly when selling premium has historically paid best. That is
+a known limit of a trailing estimator; it is noted, not changed.
+
+**Amendment 1 to the pre-registration (2026-11-08 01:20, after the result above).** A
+validity gate is added: `QUOTE_INCONSISTENT` rejects any structure whose EV under the
+market's own smile is positive after costs. It is defined by principle (the whole edge must
+come from λ), not by outcome: on the six-name run it removes 82 of 106 picks including the
+largest winner, and the surviving 24 net −$677 in 2024 and +$696 out of sample. The criteria
+themselves are unchanged. Because the out-of-sample window has now been seen once, the
+rerun's result is a second look, not a first; it is reported as such.
+
+What a clean run will show is already visible: about one legitimate trade a month across six
+names, netting roughly zero. The remaining test with any power is the full 48-name universe
+under the same gate and criteria; if that fails, V2 is done and the honest conclusion is that
+no edge is demonstrable for a retail premium seller on liquid US names with a two-year
+lookback at these costs.
+
 ## Findings
 
 | ID | Severity | Finding |

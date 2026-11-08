@@ -37,6 +37,7 @@ REJECTION_LABELS = {
     "STALE_QUOTE": "quotes too old",
     "QUOTE_AGE_UNKNOWN": "quote age unknown",
     "MODEL_UNAVAILABLE": "no smile, or less than a year of implied/realised history",
+    "QUOTE_INCONSISTENT": "a leg's quote is off the smile (stale or crossed); not a fillable credit",
     "NO_USABLE_EXPIRY": "no usable expiry",
     "EVENT_BLACKOUT": "earnings before expiry (blackout list)",
     "MAX_LOSS_TOO_LARGE": "max loss above the per-lot limit",

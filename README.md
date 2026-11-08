@@ -38,10 +38,12 @@ Christiania never places orders. You re-price, trade and record fills yourself.
    Events priced in the term structure (earnings) are shown on the card;
    `CHRISTIANIA_EVENT_BLACKOUT` blocks named dates.
 4. **Score** – P&L at expiry after slippage and commission under the real-world
-   distribution. A trade passes when that expected profit is at least $5, is
-   still positive with a stress shock (3 % chance of −10 %), and is at least 3 %
-   of the expected loss in the worst 5 % of outcomes (CVaR95). Ranking is
-   EV / CVaR95. Each card also shows the EV under the market's own smile (about
+   distribution. A trade passes when the market's own smile does not already
+   call it profitable (a positive EV there means a leg's quote is off the
+   smile: stale or crossed, not fillable), when that expected profit is at
+   least $5, is still positive with a stress shock (3 % chance of −10 %), and is
+   at least 3 % of the expected loss in the worst 5 % of outcomes (CVaR95).
+   Ranking is EV / CVaR95. Each card also shows the EV under the market's own smile (about
    minus costs), the stress EV, the chance of the full loss and the chance of
    any profit.
 5. **Freeze** – the first scan at or after 10:00 New York each session freezes

@@ -10,7 +10,10 @@ by that ratio.
 
 Gates fail closed: an unknown quote age, a missing smile, an underlying without
 enough implied/realised history, or an open pick on the same name rejects the
-structure instead of letting it through.
+structure instead of letting it through. So does a structure the market's own
+smile already calls profitable after costs: that is a stale or crossed leg
+quote, not an edge, and the first out-of-sample run showed that three quarters
+of the engine's claimed edge came from exactly those quotes.
 """
 from __future__ import annotations
 
@@ -330,6 +333,12 @@ def score_structure(structure: Structure, *, expiry: Expiry, market: Distributio
         reason = "STALE_QUOTE"
     elif not complete:
         reason = "MODEL_UNAVAILABLE"
+    elif implied_ev > 0:
+        # Under the smile every structure is worth its fitted price minus costs. A
+        # positive EV here means the quoted credit beats the smile by more than the
+        # costs: a leg is stale, crossed or unquoted, and the fill is fiction. The
+        # whole edge must come from lambda, none of it from quotes-vs-smile.
+        reason = "QUOTE_INCONSISTENT"
     elif ev < config.min_ev_usd:
         reason = "EV_TOO_SMALL"
     elif stress_ev < 0:

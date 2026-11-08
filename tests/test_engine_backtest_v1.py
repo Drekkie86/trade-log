@@ -102,6 +102,7 @@ def test_backtest_warms_up_scores_one_open_pick_per_name_settles_caches_and_summ
     assert cov["warmup_sessions_requested"] > 250 and cov["iv_points"]["SPY"] > 250
     assert report.picks and all(p["underlying"] == "SPY" for p in report.picks)
     assert all(p["entry_cash_usd"] > 0 and p["premium_ratio"] is not None for p in report.picks)
+    assert all(p["implied_ev_usd"] <= 0 for p in report.picks)         # no edge from quotes-vs-smile
     assert all(0.2 < p["premium_ratio"] < 0.7 for p in report.picks)
     # One open pick per name at a time: each pick is entered after the previous one expired.
     ordered = sorted(report.picks, key=lambda p: p["session"])

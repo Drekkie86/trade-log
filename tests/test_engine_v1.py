@@ -247,6 +247,26 @@ def test_premium_below_one_sells_premium_and_the_market_view_is_minus_costs():
     assert res.premiums["SPY"]["ratio"] == 0.5
 
 
+def test_quotes_that_beat_the_smile_are_rejected_as_stale_not_taken_as_edge():
+    """A leg quoted far above its smile value makes the market's own EV positive;
+    that is a fill that will not happen, so the structure is rejected."""
+    quotes = synthetic_quotes(iv=0.25)
+    rich = []
+    for q in quotes:
+        if q.right == "P" and q.strike == 90.0:
+            rich.append(Quote(q.right, q.strike, q.expiration, round(q.bid * 3, 2), round(q.ask * 3, 2),
+                              q.quote_at, q.open_interest))
+        else:
+            rich.append(q)
+    c = build_chain("SPY", ASOF, rich, snapshot_id=None, spot=100.0, source="TEST", min_dte=7, max_dte=45)
+    res = run_scan([c], {"SPY": premium(0.5)}, main_config(), asof=ASOF)
+    assert res.rejections["QUOTE_INCONSISTENT"] > 0
+    assert res.passed and all(cand.implied_ev_usd <= 0 for cand in res.passed)
+    assert not any(l["strike"] == 90.0 and l["side"] < 0 for cand in res.passed for l in cand.legs)
+    clean = run_scan([chain(iv=0.25)], {"SPY": premium(0.5)}, main_config(), asof=ASOF)
+    assert all(cand.implied_ev_usd <= 0 for cand in clean.passed)
+
+
 def test_no_premium_means_nothing_passes():
     """lambda >= 1: realised variance matched or beat the implied; there is nothing to sell."""
     for ratio in (1.0, 1.2):
