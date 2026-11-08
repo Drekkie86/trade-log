@@ -674,3 +674,21 @@ with commit-addressed releases and systemd resource policy.
 * Saxo account tier, margin profile, real-time OPRA entitlement, exercise and
   assignment fees (Saxo does not publish them).
 * Engine step runtime and memory inside the real daemon process.
+
+## Closing record (2026-11-08): stop decision
+
+**Universe run, 48 names, 2024-07-15 to 2026-11-06, commit `ee4bcfb`.** 226 picks (224 settled): -$13,817 on $63,517 at risk (-21.8%). Out of sample (127 picks, 70 expiry days): -$8,114; bootstrap 95% interval -$110 to -$22 per pick. Pre-registered verdict: **FAIL** on all three checks (lower bound above zero; hit-rate gap 9.2 pts against a limit of 5; full-loss excess 11.6 pts against a limit of 5). Predicted hit rate 54.8% against 45.7% realised; predicted full-loss rate 34.1% against 45.7%. Max implied EV across picks was -$0.04, so the QUOTE_INCONSISTENT gate held and the loss is not a quote artefact. The risk-premium ratio (lambda) did not order outcomes: no monotone relation across quartiles, every quartile lost.
+
+**Cost diagnostic (`scripts/cost_diagnostic.py`, commit `fb72f2e`).** The same 224 trades re-priced, reproducing the run to $0.00:
+
+| Fill assumption | All | Out of sample |
+|---|---|---|
+| As run (0.5 slippage, $2/leg) | -$13,817 | -$8,114 |
+| Zero commission | -$12,140 | -$7,182 |
+| Zero slippage | -$5,766 | -$3,572 |
+| Mid fill, zero commission | -$4,090 | -$2,640 |
+| 0.25 slippage, $0.65/leg | -$8,660 | -$5,214 |
+
+Costs were about $9,700 (about $43 per trade: roughly $8,050 spread slippage, $1,680 commission). Before any cost the picks lost about $18 per trade, within about one standard error of zero. The model predicted about +$13,000 before costs; the shortfall is model error (tail risk understated), not execution.
+
+**Decision.** No demonstrated edge before costs, and a cost wall of about $43 per trade (about 15% of risk) that a four-leg structure cannot clear. Two engine versions failed their own pre-registered tests; the second on the largest sample this data supports. Christiania is retained as a tracker and screen, not a source of trades. The planned earnings-event and fewer-leg tests were not run. Any future signal idea needs a new pre-registration written before its data is examined. Nothing was traded; the cost was time, not money.
