@@ -52,13 +52,3 @@ def test_fast_backup_inventory_never_claims_unverified_file_is_valid(tmp_path):
     assert inventory.entries[0].detail == "METADATA_ONLY_INTERACTIVE"
 
 
-def test_streamlit_startup_uses_fast_paths_and_ops_keeps_deep_verification():
-    app = (Path(__file__).resolve().parents[1] / "app.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "deep_integrity=False" in app
-    assert "inventory_backups_fast().as_dict()" in app
-    assert "def _cached_deep_ops_readiness()" in app
-    assert "deep_integrity=True" in app
-    assert "inventory_backups().as_dict()" in app

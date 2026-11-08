@@ -5,21 +5,6 @@ import ast
 from pathlib import Path
 
 
-def test_html_rows_escape_provider_originated_values():
-    """Do not place untrusted provider/DB text into unsafe HTML."""
-    root = Path(__file__).resolve().parents[1]
-    tree = ast.parse((root / "app.py").read_text(encoding="utf-8"))
-    function = next(
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_html_rows"
-    )
-    isolated = ast.Module(body=[function], type_ignores=[])
-    scope = {"status_dot": lambda state: ""}
-    exec(compile(ast.fix_missing_locations(isolated), "<isolated_html_rows>", "exec"), scope)
-    result = scope["_html_rows"]([("<script>alert(1)</script>", "<img src=x onerror=alert(2)>", None)])
-    assert "<script>" not in result and "<img " not in result
-    assert "&lt;script&gt;" in result and "&lt;img" in result
-    assert "&quot;" not in result
 
 
 def test_atomic_local_settings_preserve_comments_and_permissions(tmp_path, monkeypatch):

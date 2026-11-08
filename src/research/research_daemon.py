@@ -741,6 +741,39 @@ def run_one_iteration(
         return summary
 
 
+def collector_only() -> bool:
+    """CHRISTIANIA_COLLECTOR_ONLY=1: persist snapshots only, skip the retired research stages."""
+    return str(os.environ.get("CHRISTIANIA_COLLECTOR_ONLY", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def iteration_runners() -> tuple[Callable, Callable]:
+    if collector_only():
+        from src.research.collector_cycle import run_collector_cycle, skip_shadow_marks
+
+        return run_collector_cycle, skip_shadow_marks
+    return run_full_research_cycle, collect_shadow_marks
+
+
+def _run_trade_engine(*, theta_client, db_path=None) -> None:
+    """Score trades after every iteration; never let the engine stop the daemon."""
+    if os.environ.get("CHRISTIANIA_ENGINE_DISABLED") == "1":
+        return
+    try:
+        from src.engine.worker import run_engine_step
+
+        engine = run_engine_step(theta_client=theta_client, db_path=db_path)
+        print(
+            f"Trade engine: main passed {engine.main_passed}; "
+            f"0DTE passed {engine.zero_dte_passed}; settled {engine.settled}"
+        )
+        for error in engine.errors:
+            print(f"Trade engine warning: {error}")
+        if engine.trades_settled:
+            print(f"Trade engine: settled {engine.trades_settled} real trade(s)")
+    except Exception as exc:  # pragma: no cover - defensive isolation
+        print(f"Trade engine failed: {type(exc).__name__}: {exc}")
+
+
 def run_daemon(
     *,
     symbols: list[str],
@@ -979,6 +1012,7 @@ def run_daemon(
                     f"{slot.isoformat()}..."
                 )
 
+                cycle_runner, mark_runner = iteration_runners()
                 summary = run_one_iteration(
                     scheduled_for=slot,
                     owner_token=owner_token,
@@ -988,6 +1022,8 @@ def run_daemon(
                     theta_client=
                         theta_client,
                     db_path=db_path,
+                    full_cycle_runner=cycle_runner,
+                    mark_collector=mark_runner,
                     universe_context=
                         universe_context,
                 )
@@ -1019,6 +1055,8 @@ def run_daemon(
                     f"{summary.error_type}: "
                     f"{summary.error_message}"
                 )
+
+            _run_trade_engine(theta_client=theta_client, db_path=db_path)
 
             print()
 

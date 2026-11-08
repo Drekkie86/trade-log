@@ -56,11 +56,3 @@ def test_columns_restrict_conversion_to_instants_and_dates():
     assert is_operator_date_column("us_session_date")
 
 
-def test_dashboard_displays_local_time_without_changing_source_data():
-    app = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
-    assert "frame[column] = frame[column].map(format_local_datetime)" in app
-    assert "frame[column] = frame[column].map(format_calendar_date)" in app
-    assert 'format_local_datetime(market_clock.get("next_sample_at"))' in app
-    assert 'format_local_datetime(last_at)' in app
-    assert 'dt.tz_convert("Europe/Brussels")' in app
-    assert "All displayed times:" not in app

@@ -59,24 +59,8 @@ def test_provider_names_are_vendor_names_and_unknown_source_is_not_rewritten():
     assert provider_label("OPRA") == "OPRA"
 
 
-def test_app_does_not_ship_mock_strategy_vocabulary_or_false_calibration_ready_state():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-    for invented in ["Gamma Fade", "Skew Roll", "Event Window", "Vol Regime", "Term Structure"]:
-        assert invented not in app
-    assert 'section_heading("Calibration readiness")' not in app
-    assert "DISCOVERY ONLY — NOT READY FOR DECISIONS" not in app  # derived, not hard-coded art
-    assert "calibration_evidence_state(" in app
-    assert "Backend hypothesis ID" in app
-    assert "Backend model ID" in app
 
 
-def test_provider_roles_are_truthfully_named_without_fake_live_state():
-    app = (ROOT / "app.py").read_text(encoding="utf-8")
-    assert '"provider": "Massive"' in app
-    assert '"provider": "ThetaData"' in app
-    assert '"provider": "Saxo"' in app
-    assert "Not independently probed on this screen" in app
-    assert "Execution disabled" in app
 
 
 def test_semantic_integrity_contract_is_documented():

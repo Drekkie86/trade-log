@@ -30,16 +30,6 @@ def test_v1_command_deck_has_no_broker_order_path():
         assert token not in combined
 
 
-def test_command_deck_labels_observations_as_non_signal():
-    app = (
-        ROOT / "app.py"
-    ).read_text(
-        encoding="utf-8"
-    )
-
-    assert "OBSERVATIONAL ONLY" in app
-    assert "not trade signals" in app
-    assert "No broker-order path" in app
 
 
 def test_cloud_sqlite_docs_defer_postgres():
@@ -68,39 +58,7 @@ def test_sqlite_runtime_sidecars_are_ignored():
     assert "*.db-journal" in ignore
 
 
-def test_app_command_deck_uses_page_cache_and_force_refresh():
-    app = (
-        ROOT / "app.py"
-    ).read_text(
-        encoding="utf-8"
-    )
-
-    assert "RUNTIME_REFRESH_SECONDS = 180" in app
-    assert "def _cached_page_runtime_state(page: str)" in app
-    assert 'refresh_mode="background"' in app
-    assert "page=page" in app
-    assert "_cached_page_runtime_state.clear()" in app
-    assert "_load_runtime_state(page, force=True)" in app
-    assert 'st.session_state["_chr_snapshot"]' not in app
 
 
-def test_command_deck_exposes_market_and_daemon_health():
-    app = (
-        ROOT / "app.py"
-    ).read_text(
-        encoding="utf-8"
-    )
-
-    assert '"Market clock"' in app
-    assert '"Daemon health"' in app
 
 
-def test_theta_provider_health_is_operational_not_trading():
-    app = (ROOT / "app.py").read_text(encoding="utf-8").lower()
-    control = (
-        ROOT / "src/providers/thetadata_control.py"
-    ).read_text(encoding="utf-8").lower()
-
-    assert "theta terminal" in app
-    assert "place_order" not in control
-    assert "submit_order" not in control

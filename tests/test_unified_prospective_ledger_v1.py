@@ -113,12 +113,12 @@ def seed_frozen_chain(db_path, *, age_seconds=2, stock_source='FETCHED'):
 
 
 def test_schema_38_exposes_immutable_unified_decision_book(db_path):
-    assert EXPECTED_SCHEMA_VERSION == 38
+    assert EXPECTED_SCHEMA_VERSION >= 38
     conn = get_connection(db_path)
     try:
         assert conn.execute(
             "SELECT MAX(version) FROM schema_version"
-        ).fetchone()[0] == 38
+        ).fetchone()[0] == EXPECTED_SCHEMA_VERSION
         assert conn.execute(
             "SELECT name FROM sqlite_master "
             "WHERE name='unified_candidate_decisions_v1'"

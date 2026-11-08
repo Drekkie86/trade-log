@@ -1,0 +1,51 @@
+config: commission 2.0/contract, forecast weight 0.5, min bid 0.05, max relative spread 0.5, stress 3% x -10%, decision 10:00:00
+
+=== P1 after: Pick churn within one session as the forward drifts ===
+scans: 7, best-per-underlying per scan [1, 1, 1, 1, 1, 1, 1]
+distinct frozen picks in ONE session, ONE underlying: 1 (was 12)
+
+=== P2 after: Gate selectivity: pass rate as a function of the IV - forecast gap ===
+  IV 14%:    0 /  194   (nothing passes)
+  IV 16%:    0 /  212   (nothing passes)
+  IV 18%:    2 /  252   short-vol share 100%   top: mixture EV +11, forecast +35, implied -12, score +0.031
+  IV 20%:   19 /  269   short-vol share 100%   top: mixture EV +23, forecast +58, implied -12, score +0.074
+  IV 22%:   53 /  289   short-vol share 100%   top: mixture EV +34, forecast +80, implied -13, score +0.109
+  IV 25%:  114 /  315   short-vol share 100%   top: mixture EV +33, forecast +83, implied -16, score +0.162
+  IV 30%:  152 /  327   short-vol share 100%   top: mixture EV +45, forecast +108, implied -19, score +0.248
+
+=== P3 after: Skew: what the engine sells, and the stress column it now shows ===
+  passed 47 (was 194); top-20 shapes: {'IRON_CONDOR': 19, 'IRON_FLY': 1}
+  top pick: IRON_CONDOR Buy 90P / Sell 95P / Sell 106C / Buy 111C exp 2026-12-18: mixture EV +28 (was +77 forecast-only), forecast +72, implied -16, stress +64, P(max loss) 12%, CVaR95 362
+
+=== P4 after: Execution assumptions: slippage and commission ===
+  slippage 0.5 x half-spread, $2.00/contract: passed  114, top-5 mean mixture EV +37, top-5 mean score +0.148
+  slippage 1.0 x half-spread, $2.00/contract: passed   90, top-5 mean mixture EV +37, top-5 mean score +0.126
+  slippage 0.5 x half-spread, $0.65/contract: passed  156, top-5 mean mixture EV +32, top-5 mean score +0.178
+
+=== P5 after: Liquidity gate: 0.01 x 0.06 wings ===
+  passed 103, of which 0 contain a 0.01x0.06 leg (was 23); NO_REAL_MARKET rejections 24
+  liquid() verdict for a 0.01x0.06 leg: NO_REAL_MARKET
+
+=== P6 after: Staleness gate with unparseable or missing timestamps ===
+  garbage  quote_at on every leg -> passed 0 (was 224), QUOTE_AGE_UNKNOWN rejections 315
+  NULL     quote_at on every leg -> passed 0 (was 224), QUOTE_AGE_UNKNOWN rejections 315
+
+=== P7 after: Break-even realised volatility of the top pick, and what the card now says ===
+  IRON_FLY Buy 94P / Sell 100C / Sell 100P / Buy 106C, 2026-12-04: card shows forecast +83, market -16, blend +33, stress +75, P(max loss) 29%, win 54%
+    realised 15%: EV  +78.2   P(profit) 63%   P(max loss) 18%
+    realised 19%: EV  +30.1   P(profit) 52%   P(max loss) 29%
+    realised 23%: EV   -5.2   P(profit) 44%   P(max loss) 38%
+    realised 25%: EV  -19.4   P(profit) 41%   P(max loss) 42%
+    realised 28%: EV  -37.5   P(profit) 37%   P(max loss) 47%
+
+=== P9 after: Event detection with <= 2 expiries ===
+  single name, 2 expiries: passed 0, blocked {'TEST': 'EVENT_UNDETECTABLE'}
+  ETF (no earnings), 2 expiries: passed 41, blocked {}
+
+=== P10 after: Track-record verdict: clustered by expiry day, 60-day minimum ===
+  30 settled trades, 6 expiry days, mean +200: verdict -> 'Too early to judge: 30 settled trades over 6 expiry days; a verdict needs 60 expiry days and a backtest through a volatility shock.'
+  naive per-trade 95% CI would be +97 to +303; cluster bootstrap by day: +120 to +300
+
+=== P11 after: Engine step cost at production scale (48 chains) ===
+  48 chains: 7.5 s, structures scored 14,078, passed 266, picks 5, peak RSS 212 MiB
+  top-5: [('S01', 'IRON_FLY', 0.146, 0.24), ('S00', 'IRON_FLY', 0.133, 0.17), ('S46', 'CALL_DEBIT_SPREAD', 0.115, 0.66), ('S30', 'CALL_DEBIT_SPREAD', 0.104, 0.68), ('S02', 'IRON_FLY', 0.085, 0.19)]

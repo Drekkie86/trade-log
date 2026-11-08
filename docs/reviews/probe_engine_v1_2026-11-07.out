@@ -1,0 +1,70 @@
+
+=== P1: Pick churn within one session as the forward drifts ===
+scans: 7  spot drift: 100.0 -> 100.6 (0.6%)
+distinct frozen picks in ONE session, ONE underlying: 12
+expiries covered: ['2026-11-20', '2026-12-04', '2026-12-18']
+picks per scan: [5, 5, 5, 5, 5, 5, 5] -> union 12
+
+=== P2: Gate selectivity: pass rate as a function of the IV - forecast gap ===
+history vol 15% (forecast ~17%).  implied IV -> passed / scored,  share short-vol among passed
+  IV 14%:    0 /  221   (nothing passes)
+  IV 16%:    4 /  244   short-vol share 100%   top EV/risk +0.035
+  IV 18%:   86 /  273   short-vol share 100%   top EV/risk +0.121
+  IV 20%:  140 /  282   short-vol share 100%   top EV/risk +0.207
+  IV 22%:  189 /  311   short-vol share 100%   top EV/risk +0.301
+  IV 25%:  224 /  328   short-vol share 100%   top EV/risk +0.441
+  IV 30%:  238 /  337   short-vol share 100%   top EV/risk +0.654
+
+=== P3: Skew: does the engine sell the skew, and what happens with a jump? ===
+  chain: ATM IV 22.3%, 90-strike put IV 28.6%, 110-strike call IV 21.0%
+  passed 194; top-20 shapes: {'IRON_CONDOR': 18, 'IRON_FLY': 2}
+  top pick: IRON_CONDOR Buy 91P / Sell 96P / Sell 105C / Buy 110C exp 2026-12-18: engine EV +77, max loss 330, POP 78%
+  true world: 17% vol, P(jump +0%)=0% -> EV +38.7, P(loss>100) 23.6%
+  true world: 17% vol, P(jump -8%)=2% -> EV +35.7, P(loss>100) 24.1%
+  true world: 17% vol, P(jump -12%)=4% -> EV +27.5, P(loss>100) 25.9%
+  true world: 17% vol, P(jump -20%)=4% -> EV +22.4, P(loss>100) 27.0%
+
+=== P4: Execution assumptions: slippage and commission ===
+  slippage 0.5 x half-spread, $0.65/contract: passed  224, top-5 mean EV +62, top-5 mean EV/risk +0.412
+  slippage 1.0 x half-spread, $0.65/contract: passed  216, top-5 mean EV +68, top-5 mean EV/risk +0.364
+  slippage 0.5 x half-spread, $3.00/contract: passed  183, top-5 mean EV +76, top-5 mean EV/risk +0.333
+  slippage 1.0 x half-spread, $3.00/contract: passed  164, top-5 mean EV +79, top-5 mean EV/risk +0.304
+
+=== P5: Liquidity gate: 0.01 x 0.06 wings pass, and what mid-pricing them is worth ===
+  passed 224, of which 23 contain a 0.01x0.06 leg (rel. spread 143%)
+  example IRON_CONDOR Buy 93P / Sell 98P / Sell 102C / Buy 107C: EV +82; modelled wing fill [0.0475, 0.0475]; paying the ask instead costs 5 more per lot
+  liquid() verdict for a 0.01x0.06 leg: None
+
+=== P6: Staleness gate silently off when a timestamp is unparseable or missing ===
+  garbage quote_at on every leg -> passed 224, STALE_QUOTE rejections 0, top quote_age_seconds = None
+  NULL quote_at on every leg      -> passed 224, STALE_QUOTE rejections 0
+
+=== P7: Breakeven realised volatility of the top pick (IV 25%, forecast ~17%) ===
+  IRON_FLY Buy 94P / Sell 100C / Sell 100P / Buy 106C, 2026-12-04, engine EV +88, forecast vol 14.3%
+    realised 15%: EV  +83.5   P(profit) 64%   P(max loss) 18%
+    realised 17%: EV  +57.5   P(profit) 58%   P(max loss) 24%
+    realised 19%: EV  +35.4   P(profit) 53%   P(max loss) 29%
+    realised 21%: EV  +16.4   P(profit) 48%   P(max loss) 34%
+    realised 23%: EV   +0.0   P(profit) 45%   P(max loss) 38%
+    realised 25%: EV  -14.2   P(profit) 41%   P(max loss) 42%
+    realised 28%: EV  -32.3   P(profit) 37%   P(max loss) 47%
+    realised 32%: EV  -51.8   P(profit) 33%   P(max loss) 53%
+
+=== P8: Winner's curse: ranking selects quote noise ===
+  +/-1 tick random noise on every quote, 30 trials: top-5 EV minus clean-quote EV of the same structure: mean +1.0 $, median +1.0 $, n=150
+  (clean-chain top-5 EV mean for scale: +62.0 $)
+
+=== P9: Event detection blind spot with <= 2 expiries ===
+  2 expiries, huge forward variance in the 2nd: event variance = [0.0, 0.0]
+  3 expiries, same event:                        event variance = [0.0, 0.0098, 0.0098]
+
+=== P10: Track-record verdict: how often does 'making money with 95% confidence' fire when the edge is zero or negative? ===
+  top pick payoff: +400 / -200; break-even win rate 33%; engine says 66%
+    true win rate 33%, within-day corr 0.0, tail-day prob 0%/day: verdict fires after 30 trades in 2% of worlds; mean P&L of the next 90 trades -330
+    true win rate 33%, within-day corr 0.6, tail-day prob 0%/day: verdict fires after 30 trades in 10% of worlds; mean P&L of the next 90 trades +100
+    true win rate 30%, within-day corr 0.6, tail-day prob 0%/day: verdict fires after 30 trades in 7% of worlds; mean P&L of the next 90 trades -1472
+    true win rate 38%, within-day corr 0.6, tail-day prob 2%/day: verdict fires after 30 trades in 16% of worlds; mean P&L of the next 90 trades +2369
+
+=== P11: Engine step cost at production scale (48 chains) ===
+  48 chains x 344 quotes: 6.0 s, structures scored 14,820, passed 1,902, peak RSS 222 MiB
+  top-5 underlyings: ['S01', 'S00', 'S46', 'S30', 'S02']  (IV ladder: higher index = richer IV)

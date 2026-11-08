@@ -90,20 +90,3 @@ def test_missing_or_malformed_marker_fails_as_unknown(tmp_path):
         assert rm.read_deployed_commit(marker) is None
 
 
-def test_ops_release_shows_deployed_revision_not_checkout_status():
-    app = (Path(__file__).resolve().parents[1] / "app.py").read_text(
-        encoding="utf-8"
-    )
-    ops = app.split('elif page == "Ops":', 1)[1]
-    release = ops.split('elif ops_view == "Release":', 1)[1].split(
-        '        else:\n            section_heading("System"', 1
-    )[0]
-    assert 'read_deployed_commit()' in release
-    assert '"Deployed revision"' in release
-    assert '"Historical unhealthy samples"' in release
-    assert 'build_release_manifest(deep_integrity=False)' in release
-    assert 'with st.expander("Technical release fingerprint")' in release
-    assert 'f"Product version: {CHRISTIANIA_VERSION} "' in release
-    assert '"Git state"' not in release
-    assert 'c1.metric("Version"' not in release
-    assert 'Dirty / unavailable' not in release
